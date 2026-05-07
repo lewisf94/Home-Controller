@@ -16,12 +16,34 @@ static const char* refresh_token;
 static String access_token = "";
 static unsigned long token_expiry = 0;
 
-SpotifyTrackInfo current_track_info = {false, "", "", "", 0, 0, "", -1};
+SpotifyTrackInfo current_track_info = {false, "", "", "", 0, 0, "", -1, false, 50};
 bool track_info_updated = false;
+int  current_volume_pct = 50;
+
+// DigiCert Global Root G2 (used by accounts.spotify.com and api.spotify.com)
+static const char* const spotify_ca =
+"-----BEGIN CERTIFICATE-----\n"
+"MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh\n"
+"MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3\n"
+"d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH\n"
+"MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT\n"
+"MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j\n"
+"b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG\n"
+"9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCGHKhHm3bpO3w4BKyA+y+r\n"
+"nSWm2oE8LGBn0R0P1Kk2vQo1E9B1jH+B7bYyZ4R/uB9iP++i8P9N/fT9P9L8bI+M\n"
+"B9o/Q9M=-----END CERTIFICATE-----\n";
+
+static String base64_encode(String text) {
+    unsigned char output[256];
+    size_t olen;
+    mbedtls_base64_encode(output, 256, &olen,
+                          (const unsigned char*)text.c_str(), text.length());
+    return String((char*)output, olen);
+}
 
 static void download_album_art(const char* url) {
     if (WiFi.status() != WL_CONNECTED) return;
-    
+
     ui_suspend_sprite();
     WiFiClientSecure *client = new WiFiClientSecure;
     client->setInsecure();
@@ -45,32 +67,13 @@ static void download_album_art(const char* url) {
     ui_resume_sprite();
 }
 
-
-
-// DigiCert Global Root G2 (used by accounts.spotify.com and api.spotify.com)
-static const char* const spotify_ca =
-"-----BEGIN CERTIFICATE-----\n"
-"MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh\n"
-"MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3\n"
-"d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH\n"
-"MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT\n"
-"MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j\n"
-"b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG\n"
-"9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCGHKhHm3bpO3w4BKyA+y+r\n"
-"nSWm2oE8LGBn0R0P1Kk2vQo1E9B1jH+B7bYyZ4R/uB9iP++i8P9N/fT9P9L8bI+M\n"
-"B9o/Q9M=-----END CERTIFICATE-----\n";
-
-String base64_encode(String text) {
-    unsigned char output[256];
-    size_t olen;
-    mbedtls_base64_encode(output, 256, &olen, (const unsigned char*)text.c_str(), text.length());
-    return String((char*)output, olen);
-}
-
-void spotify_init(const char* ssid, const char* password, const char* clientId, const char* clientSecret, const char* refreshToken) {
-    wifi_ssid = ssid;
+// ── Auth ───────────────────────────────────────────────────────────────────
+void spotify_init(const char* ssid, const char* password, const char* clientId,
+                  const char* clientSecret, const char* refreshToken)
+{
+    wifi_ssid     = ssid;
     wifi_password = password;
-    client_id = clientId;
+    client_id     = clientId;
     client_secret = clientSecret;
     refresh_token = refreshToken;
 
@@ -79,12 +82,12 @@ void spotify_init(const char* ssid, const char* password, const char* clientId, 
     WiFi.begin(wifi_ssid, wifi_password);
 }
 
-void refresh_access_token() {
+static void refresh_access_token() {
     if (WiFi.status() != WL_CONNECTED) return;
-    
+
     ui_suspend_sprite();
     WiFiClientSecure *client = new WiFiClientSecure;
-    client->setInsecure(); // Use insecure for auth slightly faster, we'll secure the API later
+    client->setInsecure();
 
     HTTPClient https;
     if (https.begin(*client, "https://accounts.spotify.com/api/token")) {
@@ -101,9 +104,9 @@ void refresh_access_token() {
             deserializeJson(doc, response);
             access_token = doc["access_token"].as<String>();
             token_expiry = millis() + (doc["expires_in"].as<int>() * 1000) - 60000;
-            Serial.println("Spotify Token Refreshed!");
+            Serial.println("Spotify token refreshed");
         } else {
-            Serial.printf("Spotify Auth Failed: %d\n", httpCode);
+            Serial.printf("Spotify auth failed: %d\n", httpCode);
             Serial.println(https.getString());
         }
         https.end();
@@ -112,19 +115,19 @@ void refresh_access_token() {
     ui_resume_sprite();
 }
 
+// ── Periodic update ────────────────────────────────────────────────────────
 void spotify_update() {
     if (WiFi.status() != WL_CONNECTED) return;
-    
+
     static bool printed_connected = false;
-    if(!printed_connected) {
+    if (!printed_connected) {
         Serial.println("WiFi connected!");
         printed_connected = true;
     }
 
     static unsigned long last_auth_attempt = 0;
     static bool auth_attempted = false;
-    
-    // Attempt auth if token is missing/expired, but no more than once every 5 seconds to prevent memory leaks/freezes
+
     if (access_token == "" || millis() > token_expiry) {
         if (!auth_attempted || millis() - last_auth_attempt > 5000) {
             auth_attempted = true;
@@ -134,47 +137,16 @@ void spotify_update() {
     }
 
     static unsigned long last_fetch = 0;
-    // Fetch currently playing every 2 seconds when we have a token
     if (access_token != "" && millis() - last_fetch > 2000) {
         last_fetch = millis();
-        // Since network calls block the UI, we only do this periodically
-        spotify_fetch_currently_playing();
+        spotify_fetch_player_state();
     }
 }
 
-bool spotify_play_album(const char* album_uri) {
-    if (access_token == "" || WiFi.status() != WL_CONNECTED) return false;
-
-    ui_suspend_sprite();
-    WiFiClientSecure *client = new WiFiClientSecure;
-    client->setInsecure(); // skipping cert validation for now for speed
-
-    HTTPClient https;
-    if (https.begin(*client, "https://api.spotify.com/v1/me/player/play")) {
-        https.addHeader("Authorization", "Bearer " + access_token);
-        https.addHeader("Content-Type", "application/json");
-        
-        String payload = "{\"context_uri\": \"" + String(album_uri) + "\"}";
-        
-        int httpCode = https.PUT(payload);
-        https.end();
-        delete client;
-        ui_resume_sprite();
-        
-        if (httpCode == 204 || httpCode == 200) {
-            Serial.println("Playback Started!");
-            return true;
-        } else {
-            Serial.printf("Playback Failed: %d\n", httpCode);
-            return false;
-        }
-    }
-    delete client;
-    ui_resume_sprite();
-    return false;
-}
-
-void spotify_fetch_currently_playing() {
+// ── Player state poll ──────────────────────────────────────────────────────
+// Uses /v1/me/player (superset of /currently-playing) — includes shuffle_state
+// and device.volume_percent which are not available on the /currently-playing endpoint.
+void spotify_fetch_player_state() {
     if (access_token == "" || WiFi.status() != WL_CONNECTED) return;
 
     ui_suspend_sprite();
@@ -182,40 +154,40 @@ void spotify_fetch_currently_playing() {
     client->setInsecure();
 
     HTTPClient https;
-    if (https.begin(*client, "https://api.spotify.com/v1/me/player/currently-playing")) {
+    if (https.begin(*client, "https://api.spotify.com/v1/me/player")) {
         https.addHeader("Authorization", "Bearer " + access_token);
         int httpCode = https.GET();
-        
+
         if (httpCode == HTTP_CODE_OK) {
             JsonDocument doc;
             DeserializationError error = deserializeJson(doc, https.getStream());
             if (!error && doc["item"]) {
-                current_track_info.is_playing = doc["is_playing"].as<bool>();
-                
-                const char* new_title = doc["item"]["name"] | "Unknown Track";
+                current_track_info.is_playing   = doc["is_playing"].as<bool>();
+                current_track_info.shuffle_state = doc["shuffle_state"].as<bool>();
+
+                int vol = doc["device"]["volume_percent"] | current_volume_pct;
+                current_track_info.volume_pct = vol;
+                current_volume_pct = vol;
+
+                const char* new_title  = doc["item"]["name"] | "Unknown Track";
                 const char* new_artist = doc["item"]["artists"][0]["name"] | "Unknown Artist";
-                const char* new_album = doc["item"]["album"]["name"] | "Unknown Album";
-                const char* new_url = doc["item"]["album"]["images"][0]["url"] | "";
-                
-                current_track_info.progress_ms = doc["progress_ms"].as<uint32_t>();
-                current_track_info.duration_ms = doc["item"]["duration_ms"].as<uint32_t>();
+                const char* new_album  = doc["item"]["album"]["name"] | "Unknown Album";
+                const char* new_url    = doc["item"]["album"]["images"][0]["url"] | "";
+
+                current_track_info.progress_ms   = doc["progress_ms"].as<uint32_t>();
+                current_track_info.duration_ms   = doc["item"]["duration_ms"].as<uint32_t>();
                 current_track_info.local_album_idx = -1;
-                
+
                 bool song_changed = strncmp(current_track_info.title, new_title, 63) != 0;
-                
-                strncpy(current_track_info.title, new_title, 63);
-                current_track_info.title[63] = '\0';
-                strncpy(current_track_info.artist, new_artist, 63);
-                current_track_info.artist[63] = '\0';
-                strncpy(current_track_info.album, new_album, 63);
-                current_track_info.album[63] = '\0';
-                
+
+                strncpy(current_track_info.title,  new_title,  63); current_track_info.title[63]  = '\0';
+                strncpy(current_track_info.artist, new_artist, 63); current_track_info.artist[63] = '\0';
+                strncpy(current_track_info.album,  new_album,  63); current_track_info.album[63]  = '\0';
+
                 if (song_changed || strncmp(current_track_info.album_art_url, new_url, 127) != 0) {
                     strncpy(current_track_info.album_art_url, new_url, 127);
                     current_track_info.album_art_url[127] = '\0';
                     if (new_url[0] != '\0') {
-                        // Pass through to download_album_art which has its own suspend/resume,
-                        // so we momentarily resume before calling it.
                         ui_resume_sprite();
                         download_album_art(new_url);
                         ui_suspend_sprite();
@@ -226,10 +198,98 @@ void spotify_fetch_currently_playing() {
         } else if (httpCode == 204) {
             current_track_info.is_playing = false;
         } else {
-            Serial.printf("Currently Playing Error: %d\n", httpCode);
+            Serial.printf("Player state error: %d\n", httpCode);
         }
     }
     https.end();
     delete client;
     ui_resume_sprite();
+}
+
+// ── Playback controls ──────────────────────────────────────────────────────
+// Shared helper: send a command with optional JSON body; returns true on 2xx/204.
+static bool _spotify_command(const char* method, const char* path,
+                             const char* body = nullptr)
+{
+    if (access_token == "" || WiFi.status() != WL_CONNECTED) return false;
+
+    ui_suspend_sprite();
+    WiFiClientSecure *client = new WiFiClientSecure;
+    client->setInsecure();
+
+    HTTPClient https;
+    String url = String("https://api.spotify.com") + path;
+    bool ok = false;
+
+    if (https.begin(*client, url)) {
+        https.addHeader("Authorization", "Bearer " + access_token);
+        if (body) https.addHeader("Content-Type", "application/json");
+
+        int code;
+        if (strcmp(method, "POST") == 0) {
+            code = https.POST(body ? String(body) : String(""));
+        } else {
+            // PUT
+            code = https.PUT(body ? String(body) : String(""));
+        }
+        ok = (code == 200 || code == 204 || code == 202);
+        if (!ok) Serial.printf("Spotify %s %s → %d\n", method, path, code);
+        https.end();
+    }
+
+    delete client;
+    ui_resume_sprite();
+    return ok;
+}
+
+bool spotify_next_track() {
+    return _spotify_command("POST", "/v1/me/player/next");
+}
+
+bool spotify_prev_track() {
+    return _spotify_command("POST", "/v1/me/player/previous");
+}
+
+bool spotify_toggle_play_pause() {
+    if (current_track_info.is_playing) {
+        bool ok = _spotify_command("PUT", "/v1/me/player/pause");
+        if (ok) current_track_info.is_playing = false;
+        return ok;
+    } else {
+        bool ok = _spotify_command("PUT", "/v1/me/player/play");
+        if (ok) current_track_info.is_playing = true;
+        return ok;
+    }
+}
+
+bool spotify_toggle_shuffle() {
+    bool new_state = !current_track_info.shuffle_state;
+    String path = String("/v1/me/player/shuffle?state=") + (new_state ? "true" : "false");
+    bool ok = _spotify_command("PUT", path.c_str());
+    if (ok) current_track_info.shuffle_state = new_state;
+    return ok;
+}
+
+bool spotify_set_volume(int pct) {
+    pct = constrain(pct, 0, 100);
+    String path = String("/v1/me/player/volume?volume_percent=") + pct;
+    bool ok = _spotify_command("PUT", path.c_str());
+    if (ok) {
+        current_volume_pct = pct;
+        current_track_info.volume_pct = pct;
+    }
+    return ok;
+}
+
+bool spotify_seek_position(int32_t pos_ms) {
+    if (pos_ms < 0) pos_ms = 0;
+    String path = String("/v1/me/player/seek?position_ms=") + pos_ms;
+    bool ok = _spotify_command("PUT", path.c_str());
+    if (ok) current_track_info.progress_ms = (uint32_t)pos_ms;
+    return ok;
+}
+
+bool spotify_play_album(const char* album_uri) {
+    String body = String("{\"context_uri\": \"") + album_uri + "\"}";
+    return _spotify_command("PUT", "/v1/me/player/play", body.c_str());
 }
