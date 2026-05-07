@@ -147,6 +147,61 @@ static int32_t scroll_pos = 0;
 static int32_t target_scroll = 0;
 #define SCROLL_SCALE 140
 
+// ── Overlay / HUD state ────────────────────────────────────────────────────
+#include "input.h"
+
+#define HUD_DURATION_MS   2000  // volume HUD auto-hides after 2 s
+#define HUD_H             26    // pixel height of the HUD strip
+
+static int           hud_vol_pct   = -1;
+static bool          hud_muted_    = false;
+static unsigned long hud_show_ms   = 0;
+static bool          hud_was_on    = false; // tracks expiry to trigger redraw
+
+static void _draw_volume_hud(int pct, bool muted) {
+    tft.fillRect(0, 0, SCREEN_W, HUD_H, TFT_BLACK);
+    tft.setTextDatum(MC_DATUM);
+    if (muted) {
+        tft.setTextColor(tft.color565(220, 80, 80));
+        tft.drawString("MUTED", SCREEN_W / 2, HUD_H / 2, GET_FONT_ID(16));
+    } else {
+        int bar_x = 16, bar_w = 200, bar_h = 6, bar_y = (HUD_H - bar_h) / 2;
+        int fill_w = pct * bar_w / 100;
+        tft.drawRect(bar_x, bar_y, bar_w, bar_h, tft.color565(80, 80, 80));
+        if (fill_w > 0) tft.fillRect(bar_x, bar_y, fill_w, bar_h, TFT_WHITE);
+        char buf[10];
+        snprintf(buf, sizeof(buf), "%d%%", pct);
+        tft.setTextColor(tft.color565(180, 180, 180));
+        tft.drawString(buf, bar_x + bar_w + 20, HUD_H / 2, GET_FONT_ID(8));
+    }
+}
+
+void ui_show_volume_hud(int pct, bool muted) {
+    hud_vol_pct  = pct;
+    hud_muted_   = muted;
+    hud_show_ms  = millis();
+    _draw_volume_hud(pct, muted);
+}
+
+// ── Play/Pause flash ───────────────────────────────────────────────────────
+#define PLAY_FLASH_MS 1500
+
+static unsigned long play_flash_ms        = 0;
+static bool          play_flash_is_play   = true;  // true=play icon, false=pause
+
+static void _draw_play_pause_icon(bool is_play, int cx, int cy) {
+    int r = 22;
+    tft.fillCircle(cx, cy, r + 5, tft.color565(0, 0, 0));
+    tft.drawCircle(cx, cy, r + 5, tft.color565(70, 70, 70));
+    if (is_play) {
+        tft.fillTriangle(cx - r / 2, cy - r, cx - r / 2, cy + r, cx + r, cy, TFT_WHITE);
+    } else {
+        int bw = r / 2 - 2, bh = r * 2;
+        tft.fillRect(cx - r + 2, cy - r, bw, bh, TFT_WHITE);
+        tft.fillRect(cx + 4,     cy - r, bw, bh, TFT_WHITE);
+    }
+}
+
 // --- Touch State ---
 static bool is_dragging = false;
 static int16_t touch_start_x = 0;
@@ -712,9 +767,47 @@ static void draw_now_playing() {
     last_square_state = np_show_square_art;
   }
 
+  // ── Play/Pause flash (drawn on top of art for 1.5 s after state change) ─
+  if (play_flash_ms > 0 && millis() - play_flash_ms < PLAY_FLASH_MS) {
+      _draw_play_pause_icon(play_flash_is_play, SCREEN_W / 2, NP_ART_CENTER_Y);
+  }
+
+  // ── Mute badge (persistent small indicator top-right) ─────────────────
+  static bool last_muted_badge = false;
+  bool cur_muted = input_is_muted();
+  if (cur_muted != last_muted_badge || initial_draw) {
+      // Clear the badge area (top-right corner, 60x14 px)
+      tft.fillRect(SCREEN_W - 62, 2, 60, 14, TFT_BLACK);
+      if (cur_muted) {
+          tft.setTextDatum(MR_DATUM);
+          tft.setTextColor(tft.color565(220, 80, 80));
+          tft.drawString("MUTED", SCREEN_W - 4, 9, GET_FONT_ID(8));
+      }
+      last_muted_badge = cur_muted;
+  }
+
+  // ── SW4 seek preview (above progress bar) ──────────────────────────────
+  static bool last_seek_shown = false;
+  bool seek_on = input_sw4_seek_active();
+  if (seek_on) {
+      int32_t off_ms = input_sw4_seek_offset_ms();
+      bool neg = off_ms < 0;
+      int32_t abs_s = abs(off_ms) / 1000;
+      int mins = abs_s / 60, secs = abs_s % 60;
+      char seek_buf[16];
+      snprintf(seek_buf, sizeof(seek_buf), "SEEK %s%d:%02d", neg ? "-" : "+", mins, secs);
+      tft.fillRect(60, 213, 200, 10, TFT_BLACK);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextColor(tft.color565(160, 200, 255));
+      tft.drawString(seek_buf, SCREEN_W / 2, 218, GET_FONT_ID(8));
+  } else if (last_seek_shown) {
+      tft.fillRect(60, 213, 200, 10, TFT_BLACK);
+  }
+  last_seek_shown = seek_on;
+
   static uint32_t last_prog = 0xFFFFFFFF; // force first draw
   static int last_fill_w = -1;
-  
+
   int prog_w = 200;
   int prog_x = (SCREEN_W - prog_w) / 2;
   int prog_y = 225; // Move progress bar to the very bottom
@@ -930,6 +1023,27 @@ void ui_update() {
       scroll_pos = target_scroll;
     else
       scroll_pos += step;
+  }
+
+  // ── Volume HUD expiry ─────────────────────────────────────────────────
+  bool hud_now_on = (hud_show_ms > 0 && now - hud_show_ms < HUD_DURATION_MS);
+  if (hud_was_on && !hud_now_on) {
+      // HUD just expired — restore background beneath it
+      if (current_view == VIEW_NOW_PLAYING) {
+          np_needs_full_redraw = true;
+      } else {
+          // Browser: just blank the strip; albums will overdraw on next scroll frame
+          tft.fillRect(0, 0, SCREEN_W, HUD_H, TFT_BLACK);
+      }
+  }
+  hud_was_on = hud_now_on;
+
+  // ── Play/Pause change detection ───────────────────────────────────────
+  static bool last_is_playing = false;
+  if (current_track_info.is_playing != last_is_playing) {
+      play_flash_is_play = current_track_info.is_playing;
+      play_flash_ms      = now;
+      last_is_playing    = current_track_info.is_playing;
   }
 
   // --- Draw at ~60fps ---
