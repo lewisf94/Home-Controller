@@ -70,12 +70,12 @@ void setup() {
   Serial.begin(115200);
 
   tft.begin();
-  tft.setRotation(3);
+  tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
 
   touchSpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
   touch.begin(touchSpi);
-  touch.setRotation(3);
+  touch.setRotation(1);
 
   if (SD.begin(5)) {
     sd_ok = true;
