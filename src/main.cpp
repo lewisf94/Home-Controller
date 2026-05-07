@@ -3,21 +3,12 @@
 #include "mcp_input.h"
 #include "spotify.h"
 #include "ui.h"
+#include "secrets.h"
 #include <Arduino.h>
 #include <SD.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
-
-// ============================================================
-// USER CREDENTIALS - Fill in your details below before building
-// ============================================================
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-#define SPOTIFY_CLIENT_ID "YOUR_SPOTIFY_CLIENT_ID"
-#define SPOTIFY_CLIENT_SECRET "YOUR_SPOTIFY_CLIENT_SECRET"
-#define SPOTIFY_REFRESH_TOKEN "YOUR_SPOTIFY_REFRESH_TOKEN"
-// ============================================================
 
 TFT_eSPI tft = TFT_eSPI();
 bool sd_ok = false;

@@ -223,7 +223,12 @@ static bool _spotify_command(const char* method, const char* path,
 
     if (https.begin(*client, url)) {
         https.addHeader("Authorization", "Bearer " + access_token);
-        if (body) https.addHeader("Content-Type", "application/json");
+        if (body) {
+            https.addHeader("Content-Type", "application/json");
+            https.addHeader("Content-Length", String(strlen(body)));
+        } else {
+            https.addHeader("Content-Length", "0");
+        }
 
         int code;
         if (strcmp(method, "POST") == 0) {

@@ -100,9 +100,14 @@ static void _process_encoders(uint8_t portb)
     // RE2 — CLK=bit0, DT=bit1 (Adafruit pins 8, 9 → GPIOB bits 0, 1)
     _update_encoder(re2, portb, 0, 1);
 
-    // Encoder push-switches (active LOW)
-    _update_btn(re1_sw, !((portb >> 3) & 1));  // GPB3 = bit3
-    _update_btn(re2_sw, !((portb >> 2) & 1));  // GPB2 = bit2
+    // Encoder push-switches (active LOW).
+    // Guard: only register a switch press when the encoder's CLK and DT are both
+    // HIGH (encoder at rest). When the shared GND contact is active during rotation
+    // it drags SW LOW too — this rejects those false triggers.
+    bool re1_still = ((portb >> 5) & 1) && ((portb >> 4) & 1); // CLK=1 AND DT=1
+    bool re2_still = ((portb >> 0) & 1) && ((portb >> 1) & 1); // CLK=1 AND DT=1
+    _update_btn(re1_sw, !((portb >> 3) & 1) && re1_still);
+    _update_btn(re2_sw, !((portb >> 2) & 1) && re2_still);
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -152,19 +157,84 @@ void mcp_input_init()
     Serial.println("MCP23017 ready (SDA=27, SCL=22, INTB=35)");
 }
 
+// ── Debug helpers ──────────────────────────────────────────────────────────
+static void _dbg_print_bits(const char* label, uint8_t val) {
+    Serial.printf("%s=0x%02X (", label, val);
+    for (int i = 7; i >= 0; i--) Serial.print((val >> i) & 1);
+    Serial.print(") ");
+}
+
 void mcp_input_update()
 {
-    if (!mcp_ok) return;
-
-    if (digitalRead(MCP_INTB_PIN) == LOW) {
-        // Port B changed — read both ports in one I2C transaction
-        uint16_t ab = mcp.readGPIOAB();
-        _process_encoders((ab >> 8) & 0xFF);
-        _process_buttons(ab & 0xFF);
-    } else {
-        // Nothing changed on Port B; still poll buttons (Port A has no interrupt)
-        _process_buttons(mcp.readGPIO(0) & 0xFF);
+    if (!mcp_ok) {
+        static bool once = true;
+        if (once) { Serial.println("[MCP] ERROR: mcp_ok=false, all input disabled"); once = false; }
+        return;
     }
+
+    static uint8_t last_porta = 0xFF;
+    static uint8_t last_portb = 0xFF;
+
+    uint16_t ab;
+    bool intb_low = (digitalRead(MCP_INTB_PIN) == LOW);
+
+    if (intb_low) {
+        ab = mcp.readGPIOAB();
+        uint8_t portb = (ab >> 8) & 0xFF;
+        uint8_t porta = ab & 0xFF;
+
+        // Print on every INTB trigger — these are the encoder/switch events
+        Serial.print("[INTB] ");
+        _dbg_print_bits("PA", porta);
+        _dbg_print_bits("PB", portb);
+        // Label individual Port B pins
+        Serial.printf("RE2_CLK=%d RE2_DT=%d RE2_SW=%d RE1_SW=%d RE1_DT=%d RE1_CLK=%d\n",
+                      (portb >> 0) & 1, (portb >> 1) & 1,
+                      (portb >> 2) & 1, (portb >> 3) & 1,
+                      (portb >> 4) & 1, (portb >> 5) & 1);
+
+        if (porta != last_porta) {
+            Serial.printf("[BTN ] PA changed: SW1=%d SW2=%d SW3=%d SW4=%d\n",
+                          !((porta >> 0) & 1), !((porta >> 1) & 1),
+                          !((porta >> 2) & 1), !((porta >> 3) & 1));
+            last_porta = porta;
+        }
+        if (portb != last_portb) {
+            last_portb = portb;
+        }
+
+        _process_encoders(portb);
+        _process_buttons(porta);
+    } else {
+        uint8_t porta = mcp.readGPIO(0) & 0xFF;
+        if (porta != last_porta) {
+            Serial.printf("[POLL] PA changed: SW1=%d SW2=%d SW3=%d SW4=%d (raw=0x%02X)\n",
+                          !((porta >> 0) & 1), !((porta >> 1) & 1),
+                          !((porta >> 2) & 1), !((porta >> 3) & 1), porta);
+            last_porta = porta;
+        }
+        _process_buttons(porta);
+    }
+
+    // Periodic heartbeat: raw state + INTB level every 2 s
+    static unsigned long _hb_ms = 0;
+    if (millis() - _hb_ms > 2000) {
+        _hb_ms = millis();
+        uint16_t snap = mcp.readGPIOAB();
+        Serial.printf("[HB  ] PA=0x%02X PB=0x%02X INTB=%d RE1cnt=%d RE2cnt=%d\n",
+                      snap & 0xFF, (snap >> 8) & 0xFF,
+                      digitalRead(MCP_INTB_PIN), re1.count, re2.count);
+    }
+
+    // Log every event as it fires
+    if (re1_sw.event_pending) Serial.println("[EVT ] RE1-SW pressed (view toggle)");
+    if (re2_sw.event_pending) Serial.println("[EVT ] RE2-SW pressed (mute)");
+    for (uint8_t i = 0; i < 4; i++)
+        if (btns[i].event_pending) Serial.printf("[EVT ] SW%d pressed\n", i + 1);
+
+    // Log encoder movement
+    if (re1.count != 0) Serial.printf("[ENC ] RE1 accumulated delta=%d\n", re1.count);
+    if (re2.count != 0) Serial.printf("[ENC ] RE2 accumulated delta=%d\n", re2.count);
 }
 
 int32_t re1_get_delta()
