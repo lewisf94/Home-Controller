@@ -4,6 +4,7 @@
 #include <JPEGDEC.h>
 #include <SD.h>
 #include <TFT_eSPI.h>
+#include <WiFi.h>
 #include <XPT2046_Touchscreen.h>
 
 
@@ -181,6 +182,35 @@ void ui_show_volume_hud(int pct, bool muted) {
     hud_muted_   = muted;
     hud_show_ms  = millis();
     _draw_volume_hud(pct, muted);
+}
+
+// ── WiFi signal indicator ──────────────────────────────────────────────────
+#define WIFI_CHECK_INTERVAL_MS 5000
+
+static int           last_wifi_bars     = -1;  // -1 = never drawn
+static unsigned long last_wifi_check_ms = 0;
+
+static int _wifi_bars() {
+    if (WiFi.status() != WL_CONNECTED) return 0;
+    int rssi = WiFi.RSSI();
+    if (rssi >= -55) return 4;
+    if (rssi >= -65) return 3;
+    if (rssi >= -75) return 2;
+    if (rssi >= -85) return 1;
+    return 0;
+}
+
+static void _draw_wifi_indicator(int bars) {
+    // 4-bar icon, bottom-aligned, top-left corner
+    // Each bar: 2px wide, 2px gap, heights 4/6/8/10 px, bottom at y=13
+    tft.fillRect(2, 2, 18, 13, TFT_BLACK);
+    for (int i = 0; i < 4; i++) {
+        int bh    = 4 + i * 2;
+        int bx    = 3 + i * 4;
+        int by    = 14 - bh;
+        uint16_t c = (i < bars) ? TFT_WHITE : tft.color565(55, 55, 55);
+        tft.fillRect(bx, by, 2, bh, c);
+    }
 }
 
 // ── Play/Pause flash ───────────────────────────────────────────────────────
@@ -709,6 +739,9 @@ static void draw_now_playing() {
     tft.drawLine(SCREEN_W / 2, 12, SCREEN_W / 2 + 10, 5,
                  tft.color565(180, 180, 180));
 
+    // WiFi indicator (top-left corner)
+    _draw_wifi_indicator(last_wifi_bars >= 0 ? last_wifi_bars : _wifi_bars());
+
     np_needs_full_redraw = false;
     track_info_updated = false; // consume the flag
   }
@@ -746,19 +779,19 @@ static void draw_now_playing() {
         drawLocalAlbumArt(SCREEN_W / 2, NP_ART_CENTER_Y,
                           current_track_info.local_album_idx);
       } else {
-        // TODO: In the future we need to implement rotation for JPEG decoder,
-        // For now, if we don't have local cache, just draw it standard using JPEG
-        jpeg_np.open("/sd_card_albums/nowplaying.jpg", npOpen, npClose, npRead,
-                     npSeek, JPEGDraw_NowPlaying);
-        // Just raw scale down, no rotation supported yet natively in jpeglib
-        int w = jpeg_np.getWidth();
-        int h = jpeg_np.getHeight();
-        int scale =
-            (w >= 400) ? JPEG_SCALE_QUARTER : ((w >= 200) ? JPEG_SCALE_HALF : 0);
-        np_img_x = (SCREEN_W / 2) - (w / 2);
-        np_img_y = NP_ART_CENTER_Y - (h / 2);
-        jpeg_np.decode(0, 0, scale);
-        jpeg_np.close();
+        // JPEG fallback: can't rotate, so only decode on track change or mode toggle
+        if (initial_draw || last_square_state != np_show_square_art) {
+          jpeg_np.open("/sd_card_albums/nowplaying.jpg", npOpen, npClose, npRead,
+                       npSeek, JPEGDraw_NowPlaying);
+          int w = jpeg_np.getWidth();
+          int h = jpeg_np.getHeight();
+          int scale =
+              (w >= 400) ? JPEG_SCALE_QUARTER : ((w >= 200) ? JPEG_SCALE_HALF : 0);
+          np_img_x = (SCREEN_W / 2) - (w / 2);
+          np_img_y = NP_ART_CENTER_Y - (h / 2);
+          jpeg_np.decode(0, 0, scale);
+          jpeg_np.close();
+        }
       }
       // Draw Tonearm AFTER the vinyl image is fully committed to the screen
       draw_tonearm();
@@ -1032,8 +1065,9 @@ void ui_update() {
       if (current_view == VIEW_NOW_PLAYING) {
           np_needs_full_redraw = true;
       } else {
-          // Browser: just blank the strip; albums will overdraw on next scroll frame
+          // Browser: blank the strip then restore the WiFi indicator
           tft.fillRect(0, 0, SCREEN_W, HUD_H, TFT_BLACK);
+          if (last_wifi_bars >= 0) _draw_wifi_indicator(last_wifi_bars);
       }
   }
   hud_was_on = hud_now_on;
@@ -1044,6 +1078,19 @@ void ui_update() {
       play_flash_is_play = current_track_info.is_playing;
       play_flash_ms      = now;
       last_is_playing    = current_track_info.is_playing;
+  }
+
+  // ── WiFi signal poll (every 5 s, redraw only on bar change) ──────────
+  if (now - last_wifi_check_ms > WIFI_CHECK_INTERVAL_MS) {
+      last_wifi_check_ms = now;
+      int bars = _wifi_bars();
+      if (bars != last_wifi_bars) {
+          last_wifi_bars = bars;
+          if (!hud_now_on) {
+              _draw_wifi_indicator(bars);
+          }
+          // If HUD is covering it, the expiry redraw above will restore it
+      }
   }
 
   // --- Draw at ~60fps ---
