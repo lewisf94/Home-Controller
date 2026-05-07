@@ -61,11 +61,26 @@ CS = GPIO 5 (`SD.begin(5)` in `main.cpp`). Default VSPI bus. Holds:
 - `*.bin` — pre-converted RGB565 album thumbnails (80×80, 12,800 bytes each)
 - `nowplaying.jpg` — JPEG fallback art for now-playing view
 
+### I2C bus summary
+
+The Wire bus runs on GPIO 27 (SDA) and GPIO 22 (SCL) at 400 kHz.
+External 4.7 kΩ pull-ups to 3.3V on both lines are recommended.
+
+| Component | Breakout | I2C address | Address pins |
+|---|---|---|---|
+| MCP23017 IO expander | CJMCU-2317 | `0x20` | A0=A1=A2=GND |
+
+Only one I2C device currently on the bus. If a second is added (e.g.
+an SSD1306 OLED or BME280 sensor), verify its address doesn't clash
+with `0x20`. MCP23017 address can be changed to `0x21`–`0x27` by
+lifting A0/A1/A2 to 3.3V in different combinations.
+
 ### MCP23017 IO expander (CJMCU-2317)
 
-I2C address `0x20` (A0=A1=A2 grounded). RESET tied to 3.3V. ESP32 talks to
-it over the **default Wire bus**, repurposing the GPIOs that were once used
-for the original direct-wired encoder.
+I2C address `0x20` (A0=A1=A2 grounded). RESET pin tied to 3.3V (always
+active — not software-controlled). ESP32 talks to it over the **default
+Wire bus**, repurposing the GPIOs that were once used for the original
+direct-wired encoder.
 
 | Signal | ESP32 GPIO |
 |---|---|
