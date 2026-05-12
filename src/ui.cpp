@@ -606,15 +606,22 @@ static void draw_now_playing() {
     if (current_track_info.local_album_idx >= 0) {
       drawLocalAlbumArt(SCREEN_W / 2, NP_ART_CENTER_Y, current_track_info.local_album_idx);
     } else {
-      jpeg_np.open("/sd_card_albums/nowplaying.jpg", npOpen, npClose, npRead,
-                   npSeek, JPEGDraw_NowPlaying);
-      int w = jpeg_np.getWidth();
-      int h = jpeg_np.getHeight();
-      int scale = (w >= 400) ? JPEG_SCALE_QUARTER : ((w >= 200) ? JPEG_SCALE_HALF : 0);
-      np_img_x = (SCREEN_W / 2) - (w / 2);
-      np_img_y = NP_ART_CENTER_Y - (h / 2);
-      jpeg_np.decode(0, 0, scale);
-      jpeg_np.close();
+      if (jpeg_np.open("/sd_card_albums/nowplaying.jpg", npOpen, npClose, npRead,
+                       npSeek, JPEGDraw_NowPlaying)) {
+        int w = jpeg_np.getWidth();
+        int h = jpeg_np.getHeight();
+        int scale = (w >= 400) ? JPEG_SCALE_QUARTER : ((w >= 200) ? JPEG_SCALE_HALF : 0);
+        int dw = w >> scale;
+        int dh = h >> scale;
+        np_img_x = (SCREEN_W / 2) - (dw / 2);
+        np_img_y = NP_ART_CENTER_Y - (dh / 2);
+        jpeg_np.decode(0, 0, scale);
+        jpeg_np.close();
+      } else {
+        tft.fillRect((SCREEN_W - NP_SQUARE_ART_SIZE) / 2,
+                     NP_ART_CENTER_Y - NP_SQUARE_ART_SIZE / 2,
+                     NP_SQUARE_ART_SIZE, NP_SQUARE_ART_SIZE, fallback_color);
+      }
     }
   }
 
@@ -636,25 +643,6 @@ static void draw_now_playing() {
       }
       last_muted_badge = cur_muted;
   }
-
-  // ── SW4 seek preview (above progress bar) ──────────────────────────────
-  static bool last_seek_shown = false;
-  bool seek_on = input_sw4_seek_active();
-  if (seek_on) {
-      int32_t off_ms = input_sw4_seek_offset_ms();
-      bool neg = off_ms < 0;
-      int32_t abs_s = abs(off_ms) / 1000;
-      int mins = abs_s / 60, secs = abs_s % 60;
-      char seek_buf[16];
-      snprintf(seek_buf, sizeof(seek_buf), "SEEK %s%d:%02d", neg ? "-" : "+", mins, secs);
-      tft.fillRect(60, 213, 200, 10, TFT_BLACK);
-      tft.setTextDatum(MC_DATUM);
-      tft.setTextColor(tft.color565(160, 200, 255));
-      tft.drawString(seek_buf, SCREEN_W / 2, 218, GET_FONT_ID(8));
-  } else if (last_seek_shown) {
-      tft.fillRect(60, 213, 200, 10, TFT_BLACK);
-  }
-  last_seek_shown = seek_on;
 
   static uint32_t last_prog = 0xFFFFFFFF; // force first draw
   static int last_fill_w = -1;
@@ -932,5 +920,17 @@ void ui_toggle_view() {
     ui_show_now_playing();
   } else {
     ui_show_album_browser();
+  }
+}
+
+bool ui_is_now_playing() {
+  return current_view == VIEW_NOW_PLAYING;
+}
+
+void ui_play_centered_album() {
+  int ci = constrain((scroll_pos + SCROLL_SCALE / 2) / SCROLL_SCALE, 0, album_count - 1);
+  if (ci < album_count && strlen(album_uris[ci]) > 0) {
+    spotify_play_album(album_uris[ci]);
+    ui_show_now_playing();
   }
 }
