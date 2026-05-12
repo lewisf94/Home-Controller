@@ -94,14 +94,4 @@ void loop() {
   spotify_update();
   ui_update();
 
-  static unsigned long last_debug = 0;
-  if (millis() - last_debug > 500) {
-    last_debug = millis();
-    int16_t dummy_x, dummy_y;
-    bool t = get_touch_coords(&dummy_x, &dummy_y);
-    Serial.print("vol=");
-    Serial.print(current_volume_pct);
-    Serial.print(" T=");
-    Serial.println(t);
-  }
 }
