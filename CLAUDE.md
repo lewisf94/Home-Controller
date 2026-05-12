@@ -86,39 +86,38 @@ direct-wired encoder.
 |---|---|
 | SDA  | 27 |
 | SCL  | 22 |
-| INTB | 35 (input-only, no internal pull-up; MCP drives it push-pull active-LOW) |
+| INTA | 35 (input-only, no internal pull-up; MCP drives it push-pull active-LOW) |
 
 External pull-ups on SDA/SCL recommended (4.7 kΩ to 3.3V) — ESP32 internals
 are too weak for reliable I2C.
 
 ### Inputs (all on the MCP23017, active LOW with internal pull-ups)
 
-| Input | MCP pin | Code constant in `src/mcp_input.cpp` | Function |
+| Input   | MCP pin      | Code constant in `src/mcp_input.cpp` | Function |
 |---|---|---|---|
-| SW1 | GPA0 (pin 0)  | `PIN_BTN[0]` = 0  | Previous track |
-| SW2 | GPA1 (pin 1)  | `PIN_BTN[1]` = 1  | Play / Pause   |
-| SW3 | GPA2 (pin 2)  | `PIN_BTN[2]` = 2  | Next track     |
-| SW4 | GPA3 (pin 3)  | `PIN_BTN[3]` = 3  | Seek (single = +10s, double = -10s, hold + RE1 = manual scrub) |
-| RE2 CLK | GPB0 (pin 8)  | `PIN_RE2_CLK` = 8  | Volume encoder A |
-| RE2 DT  | GPB1 (pin 9)  | `PIN_RE2_DT`  = 9  | Volume encoder B |
-| RE2 SW  | GPB2 (pin 10) | `PIN_RE2_SW`  = 10 | Mute toggle |
-| RE1 SW  | GPB3 (pin 11) | `PIN_RE1_SW`  = 11 | View toggle (browser ↔ now-playing) |
-| RE1 DT  | GPB4 (pin 12) | `PIN_RE1_DT`  = 12 | Browser scroll encoder B |
-| RE1 CLK | GPB5 (pin 13) | `PIN_RE1_CLK` = 13 | Browser scroll encoder A |
+| SW1     | GPA0 (pin 0) | `PIN_SW1`     = 0 | Previous track |
+| SW2     | GPA1 (pin 1) | `PIN_SW2`     = 1 | Play / Pause   |
+| SW3     | GPA2 (pin 2) | `PIN_SW3`     = 2 | Next track     |
+| SW4     | GPA3 (pin 3) | `PIN_SW4`     = 3 | Seek (single = +10s, double = -10s, hold + RE1 = manual scrub) |
+| RE1 CLK | GPA4 (pin 4) | `PIN_RE1_CLK` = 4 | Browser scroll encoder A |
+| RE1 DT  | GPA5 (pin 5) | `PIN_RE1_DT`  = 5 | Browser scroll encoder B |
+| RE1 SW  | GPA6 (pin 6) | `PIN_RE1_SW`  = 6 | View toggle (browser ↔ now-playing) |
+
+RE2 (volume encoder + mute switch) is not fitted. `re2_get_delta()` and
+`re2_sw_get_event()` are stub no-ops in `mcp_input.cpp`.
 
 **Encoder decoding:** gray-code state machine indexed by `(last_ab << 2) | new_ab`,
-inherently rejects single-pin glitches. RE1 uses bits {5,4} of GPIOB; RE2 uses
-bits {0,1}. See `mcp_input.cpp:_update_encoder()`.
+inherently rejects single-pin glitches. RE1 uses bits {4,5} of Port A (GPA4/GPA5).
+See `mcp_input.cpp:_update_encoder()`.
 
 **Button debounce:** 30 ms stable-state per button; `event_pending` fires for
 exactly one `mcp_input_update()` tick on confirmed press edge. `btn_is_held()`
 returns the stable state (used for SW4 hold detection).
 
-**INTB usage:** `mcp.setupInterrupts(false, false, LOW)` — separate INTA/INTB,
-push-pull, active-LOW. Only Port B pins are configured for interrupt-on-CHANGE
-(encoders + their switches). Port A buttons are still polled each loop tick;
-this is a deliberate simplification — they're rare events and polling them
-costs ~1 I2C read/loop.
+**INTA usage:** all inputs consolidated onto Port A (GPA0–GPA6). INTA → GPIO35,
+push-pull, active-LOW. All seven pins have interrupt-on-CHANGE enabled so any
+button press or encoder edge fires INTA immediately. Poll path retained alongside
+interrupt path to keep debounce timers ticking. Port B unused.
 
 ---
 

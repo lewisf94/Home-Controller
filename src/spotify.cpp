@@ -48,6 +48,7 @@ static void download_album_art(const char* url) {
     WiFiClientSecure *client = new WiFiClientSecure;
     client->setInsecure();
     HTTPClient https;
+    https.setTimeout(2000);
     if (https.begin(*client, url)) {
         int httpCode = https.GET();
         if (httpCode == HTTP_CODE_OK) {
@@ -90,6 +91,7 @@ static void refresh_access_token() {
     client->setInsecure();
 
     HTTPClient https;
+    https.setTimeout(2000);
     if (https.begin(*client, "https://accounts.spotify.com/api/token")) {
         https.addHeader("Content-Type", "application/x-www-form-urlencoded");
         String auth_str = String(client_id) + ":" + String(client_secret);
@@ -154,6 +156,7 @@ void spotify_fetch_player_state() {
     client->setInsecure();
 
     HTTPClient https;
+    https.setTimeout(2000);
     if (https.begin(*client, "https://api.spotify.com/v1/me/player")) {
         https.addHeader("Authorization", "Bearer " + access_token);
         int httpCode = https.GET();
@@ -218,6 +221,7 @@ static bool _spotify_command(const char* method, const char* path,
     client->setInsecure();
 
     HTTPClient https;
+    https.setTimeout(2000);
     String url = String("https://api.spotify.com") + path;
     bool ok = false;
 

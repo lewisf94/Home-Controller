@@ -7,26 +7,19 @@
 #define MCP_ADDR      0x20   // A0=A1=A2=GND
 #define MCP_SDA_PIN   27
 #define MCP_SCL_PIN   22
-#define MCP_INTB_PIN  35     // INTB → GPIO35 (input-only, push-pull driver on MCP)
+#define MCP_INTA_PIN  35     // INTA → GPIO35 (input-only, push-pull driver on MCP)
 #define I2C_FREQ      100000
 
-// Port A (pins 0-7) — push buttons (active LOW)
-// SW1..SW4 wired in natural order: SW1=GPA0, SW2=GPA1, SW3=GPA2, SW4=GPA3.
-#define PIN_SW1  0
-#define PIN_SW2  1
-#define PIN_SW3  2
-#define PIN_SW4  3
-
-// Port B (pins 8-15) — encoders + encoder switches (active LOW)
-// RE1 (browser scroll + view toggle) on the bottom encoder — currently functional
-#define PIN_RE1_CLK  8   // GPB0
-#define PIN_RE1_DT   9   // GPB1
-#define PIN_RE1_SW   10  // GPB2
-// RE2 (volume + mute) on the top encoder — current hardware has an internal short
-// on CLK/DT to common; replace the encoder to restore RE2 functionality.
-#define PIN_RE2_SW   11  // GPB3
-#define PIN_RE2_DT   12  // GPB4
-#define PIN_RE2_CLK  13  // GPB5
+// All inputs on Port A (pins 0-6), active LOW with internal pull-ups.
+// Buttons: SW1=GPA0, SW2=GPA1, SW3=GPA2, SW4=GPA3
+// RE1 encoder: CLK=GPA4, DT=GPA5, SW=GPA6
+#define PIN_SW1      0
+#define PIN_SW2      1
+#define PIN_SW3      2
+#define PIN_SW4      3
+#define PIN_RE1_CLK  4   // GPA4
+#define PIN_RE1_DT   5   // GPA5
+#define PIN_RE1_SW   6   // GPA6
 
 // Button debounce
 #define BTN_DEBOUNCE_MS 30
@@ -41,7 +34,6 @@ struct EncState {
     int32_t count;
 };
 static EncState re1 = {0, 0};
-static EncState re2 = {0, 0};
 
 // Gray-code quadrature table: index = (last_ab << 2) | new_ab → delta
 // Full-step: only ±1 per complete 4-state cycle; glitches produce 0
@@ -60,16 +52,15 @@ struct BtnState {
     unsigned long last_change_ms;
 };
 
-static BtnState btns[4];     // SW1-SW4
+static BtnState btns[4];  // SW1-SW4
 static BtnState re1_sw;
-static BtnState re2_sw;
 
 // ── Internal helpers ───────────────────────────────────────────────────────
-static void _update_encoder(EncState &enc, uint8_t portb_byte,
+static void _update_encoder(EncState &enc, uint8_t porta,
                              uint8_t clk_bit, uint8_t dt_bit)
 {
-    uint8_t clk = (portb_byte >> clk_bit) & 1;
-    uint8_t dt  = (portb_byte >> dt_bit)  & 1;
+    uint8_t clk = (porta >> clk_bit) & 1;
+    uint8_t dt  = (porta >> dt_bit)  & 1;
     uint8_t new_ab = (clk << 1) | dt;
     enc.count += enc_table[(enc.last_ab << 2) | new_ab];
     enc.last_ab = new_ab;
@@ -92,27 +83,22 @@ static void _update_btn(BtnState &b, bool raw_active)
 
 static void _process_buttons(uint8_t porta)
 {
-    // SW1..SW4 wired straight to GPA0..GPA3 — btn[i] maps to bit i.
     for (uint8_t i = 0; i < 4; i++) {
-        _update_btn(btns[i], !((porta >> i) & 1));  // active LOW
+        _update_btn(btns[i], !((porta >> i) & 1));  // active LOW, SW1=bit0..SW4=bit3
     }
 }
 
-static void _process_encoders(uint8_t portb)
+static void _process_encoders(uint8_t porta)
 {
-    // RE1 — CLK=bit0, DT=bit1 (GPIOB bits 0, 1) — bottom encoder, working
-    _update_encoder(re1, portb, 0, 1);
-    // RE2 — CLK=bit5, DT=bit4 (GPIOB bits 5, 4) — top encoder, broken until replaced
-    _update_encoder(re2, portb, 5, 4);
+    // RE1 — CLK=GPA4 (bit4), DT=GPA5 (bit5)
+    _update_encoder(re1, porta, 4, 5);
 
-    // Encoder push-switches (active LOW).
-    // Guard: only register a switch press when the encoder's CLK and DT are both
-    // HIGH (encoder at rest). When the shared GND contact is active during rotation
-    // it drags SW LOW too — this rejects those false triggers.
-    bool re1_still = ((portb >> 0) & 1) && ((portb >> 1) & 1); // CLK=1 AND DT=1
-    bool re2_still = ((portb >> 5) & 1) && ((portb >> 4) & 1); // CLK=1 AND DT=1
-    _update_btn(re1_sw, !((portb >> 2) & 1) && re1_still);
-    _update_btn(re2_sw, !((portb >> 3) & 1) && re2_still);
+    // Encoder push-switch (active LOW).
+    // Guard: only register SW press when CLK and DT are both HIGH (encoder at rest).
+    // When the shared GND contact is active during rotation it drags SW LOW too —
+    // this rejects those false triggers.
+    bool re1_still = ((porta >> 4) & 1) && ((porta >> 5) & 1);
+    _update_btn(re1_sw, !((porta >> 6) & 1) && re1_still);
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -128,38 +114,32 @@ void mcp_input_init()
     }
     mcp_ok = true;
 
-    // Port A: push buttons (pins 0-3) — input with pull-ups
-    for (uint8_t p = PIN_SW1; p <= PIN_SW4; p++) {
+    // All active pins (PA0-PA6): INPUT_PULLUP
+    for (uint8_t p = PIN_SW1; p <= PIN_RE1_SW; p++) {
         mcp.pinMode(p, INPUT_PULLUP);
     }
 
-    // Port B: encoders + switches (pins 8-13) — input with pull-ups
-    for (uint8_t p = PIN_RE1_CLK; p <= PIN_RE2_CLK; p++) {
-        mcp.pinMode(p, INPUT_PULLUP);
-    }
-
-    // Configure INTB for Port B: separate ports, push-pull output, active LOW
+    // INTA for Port A: no mirroring (all inputs on one port), push-pull, active LOW.
+    // Interrupt-on-change for all active pins so any press or encoder step fires INTA.
     mcp.setupInterrupts(false, false, LOW);
-    for (uint8_t p = PIN_RE1_CLK; p <= PIN_RE2_CLK; p++) {
+    for (uint8_t p = PIN_SW1; p <= PIN_RE1_SW; p++) {
         mcp.setupInterruptPin(p, CHANGE);
     }
 
     // Clear any pending interrupt at startup
     mcp.readGPIOAB();
-    if (digitalRead(MCP_INTB_PIN) == LOW) {
+    if (digitalRead(MCP_INTA_PIN) == LOW) {
         mcp.readGPIOAB();
     }
 
-    // GPIO35: input-only, no pull-up needed (INTB is push-pull)
-    pinMode(MCP_INTB_PIN, INPUT);
+    // GPIO35: input-only, no pull-up needed (INTA is push-pull)
+    pinMode(MCP_INTA_PIN, INPUT);
 
-    // Seed encoder last-state from actual pin levels to avoid a false edge
-    uint16_t ab = mcp.readGPIOAB();
-    uint8_t portb = (ab >> 8) & 0xFF;
-    re1.last_ab = (((portb >> 0) & 1) << 1) | ((portb >> 1) & 1);
-    re2.last_ab = (((portb >> 5) & 1) << 1) | ((portb >> 4) & 1);
+    // Seed encoder last-state from actual pin levels to avoid a false edge on boot
+    uint8_t porta = mcp.readGPIO(0);
+    re1.last_ab = (((porta >> 4) & 1) << 1) | ((porta >> 5) & 1);
 
-    Serial.println("MCP23017 ready (SDA=27, SCL=22, INTB=35)");
+    Serial.println("MCP23017 ready (SDA=27, SCL=22, INTA=35)");
 }
 
 // ── Debug helpers ──────────────────────────────────────────────────────────
@@ -178,43 +158,30 @@ void mcp_input_update()
     }
 
     static uint8_t last_porta = 0xFF;
-    static uint8_t last_portb = 0xFF;
 
-    uint16_t ab;
-    bool intb_low = (digitalRead(MCP_INTB_PIN) == LOW);
+    bool inta_low = (digitalRead(MCP_INTA_PIN) == LOW);
 
-    if (intb_low) {
-        ab = mcp.readGPIOAB();
-        uint8_t portb = (ab >> 8) & 0xFF;
-        uint8_t porta = ab & 0xFF;
+    if (inta_low) {
+        // Interrupt fired — read and clear immediately. Handles both encoder edges
+        // and button presses since all PA0-PA6 have interrupt-on-change enabled.
+        uint8_t porta = mcp.readGPIO(0);
 
-        // Print on every INTB trigger — these are the encoder/switch events
-        Serial.print("[INTB] ");
+        Serial.print("[INTA] ");
         _dbg_print_bits("PA", porta);
-        _dbg_print_bits("PB", portb);
-        // Label individual Port B pins
-        Serial.printf("RE1_CLK=%d RE1_DT=%d RE1_SW=%d RE2_SW=%d RE2_DT=%d RE2_CLK=%d\n",
-                      (portb >> 0) & 1, (portb >> 1) & 1,
-                      (portb >> 2) & 1, (portb >> 3) & 1,
-                      (portb >> 4) & 1, (portb >> 5) & 1);
+        Serial.printf("SW1=%d SW2=%d SW3=%d SW4=%d RE1_CLK=%d RE1_DT=%d RE1_SW=%d\n",
+                      !((porta >> 0) & 1), !((porta >> 1) & 1),
+                      !((porta >> 2) & 1), !((porta >> 3) & 1),
+                      (porta >> 4) & 1, (porta >> 5) & 1, (porta >> 6) & 1);
 
-        if (porta != last_porta) {
-            // SW1..SW4 = bits 0..3 (natural order)
-            Serial.printf("[BTN ] PA changed: SW1=%d SW2=%d SW3=%d SW4=%d\n",
-                          !((porta >> 0) & 1), !((porta >> 1) & 1),
-                          !((porta >> 2) & 1), !((porta >> 3) & 1));
-            last_porta = porta;
-        }
-        if (portb != last_portb) {
-            last_portb = portb;
-        }
+        if (porta != last_porta) last_porta = porta;
 
-        _process_encoders(portb);
+        _process_encoders(porta);
         _process_buttons(porta);
     } else {
-        uint8_t porta = mcp.readGPIO(0) & 0xFF;
+        // No interrupt — poll Port A to keep debounce timers ticking and catch
+        // any button state that didn't produce a clean interrupt edge.
+        uint8_t porta = mcp.readGPIO(0);
         if (porta != last_porta) {
-            // SW1..SW4 = bits 0..3 (natural order)
             Serial.printf("[POLL] PA changed: SW1=%d SW2=%d SW3=%d SW4=%d (raw=0x%02X)\n",
                           !((porta >> 0) & 1), !((porta >> 1) & 1),
                           !((porta >> 2) & 1), !((porta >> 3) & 1), porta);
@@ -223,25 +190,21 @@ void mcp_input_update()
         _process_buttons(porta);
     }
 
-    // Periodic heartbeat: raw state + INTB level every 2 s
+    // Periodic heartbeat every 2 s
     static unsigned long _hb_ms = 0;
     if (millis() - _hb_ms > 2000) {
         _hb_ms = millis();
-        uint16_t snap = mcp.readGPIOAB();
-        Serial.printf("[HB  ] PA=0x%02X PB=0x%02X INTB=%d RE1cnt=%d RE2cnt=%d\n",
-                      snap & 0xFF, (snap >> 8) & 0xFF,
-                      digitalRead(MCP_INTB_PIN), re1.count, re2.count);
+        uint8_t snap = mcp.readGPIO(0);
+        Serial.printf("[HB  ] PA=0x%02X INTA=%d RE1cnt=%d\n",
+                      snap, digitalRead(MCP_INTA_PIN), re1.count);
     }
 
-    // Log every event as it fires
+    // Log events as they fire
     if (re1_sw.event_pending) Serial.println("[EVT ] RE1-SW pressed (view toggle)");
-    if (re2_sw.event_pending) Serial.println("[EVT ] RE2-SW pressed (mute)");
     for (uint8_t i = 0; i < 4; i++)
         if (btns[i].event_pending) Serial.printf("[EVT ] SW%d pressed\n", i + 1);
 
-    // Log encoder movement
     if (re1.count != 0) Serial.printf("[ENC ] RE1 accumulated delta=%d\n", re1.count);
-    if (re2.count != 0) Serial.printf("[ENC ] RE2 accumulated delta=%d\n", re2.count);
 }
 
 int32_t re1_get_delta()
@@ -251,12 +214,7 @@ int32_t re1_get_delta()
     return v;
 }
 
-int32_t re2_get_delta()
-{
-    int32_t v = re2.count;
-    re2.count = 0;
-    return v;
-}
+int32_t re2_get_delta()   { return 0; }  // RE2 not fitted
 
 bool btn_get_event(uint8_t i)
 {
@@ -271,4 +229,4 @@ bool btn_is_held(uint8_t i)
 }
 
 bool re1_sw_get_event() { return re1_sw.event_pending; }
-bool re2_sw_get_event() { return re2_sw.event_pending; }
+bool re2_sw_get_event() { return false; }  // RE2 not fitted
