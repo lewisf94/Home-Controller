@@ -184,10 +184,39 @@ art every frame`.
    re-decoded from SD ~30×/sec for zero visual benefit (it can't rotate). Now
    gated on `initial_draw || last_square_state != np_show_square_art` only.
 
-### Awaiting hardware verification
+### Known bugs open (as of latest commit)
 
-These are all in `main` but not yet tested on physical hardware. See
-`docs/TESTING.md` for the verification checklist.
+Hardware-verified but not yet fixed. See `docs/ROADMAP.md` Phase 1 for
+full analysis and fix options.
+
+1. **Album art blank on second now-playing visit** — JPEGDEC library
+   state-corruption bug on consecutive `open()`/`decode()` calls on the
+   same instance. Fix: make `jpeg_np` a local variable inside the decode
+   block (2-line change).
+2. **Encoder sluggish under fast spin** — `mcp_input_update()` Serial.printf
+   flood fills the TX FIFO and blocks the loop ~60 ms per event. Fix: gate
+   all hot-path prints behind `#define MCP_DEBUG`.
+3. **Volume PUT doesn't change phone volume** — Spotify API limitation on
+   Android/iOS. Works on desktop / Spotify Connect speakers. Fix comes in
+   Phase 3 (HA integration).
+
+---
+
+## Project roadmap (summary)
+
+Full detail in `docs/ROADMAP.md`. Three phases:
+
+1. **Phase 1 — Bug fixes (Arduino/CYD):** JPEG blank, serial flood, poll
+   interval bump. Short items, do before or during IDF port.
+2. **Phase 2 — ESP-IDF port (CYD hardware):** same hardware, same features,
+   ESP-IDF 5.x + LVGL. Runs in `cyd-idf/` subfolder alongside `cyd-arduino/`.
+3. **Phase 3 — Home Assistant integration (on IDF build):** Pi 5 runs HA OS
+   with Spotify integration. ESP32 speaks HA WebSocket instead of Spotify API
+   directly. Eliminates OAuth refresh, fixes volume, enables real-time push
+   state. See `docs/ROADMAP.md` Phase 3 for WebSocket handshake and HA setup.
+
+Future: ESP32-P4 migration (board not yet arrived). The HA client component
+from Phase 3 carries over untouched.
 
 ---
 

@@ -1,203 +1,305 @@
 # Roadmap
 
-Phased improvement plan for the Music-Controller project. Phase 1 + 1.5 are
-shipped (see `git log` and `CLAUDE.md`). Phase 2 + 3 are not yet started.
+Three active phases. Arduino/CYD build is the live product while IDF port and
+HA integration are the target end-state.
 
 ---
 
-## Phase 2 — Rendering performance + UI polish (NEXT)
+## Current state (Arduino / PlatformIO on CYD)
 
-Goal: eliminate the album-browser scroll lag and fix small rendering rough
-edges. No visual redesign yet — that's Phase 3.
+Shipped and working on hardware (`main` branch):
+- Album browser (SD thumbnails, encoder scroll, tap-to-play)
+- Now-playing screen (JPEG album art, title/artist/album, progress bar)
+- Spotify Web API: auth refresh, player state poll every 2 s, play/pause/next/prev/seek/shuffle/volume
+- MCP23017 IO expander: RE1 encoder (scroll + mute), 4 buttons (prev/play/next/view-toggle)
+- INTA interrupt on GPIO35 for button responsiveness
+- Volume HUD, mute badge, WiFi signal indicator
 
-### 2A — Album-browser scroll performance (the big one)
-
-**Root cause:** `CACHE_SLOTS = 1` in `ui.cpp` means only one 80×80 RGB565
-thumbnail (12.5 KB) lives in RAM at a time. Three albums are visible in the
-browser simultaneously, so `drawAlbumArt()` is forced to `loadAlbumImage()`
-and SD-read **two extra thumbnails per frame** during scrolling. Fast scroll
-= constant 12.5 KB SD blocking reads. SD reads are ~5–15 ms on a fast card,
-worse on a slow one — this is the dominant cost.
-
-Code references:
-- Cache definition: `ui.cpp:92-95`
-- Cache loader: `ui.cpp:375-419` (`loadAlbumImage`)
-- Browser draw loop: `ui.cpp:485-494` (calls `drawAlbumArt` per visible album)
-
-**Recommended approach: A + B + C combined.**
-
-#### Option A — Increase cache slots from 1 → 3
-
-- `#define CACHE_SLOTS 3`
-- Each slot is 12.5 KB → +25 KB heap at boot
-- Steady-state covers all visible albums → zero misses when scroll is parked
-- The existing `if (ESP.getFreeHeap() < 20000)` heap-guard at `ui.cpp:102`
-  needs raising slightly (or kept dynamic — bail per-slot rather than blanket)
-- **Risk:** TLS handshake to `api.spotify.com` needs ~25 KB transient. Watch
-  free-heap printout in serial after this change. Easy to roll back to 2 slots
-  if needed
-- **Effort:** ~5 LoC
-
-#### Option B — Defer SD loads while scroll velocity is high
-
-- In `ui_update()`, track scroll velocity (Δ`scroll_pos` per frame)
-- While velocity > threshold, draw a placeholder colored rect (or a dimmed
-  thumbnail of the last cached album) for any non-cached visible album
-- Only call `loadAlbumImage()` for non-cached albums when velocity drops below
-  threshold (i.e., user has stopped flicking)
-- **Pro:** scrolling feels instant regardless of catalog size; UI never blocks
-- **Con:** during fast scroll the placeholders look ugly. Mitigate with a
-  subtle gradient or 1-px outline so it reads as "loading"
-- **Effort:** ~30 LoC, all in `ui.cpp`
-
-#### Option C — Preload neighbors on scroll-stop
-
-- After scroll settles (velocity = 0 for ~150 ms), opportunistically call
-  `loadAlbumImage(centerIndex - 1)` and `loadAlbumImage(centerIndex + 1)`
-- Cheap; only useful with `CACHE_SLOTS >= 3`
-- **Effort:** ~10 LoC
-
-#### Option D — Stretch: enable PSRAM, cache all albums
-
-- Most CYD revisions ship with 4–8 MB of PSRAM but it is **not enabled** in
-  the current `platformio.ini` (just `board = esp32dev`)
-- 100 albums × 12.5 KB = 1.25 MB → fits trivially
-- Pre-load every thumbnail at boot into PSRAM; SD becomes a one-shot indexer
-- **Pro:** zero SD reads after boot. Album browser is butter-smooth at any speed
-- **Con:** requires PSRAM-enabled board variant (`board_build.arduino.memory_type
-  = qio_opi` or similar). Risk of breaking the build until partition/board
-  config is right. Need to identify exact CYD variant first
-- **Effort:** ~1 hour of build-config + ~40 LoC of preload logic
-- **Decision pending:** verify PSRAM presence on Lewis's specific CYD before
-  committing to this path
-
-### 2B — Album-browser redraw gating
-
-Currently `draw_album_browser()` clears the album band on every scroll-pos
-change. Combined with the SD reads above, this is wasteful. Once 2A lands,
-verify the redraw is still gated correctly by `last_drawn_scroll` (see
-`ui.cpp:476-478`).
-
-### 2C — Vinyl angle quantisation
-
-`current_rotation_angle` increments by `dt * 0.000628` rad/ms in `ui_update()`.
-The vinyl draw is gated on `abs(angle - last_rendered_angle) > 0.02`
-(`~1.1°`). Quantising to 5° steps cuts the `drawPixel` redraw-loop work
-roughly 5× while remaining visually smooth at 30 fps cap. See `ui.cpp` near
-`last_rendered_angle`.
-
-### 2D — Long-text ellipsis
-
-Album / track / artist strings longer than ~24 chars overflow the bottom of
-now-playing and clip into the progress bar. Add a helper that truncates with
-"…" once string width exceeds available pixel budget. TFT_eSPI has
-`tft.textWidth()` — use it.
-
-### 2E — Paused / nothing-playing state
-
-When Spotify returns no active device or `is_playing=false` for an extended
-period, draw_now_playing renders the last known track ghost-state. Add an
-explicit "Nothing playing" centred-text state that takes precedence.
-
-### 2F — Progress-bar edge cases
-
-- Clamp to 100% on track end (currently underflows the wrap)
-- Reset cleanly across track changes (currently relies on `progress_ms <
-  last_prog` heuristic — fine, but worth a comment)
-
-### 2G — Magic-number cleanup
-
-Several layout numbers in `draw_now_playing()` are still inline (e.g., 213,
-218 for the seek-preview region). Extract to `#define`s in the layout block
-near the top of `ui.cpp`.
-
-### Phase 2 verification
-
-1. Scroll through full catalog at maximum encoder speed → UI never blocks > 50 ms
-2. Free heap after Spotify auth completes is still > 30 KB
-3. Long album / artist / track names display with "…" not clipped
-4. Pause Spotify on phone → "Nothing playing" appears within 4 s
-5. Track end → progress bar shows 100% briefly, not 99% or wraparound
+Known issues still open (see below, Phase 1):
 
 ---
 
-## Phase 3 — Minimalist / Apple-style visual refresh (LATER)
+## Phase 1 — Fix known CYD/Arduino bugs (do before or during IDF port)
 
-Aesthetic goal: high contrast, generous whitespace, smooth easing, clean type
-hierarchy. Don't start until Phase 2 is shipped and the perf baseline is good.
+These are confirmed root causes with clear fixes. Short work items.
 
-### 3A — Colour palette
+### 1A — Album art blank on second visit to now-playing  [HIGH]
 
-| Token | Hex | RGB565 | Usage |
-|---|---|---|---|
-| `BG`            | `#000000` | 0x0000 | Backgrounds |
-| `TEXT_PRIMARY`  | `#FFFFFF` | 0xFFFF | Titles, primary readouts |
-| `TEXT_SECONDARY`| `#8E8E93` | 0x8C71 | Album, artist, hints |
-| `ACCENT`        | `#0A84FF` | 0x041F | Apple-blue progress fill, active states |
-| `ACCENT_ALT`    | `#1DB954` | 0x1DC9 | Spotify-green alternative if user prefers |
-| `WARN`          | `#FF453A` | 0xFA28 | Mute badge |
+**Root cause:** `jpeg_np` is a file-scoped `JPEGDEC` instance. JPEGDEC has a
+confirmed library bug (GitHub issue #6 — "decode reset issue"): consecutive
+calls to `open()` / `decode()` on the same object leave stale VLC buffer
+pointers from the previous decode. Second call appears to succeed but decodes
+to a blank or crashes silently.
 
-Gather these as `#define`s at the top of `ui.cpp`.
+**Fix A (recommended — trivial):** declare `JPEGDEC jpeg_np` as a local
+variable inside the decode block in `draw_now_playing()`, not as a file-scoped
+global. Fresh object every call = clean state every time.
 
-### 3B — Rounded album art
+**Fix B (better performance too):** decode the JPEG once on download, write raw
+RGB565 into a heap buffer, blit from the buffer on subsequent view switches.
+Eliminates the ~800 ms decode cost on every switch. Costs ~51 KB heap
+(160×160 × 2 bytes) — needs heap verification after Spotify TLS is live.
 
-- Software corner mask (8 px radius) drawn after `drawLocalAlbumArt`
-- Same effect on now-playing square art
-- Implementation: precompute the corner-pixel offsets at startup, paint them
-  black post-draw
+Start with Fix A, evaluate B if redraw speed matters.
 
-### 3C — Pill-shaped progress bar
+### 1B — Serial debug flood causes encoder sluggishness  [HIGH]
 
-- Replace `tft.drawRect` outline + `tft.fillRect` fill with a wider bar (10 px
-  tall instead of 6) and rounded caps drawn via `fillCircle` at each end
-- Fill colour = `ACCENT`, track = `TEXT_SECONDARY` dimmed
+**Root cause:** `mcp_input_update()` prints multiple `[INTA]` / `[POLL]` /
+`[HB ]` lines per interrupt event. At 115 200 baud the 128-byte TX FIFO
+fills and the CPU blocks for ~60 ms per event group — longer than the
+encoder's gray-code window. Fast spins are coalesced into a single stale
+GPIO read, missing intermediate steps.
 
-### 3D — Larger now-playing art
+**Fix:** remove or gate all `Serial.printf` in `mcp_input_update()` behind a
+compile-time `#define MCP_DEBUG`. Production builds have zero serial output
+in the hot path. The heartbeat `[HB ]` every 2 s can stay during development.
 
-- Centre-fill layout: art up to 160×160 (currently 120×120)
-- Move title down 10 px to compensate
+### 1C — Volume PUT doesn't change phone volume  [LOW — Spotify limitation]
 
-### 3E — Improved metadata hierarchy
+**Root cause:** Confirmed Spotify Web API behaviour.  
+- Android: `volume_percent` in GET always returns 100; SET is silently ignored.  
+- iOS: returns 403 "Player command failed: Cannot control device volume" on
+  some configurations.  
+- Works reliably on: Spotify desktop, web player, Spotify Connect hardware.
 
-Currently:
-- Top: album (small, grey)
-- Centre: art
-- Bottom-low: title (medium, white)
-- Bottom-lower: artist (small, grey)
+The `[VOL ] set X% → ok/FAILED` Serial line (added in latest commit) will
+confirm whether the HTTP call fires and what Spotify returns. If "ok" but
+phone volume is unchanged, this is a Spotify mobile client restriction, not
+our code.
 
-Apple-music-like ordering instead:
-- **Title** (Font4, white, large, top of metadata stack)
-- **Artist** (Font2, secondary)
-- **Album** (Font2, secondary, smallest)
+**Fix options:**
+- Accept it — volume knob works when casting to a Spotify Connect speaker.
+- Route volume through Home Assistant instead (Phase 3 — HA handles device
+  targeting correctly and the limitation goes away).
 
-### 3F — HUD redesign
+### 1D — Spotify poll blocks loop every 2 s  [MEDIUM]
 
-Current HUD is a 200×6 bar + text on a hard black strip. Refresh to:
-- Pill-shaped 220×8 bar with rounded caps
-- Centred percentage on top, bar below
-- Subtle bottom drop-shadow line in `TEXT_SECONDARY` to separate from background
+Every `spotify_fetch_player_state()` HTTP call (up to 2 s at current timeout)
+blocks `mcp_input_update()`, causing encoder transitions generated during the
+block to coalesce into a single read. Even with 1B fixed, this cap remains.
 
-### 3G — SF-style typography (within constraints)
+**Fix options (pick one):**
+- Increase poll interval from 2 s to 4–5 s. Playback controls still fire
+  immediately on button press; only the GET poller is lazier. One line change.
+- FreeRTOS dual-core: pin Spotify HTTP on Core 0, UI + input on Core 1.
+  Requires a mutex on `current_track_info`. CLAUDE.md flags this as opt-in.
 
-TFT_eSPI's bitmap fonts are limited (Font2 = 16 px body, Font4 = 26 px title,
-Font6 = 48 px digits). No custom glyphs without flash budget. Use the largest
-sizes for titles, smallest for hints.
-
-### Phase 3 verification
-
-Visual review only — Lewis decides when it looks right.
+Recommended: bump poll to 4 s first. If encoder still lags, do FreeRTOS split.
 
 ---
 
-## Open questions / parking lot
+## Phase 2 — ESP-IDF port (same CYD hardware, same feature set)
 
-- **PSRAM on Lewis's CYD revision?** Need to identify board exactly before
-  Phase 2 Option D
-- **FreeRTOS Core 0 task for blocking Spotify HTTPS?** Major architectural
-  change, deferred indefinitely. Current debounce + optimistic local updates
-  cover the worst UX pain
-- **External pull-up resistors on SDA/SCL?** Recommended (4.7 kΩ to 3.3V) but
-  not yet confirmed installed. Worth a probe if I2C ever flakes
-- **Track-change detection** currently relies on `track_info_updated` flag
-  toggled by `spotify_fetch_currently_playing()`. Consider hashing
-  title+album to detect changes more robustly if the same track restarts
+**Goal:** identical product running on ESP-IDF 5.x instead of Arduino, as
+the foundation for Phase 3 (HA integration). Phase 3 will be implemented
+directly in the IDF build.
+
+**Why IDF now:**
+- ESP-IDF is required for the ESP32-P4 migration later (separate project).
+- HA integration via WebSocket (Phase 3) fits the IDF event-loop model
+  naturally; it's awkward to retrofit into Arduino's blocking loop.
+- LVGL (the display layer used in IDF) will be needed for the P4's
+  MIPI-DSI display too — learn it once.
+
+### Repo structure
+
+When work starts, current files move into a subfolder and a new IDF project
+lives alongside it:
+
+```
+Music-Controller/
+├── cyd-arduino/          # current Arduino build, frozen/maintained
+│   ├── src/  include/  platformio.ini ...
+│   └── README.md
+├── cyd-idf/              # new IDF build
+│   ├── main/
+│   ├── components/
+│   ├── sdkconfig.defaults
+│   ├── partitions.csv
+│   ├── idf_component.yml
+│   └── CMakeLists.txt
+├── docs/
+│   ├── ROADMAP.md        (this file)
+│   ├── TESTING.md
+│   └── PORT-NOTES.md     (IDF gotchas as discovered)
+├── CLAUDE.md
+└── README.md
+```
+
+### Architecture decisions
+
+**Display:** `esp_lcd_panel_io_spi` + ILI9341 managed component, backlight via
+LEDC PWM on GPIO21.
+
+**UI layer:** LVGL via `esp_lvgl_port`. Rationale: esp_lcd gives only
+`draw_bitmap()` — no text, fonts, or JPEG without LVGL or a large custom
+graphics lib. LVGL is the practical choice and reusable on P4 later.
+LVGL draw buffers: two 320×20 px buffers in internal RAM (no PSRAM on CYD).
+
+**Touch:** `esp_lcd_touch_xpt2046` managed component if mature; otherwise
+~100-line custom SPI driver on SPI3_HOST (same pin mapping as today).
+
+**MCP23017:** custom I2C driver (~150 lines) mapping directly from current
+`mcp_input.cpp`. The gray-code state machine and debounce logic copy over
+unchanged.
+
+**Networking:** `esp_wifi` STA mode + `esp_http_client` for Spotify.
+In Phase 3 this becomes `esp_websocket_client` to HA instead.
+
+**JSON:** `bblanchon/ArduinoJson` IDF-native managed component. Keeps current
+parsing code largely unchanged. Faster to port than switching to cJSON.
+
+### IDF component manifest (`idf_component.yml`)
+
+```yaml
+dependencies:
+  idf: ">=5.3.0"
+  espressif/esp_lcd_ili9341: "^2.0.0"
+  lvgl/lvgl: "^9.2.0"
+  espressif/esp_lvgl_port: "^2.4.0"
+  bblanchon/ArduinoJson: "^7.0.0"
+```
+
+Touch component added once XPT2046 maturity is confirmed.
+
+### `sdkconfig.defaults`
+
+```
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_COLOR_16_SWAP=y
+CONFIG_LV_USE_JPG=y
+CONFIG_FATFS_LFN_HEAP=y
+```
+
+No PSRAM — `CONFIG_SPIRAM` stays disabled.
+
+### Migration phases (each is a flashable checkpoint)
+
+| # | Goal | Done when |
+|---|---|---|
+| 0 | `idf.py create-project`; blink backlight; serial log | "hello" in monitor |
+| 1 | esp_lcd + ILI9341; fill screen with colour cycle | Red → green → blue |
+| 2 | LVGL init; "Hello CYD" label centred on screen | Text on display |
+| 3 | XPT2046 driver; LVGL input device; drag a widget | Square follows finger |
+| 4 | WiFi STA connect | IP address logged |
+| 5 | HTTPS to Spotify; token refresh; GET player state | Track title logged |
+| 6 | Download nowplaying.jpg; display via `lv_image` | Album art on screen |
+| 7 | SD mount; load metadata.csv + bin thumbnails as raw RGB565 | Static browser grid |
+| 8 | LVGL scrollable container + snap; tap → spotify_play_album | Tap plays album |
+| 9 | MCP23017 I2C driver; LVGL encoder input device | Encoder scrolls browser |
+| 10 | Button dispatch; volume debounce; mute toggle | All controls working |
+| 11 | Feature parity: WiFi indicator, mute badge, play/pause flash, volume HUD | Matches Arduino build |
+
+---
+
+## Phase 3 — Home Assistant integration (on the IDF build)
+
+**Goal:** replace the direct Spotify Web API calls with HA's media player
+service running on a Pi 5 (Home Assistant OS). The device stops caring about
+Spotify OAuth and device selection — HA owns that.
+
+**Why HA instead of direct Spotify:**
+- Volume control works reliably (HA handles device targeting; Android/iOS
+  volume restriction goes away).
+- No OAuth refresh logic on the device: one static HA long-lived access token,
+  never expires.
+- Works with any future music source (local files, Tidal, Apple Music) without
+  changing device firmware.
+- Real-time state push via WebSocket instead of polling every 2–4 s.
+
+### Architecture
+
+```
+ESP32 CYD ──WebSocket──► Pi 5 (HA OS) ──Spotify Integration──► Spotify
+                          (media_player.spotify_*)
+```
+
+**ESP32 → HA:** `esp_websocket_client` connected to `ws://pi5.local:8123/api/websocket`.
+
+**Auth:** one static HA long-lived access token stored in NVS (written once
+via serial command or hardcoded in `secrets.h` equivalent).
+
+**State updates (inbound):** subscribe to `state_changed` events for the
+Spotify media player entity. HA pushes every track change, play/pause, volume
+change in real time. No polling.
+
+**Commands (outbound):** call HA services via WebSocket:
+- `media_player.media_play_pause`
+- `media_player.media_next_track`
+- `media_player.media_previous_track`
+- `media_player.volume_set` (with `volume_level: 0.0–1.0`)
+- `media_player.shuffle_set`
+- `media_player.play_media` (for album browser: pass Spotify URI as `media_content_id`)
+
+**Album art:** `entity_picture` in HA's state attributes is a relative URL
+to the HA server (proxied from Spotify). Download it via `esp_http_client`
+to `GET http://pi5.local:8123{entity_picture}`. No TLS required for local
+network — faster than Spotify CDN direct.
+
+### WebSocket handshake sequence
+
+```
+ESP32 connects → receives {"type":"auth_required"}
+→ sends {"type":"auth","access_token":"<token>"}
+→ receives {"type":"auth_ok"}
+→ sends {"type":"subscribe_events","event_type":"state_changed","id":1}
+→ receives {"type":"result","success":true}
+→ ongoing: {"type":"event","event":{"data":{"new_state":{...}}}}
+```
+
+### HA setup required (on Pi 5)
+
+1. Install Spotify integration in HA: Settings → Integrations → Spotify.
+   Authenticate once via OAuth in the browser.
+2. Note the entity ID: typically `media_player.spotify_<username>`.
+3. Create a long-lived access token: Profile → Long-Lived Access Tokens →
+   Create Token. Store in device `secrets.h` / NVS.
+4. Confirm Pi 5 hostname is reachable at `homeassistant.local` or use IP.
+
+### Migration within Phase 3
+
+Build on top of the Phase 2 IDF build:
+1. Replace `spotify/` component with `ha_client/` component.
+2. `ha_client` opens WebSocket, handles auth handshake, subscribes to events.
+3. State updates from HA feed directly into `current_track_info` struct
+   (same struct as today).
+4. Command functions (`spotify_next_track` etc.) become `ha_next_track` etc.,
+   calling HA services instead of Spotify endpoints.
+5. Album art URL becomes the HA-proxied URL — no Spotify CDN, no TLS.
+
+UI and input code is untouched — they still read `current_track_info` and
+call the same command functions, just from a different backend.
+
+---
+
+## Future — ESP32-P4 migration (not started, board not yet arrived)
+
+When the Waveshare ESP32-P4-WIFI6 (4.3" 480×800, capacitive touch) board
+arrives:
+
+- New project: `p4-idf/` alongside `cyd-idf/`
+- Display: MIPI-DSI via `esp_lcd_mipi_dsi` (not SPI)
+- Touch: GT911 capacitive via `esp_lcd_touch_gt911` managed component
+- WiFi: ESP-Hosted via onboard ESP32-C6 (not standard `esp_wifi.h`)
+- LVGL: same library, different resolution (480×800), new layout
+- Backend: Phase 3 HA integration carries over unchanged
+- Hardware: total redesign (no MCP23017 needed — P4 has sufficient GPIO;
+  touch replaces most physical controls)
+
+The `ha_client/` component from Phase 3 is the one piece that ports to P4
+with zero changes.
+
+---
+
+## Parking lot / open questions
+
+- **PSRAM on Lewis's CYD revision?** Not confirmed. If present, Phase 1D
+  performance fix (cache all thumbnails at boot) becomes easy.
+- **External I2C pull-ups (4.7 kΩ to 3.3 V) on SDA/SCL?** Recommended but
+  not confirmed installed. Probe if I2C ever flakes.
+- **Local audio via P4 onboard codec?** Future stretch — board has an audio
+  codec. Could run librespot (Spotify Connect client) locally instead of
+  being a remote control. Deferred well past Phase 3.
