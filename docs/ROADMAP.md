@@ -23,36 +23,62 @@ Known issues still open (see below, Phase 1):
 
 These are confirmed root causes with clear fixes. Short work items.
 
-### 1A — Album art blank on second visit to now-playing  [HIGH]
+### 1A — Album art blank on second visit to now-playing  [SHIPPED — needs verification]
 
-**Root cause:** `jpeg_np` is a file-scoped `JPEGDEC` instance. JPEGDEC has a
+**Root cause:** `jpeg_np` was a file-scoped `JPEGDEC` instance. JPEGDEC has a
 confirmed library bug (GitHub issue #6 — "decode reset issue"): consecutive
 calls to `open()` / `decode()` on the same object leave stale VLC buffer
-pointers from the previous decode. Second call appears to succeed but decodes
-to a blank or crashes silently.
+pointers from the previous decode.
 
-**Fix A (recommended — trivial):** declare `JPEGDEC jpeg_np` as a local
-variable inside the decode block in `draw_now_playing()`, not as a file-scoped
-global. Fresh object every call = clean state every time.
+**Fix applied:** heap-allocate a fresh `JPEGDEC` (`new`/`delete`) per call in
+`draw_now_playing()`. Stack-local was tried first but the object is too
+large and overflows the loop task's default stack (caused SW4 hold to crash
+the board).
 
-**Fix B (better performance too):** decode the JPEG once on download, write raw
-RGB565 into a heap buffer, blit from the buffer on subsequent view switches.
-Eliminates the ~800 ms decode cost on every switch. Costs ~51 KB heap
-(160×160 × 2 bytes) — needs heap verification after Spotify TLS is live.
+### 1B — Serial debug flood causes encoder sluggishness  [SHIPPED]
 
-Start with Fix A, evaluate B if redraw speed matters.
+**Fix applied:** all hot-path `Serial.printf` in `mcp_input_update()`
+(`[INTA]` / `[POLL]` / `[HB ]` / `[EVT]` / `[ENC]`) now gated behind
+`#define MCP_DEBUG`. Off in production builds. Re-enable for hardware
+bring-up if needed.
 
-### 1B — Serial debug flood causes encoder sluggishness  [HIGH]
+### 1E — Now-playing visual issues  [PARTIAL — needs hardware test]
 
-**Root cause:** `mcp_input_update()` prints multiple `[INTA]` / `[POLL]` /
-`[HB ]` lines per interrupt event. At 115 200 baud the 128-byte TX FIFO
-fills and the CPU blocks for ~60 ms per event group — longer than the
-encoder's gray-code window. Fast spins are coalesced into a single stale
-GPIO read, missing intermediate steps.
+Three related issues observed once 1A's heap-allocated JPEG path was live.
+Fixes applied in same commit as 1A, all need hardware verification:
 
-**Fix:** remove or gate all `Serial.printf` in `mcp_input_update()` behind a
-compile-time `#define MCP_DEBUG`. Production builds have zero serial output
-in the hot path. The heartbeat `[HB ]` every 2 s can stay during development.
+1. **Album colours inverted** — JPEG decode path didn't set
+   `tft.setSwapBytes(true)`. JPEGDEC outputs little-endian RGB565; ILI9341
+   wants big-endian. Without the swap, red and blue channels swap.
+   *Fix applied: wrap `decode()` in setSwapBytes(true)/setSwapBytes(false).*
+
+2. **Now-playing flickers every ~2 s** — `draw_now_playing()` keyed its
+   "full redraw" flag off `track_info_updated`, which the Spotify poller
+   sets every 2 s for progress updates. Result: full `fillScreen` + JPEG
+   re-decode every poll cycle.
+   *Fix applied: track changes detected by comparing title+album strings
+   against last-drawn values; full redraw only on actual track change.*
+
+3. **Art rendered in bottom-right quadrant** — if `jpeg_np->getWidth()` or
+   `getHeight()` returns 0 (corrupt / progressive / placeholder JPEG),
+   `np_img_x` becomes `SCREEN_W/2` and JPEGDraw blocks render from screen
+   centre toward bottom-right.
+   *Fix applied: guard `if (w > 0 && h > 0)` before computing position;
+   clamp top-left to on-screen; bumped large-image threshold so 480 px+
+   images use JPEG_SCALE_QUARTER instead of HALF.*
+
+4. **Browser blank when toggling back from now-playing** — `draw_album_browser`
+   has a static `(last_drawn_scroll, last_drawn_view)` guard that
+   short-circuits when nothing scrolled. After `ui_show_album_browser`
+   calls `fillScreen(TFT_BLACK)`, that guard kept the screen black.
+   *Fix applied: new `browser_needs_redraw` module flag set by
+   `ui_show_album_browser` to bypass the guard once.*
+
+All four fixes need a hardware run-through:
+- Switch into now-playing → colours correct?
+- Stay on now-playing 30 s → no flicker, no full re-decode every 2 s?
+- Art centred and full-sized?
+- Toggle back to browser → albums visible immediately?
 
 ### 1C — Volume PUT doesn't change phone volume  [LOW — Spotify limitation]
 

@@ -143,11 +143,16 @@ void mcp_input_init()
 }
 
 // ── Debug helpers ──────────────────────────────────────────────────────────
+// Define MCP_DEBUG to re-enable verbose serial output during hardware bring-up.
+// #define MCP_DEBUG
+
+#ifdef MCP_DEBUG
 static void _dbg_print_bits(const char* label, uint8_t val) {
     Serial.printf("%s=0x%02X (", label, val);
     for (int i = 7; i >= 0; i--) Serial.print((val >> i) & 1);
     Serial.print(") ");
 }
+#endif
 
 void mcp_input_update()
 {
@@ -166,12 +171,14 @@ void mcp_input_update()
         // and button presses since all PA0-PA6 have interrupt-on-change enabled.
         uint8_t porta = mcp.readGPIO(0);
 
+#ifdef MCP_DEBUG
         Serial.print("[INTA] ");
         _dbg_print_bits("PA", porta);
         Serial.printf("SW1=%d SW2=%d SW3=%d SW4=%d RE1_CLK=%d RE1_DT=%d RE1_SW=%d\n",
                       !((porta >> 0) & 1), !((porta >> 1) & 1),
                       !((porta >> 2) & 1), !((porta >> 3) & 1),
                       (porta >> 4) & 1, (porta >> 5) & 1, (porta >> 6) & 1);
+#endif
 
         if (porta != last_porta) last_porta = porta;
 
@@ -182,9 +189,11 @@ void mcp_input_update()
         // any button state that didn't produce a clean interrupt edge.
         uint8_t porta = mcp.readGPIO(0);
         if (porta != last_porta) {
+#ifdef MCP_DEBUG
             Serial.printf("[POLL] PA changed: SW1=%d SW2=%d SW3=%d SW4=%d (raw=0x%02X)\n",
                           !((porta >> 0) & 1), !((porta >> 1) & 1),
                           !((porta >> 2) & 1), !((porta >> 3) & 1), porta);
+#endif
             last_porta = porta;
         }
         _process_buttons(porta);
@@ -194,17 +203,20 @@ void mcp_input_update()
     static unsigned long _hb_ms = 0;
     if (millis() - _hb_ms > 2000) {
         _hb_ms = millis();
+#ifdef MCP_DEBUG
         uint8_t snap = mcp.readGPIO(0);
         Serial.printf("[HB  ] PA=0x%02X INTA=%d RE1cnt=%d\n",
                       snap, digitalRead(MCP_INTA_PIN), re1.count);
+#endif
+        _hb_ms = millis();
     }
 
-    // Log events as they fire
+#ifdef MCP_DEBUG
     if (re1_sw.event_pending) Serial.println("[EVT ] RE1-SW pressed (view toggle)");
     for (uint8_t i = 0; i < 4; i++)
         if (btns[i].event_pending) Serial.printf("[EVT ] SW%d pressed\n", i + 1);
-
     if (re1.count != 0) Serial.printf("[ENC ] RE1 accumulated delta=%d\n", re1.count);
+#endif
 }
 
 int32_t re1_get_delta()

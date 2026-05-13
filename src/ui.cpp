@@ -431,6 +431,10 @@ static void drawAlbumArt(int x, int y, int index) {
 // Drawing
 // ============================================================
 
+// View redraw flags (forward-used by both draw_album_browser and draw_now_playing)
+static bool np_needs_full_redraw = true;
+static bool browser_needs_redraw = true;
+
 static void draw_album_browser() {
   if (album_count == 0) {
     // Show error message instead of blank screen
@@ -454,13 +458,19 @@ static void draw_album_browser() {
   int y_offset = (SCREEN_H - SPRITE_H) / 2 - 15;
   int album_y = y_offset + (SPRITE_H - ALBUM_SIZE) / 2;
 
-  // Optimize: Avoid redrawing if nothing has changed
+  // Optimize: Avoid redrawing if nothing has changed.
+  // browser_needs_redraw is set true by ui_show_album_browser() so that
+  // returning from the now-playing view always forces a fresh paint,
+  // otherwise the static guard below would short-circuit and leave a black
+  // screen (ui_show_album_browser blanks the screen before calling us).
   static int32_t last_drawn_scroll = -999;
   static ViewMode last_drawn_view = (ViewMode)-1;
 
-  if (last_drawn_scroll == scroll_pos && last_drawn_view == current_view) {
+  if (!browser_needs_redraw &&
+      last_drawn_scroll == scroll_pos && last_drawn_view == current_view) {
     return;
   }
+  browser_needs_redraw = false;
 
   // Clear background area for albums
   tft.fillRect(0, y_offset, SCREEN_W, SPRITE_H, TFT_BLACK);
@@ -507,7 +517,6 @@ static void draw_album_browser() {
                tft.color565(180, 180, 180));
 }
 
-JPEGDEC jpeg_np;
 File npFile;
 
 void *npOpen(const char *filename, int32_t *size) {
@@ -565,13 +574,24 @@ static void drawLocalAlbumArt(int center_x, int center_y, int index) {
 }
 
 
-static bool np_needs_full_redraw = true;
+// Track-change detection: keep last drawn title/album so we only redo the
+// expensive full redraw (and JPEG re-decode) when the track actually changes.
+// Spotify polling sets track_info_updated every 2 s for progress; using that
+// as the redraw trigger flickered the screen every poll.
+static char np_last_title[64] = "";
+static char np_last_album[64] = "";
 
 static void draw_now_playing() {
-  bool initial_draw = np_needs_full_redraw || track_info_updated;
+  bool track_changed = strncmp(np_last_title, current_track_info.title, sizeof(np_last_title)) != 0 ||
+                        strncmp(np_last_album, current_track_info.album, sizeof(np_last_album)) != 0;
+  bool initial_draw = np_needs_full_redraw || track_changed;
 
   if (initial_draw) {
     tft.fillScreen(TFT_BLACK);
+    strncpy(np_last_title, current_track_info.title, sizeof(np_last_title) - 1);
+    np_last_title[sizeof(np_last_title) - 1] = '\0';
+    strncpy(np_last_album, current_track_info.album, sizeof(np_last_album) - 1);
+    np_last_album[sizeof(np_last_album) - 1] = '\0';
 
     tft.setTextColor(TFT_WHITE);
     tft.setTextDatum(MC_DATUM);
@@ -606,22 +626,40 @@ static void draw_now_playing() {
     if (current_track_info.local_album_idx >= 0) {
       drawLocalAlbumArt(SCREEN_W / 2, NP_ART_CENTER_Y, current_track_info.local_album_idx);
     } else {
-      if (jpeg_np.open("/sd_card_albums/nowplaying.jpg", npOpen, npClose, npRead,
+      JPEGDEC *jpeg_np = new JPEGDEC();
+      bool decoded = false;
+      if (jpeg_np->open("/sd_card_albums/nowplaying.jpg", npOpen, npClose, npRead,
                        npSeek, JPEGDraw_NowPlaying)) {
-        int w = jpeg_np.getWidth();
-        int h = jpeg_np.getHeight();
-        int scale = (w >= 400) ? JPEG_SCALE_QUARTER : ((w >= 200) ? JPEG_SCALE_HALF : 0);
-        int dw = w >> scale;
-        int dh = h >> scale;
-        np_img_x = (SCREEN_W / 2) - (dw / 2);
-        np_img_y = NP_ART_CENTER_Y - (dh / 2);
-        jpeg_np.decode(0, 0, scale);
-        jpeg_np.close();
-      } else {
+        int w = jpeg_np->getWidth();
+        int h = jpeg_np->getHeight();
+        // Guard against unparseable / progressive JPEGs reporting w==0 or h==0
+        // — without this we'd compute np_img_x = SCREEN_W/2 and draw the
+        // remaining MCU blocks from there toward the bottom-right of the screen.
+        if (w > 0 && h > 0) {
+          int scale = 0;
+          if (w >= 480) scale = JPEG_SCALE_QUARTER;
+          else if (w >= 240) scale = JPEG_SCALE_HALF;
+          int dw = w >> scale;
+          int dh = h >> scale;
+          np_img_x = (SCREEN_W / 2) - (dw / 2);
+          np_img_y = NP_ART_CENTER_Y - (dh / 2);
+          // Clamp so a too-large image still has its top-left on-screen
+          if (np_img_x < 0) np_img_x = 0;
+          if (np_img_y < HUD_H) np_img_y = HUD_H;
+          // JPEGDEC outputs little-endian RGB565; ILI9341 wants big-endian.
+          // Without this byte-swap the colours come out inverted (R/B swapped).
+          tft.setSwapBytes(true);
+          decoded = (jpeg_np->decode(0, 0, scale) == 1);
+          tft.setSwapBytes(false);
+        }
+        jpeg_np->close();
+      }
+      if (!decoded) {
         tft.fillRect((SCREEN_W - NP_SQUARE_ART_SIZE) / 2,
                      NP_ART_CENTER_Y - NP_SQUARE_ART_SIZE / 2,
                      NP_SQUARE_ART_SIZE, NP_SQUARE_ART_SIZE, fallback_color);
       }
+      delete jpeg_np;
     }
   }
 
@@ -903,7 +941,8 @@ void ui_show_album_browser() {
   if (current_view != VIEW_BROWSER) {
     current_view = VIEW_BROWSER;
     tft.fillScreen(TFT_BLACK);
-    draw_album_browser(); // Force an immediate redraw of the browser
+    browser_needs_redraw = true; // bypass the static-guard short-circuit
+    draw_album_browser();        // Force an immediate redraw of the browser
   }
 }
 
