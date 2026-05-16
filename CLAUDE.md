@@ -13,9 +13,9 @@ It shows an album browser loaded from an SD card, drives playback via the
 Spotify Web API, and has a custom hardware control panel with two rotary
 encoders and four push buttons routed through an MCP23017 I2C IO expander.
 
-The user (Lewis) builds with PlatformIO. He works locally in VS Code with
-Claude Code and intermittently uses Claude Code on the web. This file is the
-source of truth across sessions.
+Lewis builds with PlatformIO (Arduino build) and native ESP-IDF (Phase 2 IDF build).
+He works locally in VS Code with Claude Code and intermittently uses Claude Code on the web.
+This file is the source of truth across sessions.
 
 ---
 
@@ -251,10 +251,25 @@ from Phase 3 carries over untouched.
 
 ## Useful local commands
 
+### Arduino build (cyd-arduino/)
 ```bash
+cd cyd-arduino
 pio run                        # build
 pio run -t upload              # build + flash
 pio device monitor -b 115200   # serial monitor
+```
+
+### IDF build (cyd-idf/)
+```bash
+cd cyd-idf
+idf.py set-target esp32        # first time only
+idf.py build                   # build
+idf.py -p COM<X> flash monitor # flash + serial monitor
+idf.py reconfigure             # after editing idf_component.yml
+```
+
+### General
+```bash
 git log --oneline -10          # recent history
 ```
 
@@ -264,5 +279,7 @@ git log --oneline -10          # recent history
 
 - **Plans for next phases:** `docs/ROADMAP.md`
 - **What still needs to be tested on hardware:** `docs/TESTING.md`
-- **Current pending decisions:** none — Phase 1 + 1.5 done, Phase 2 plan
-  exists, awaiting hardware verification before starting Phase 2
+- **IDF port gotchas discovered on hardware:** `docs/PORT-NOTES.md`
+- **Arduino build (Phase 1, maintenance):** `cyd-arduino/`
+- **IDF build (Phase 2, active):** `cyd-idf/`
+- **Current status:** Phase 2 started — repo reorganised, IDF Step 0 scaffold in place. Next: `idf.py build` + hardware verify (backlight blink), then Step 1 (colour cycle).
