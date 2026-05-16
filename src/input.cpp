@@ -33,7 +33,16 @@ void input_update()
     }
 
     // ── Push buttons ──────────────────────────────────────────────────────
-    if (btn_get_event(0)) spotify_prev_track();
+    // Prev: Spotify-style — restart the current track if more than 5 s in,
+    // otherwise jump to the previous track.
+    if (btn_get_event(0)) {
+        if (current_track_info.progress_ms > 5000) {
+            spotify_seek_position(0);
+            current_track_info.progress_ms = 0;  // optimistic UI update
+        } else {
+            spotify_prev_track();
+        }
+    }
     if (btn_get_event(1)) spotify_toggle_play_pause();
     if (btn_get_event(2)) spotify_next_track();
     if (btn_get_event(3)) ui_toggle_view();

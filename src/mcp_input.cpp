@@ -29,20 +29,30 @@ static Adafruit_MCP23X17 mcp;
 static bool mcp_ok = false;
 
 // ── Encoder state ──────────────────────────────────────────────────────────
-struct EncState {
-    uint8_t last_ab;  // previous {CLK, DT} 2-bit value
-    int32_t count;
+// State machine decoder. A physical click traverses the gray-code cycle
+//   rest(11) → 01 → 00 → 10 → rest(11)   (CW)
+//   rest(11) → 10 → 00 → 01 → rest(11)   (CCW)
+// We emit ±1 only on completing the full traversal back to rest. Any deviation
+// (skipped state, bounce back toward rest, invalid 11→00 jump) sends us back
+// to S_REST without emitting. This is far more noise-tolerant than counting
+// each sub-step, which a flaky encoder can over-emit by ramping subcount past
+// the threshold via clean-but-spurious transitions.
+enum {
+    S_REST       = 0,  // resting at AB=11
+    S_CW1,             // saw rest→01
+    S_CW2,             // saw 01→00
+    S_CW3,             // saw 00→10 — next AB=11 emits +1
+    S_CCW1,            // saw rest→10
+    S_CCW2,            // saw 10→00
+    S_CCW3,            // saw 00→01 — next AB=11 emits -1
 };
-static EncState re1 = {0, 0};
 
-// Gray-code quadrature table: index = (last_ab << 2) | new_ab → delta
-// Full-step: only ±1 per complete 4-state cycle; glitches produce 0
-static const int8_t enc_table[16] = {
-    0, -1,  1,  0,
-    1,  0,  0, -1,
-   -1,  0,  0,  1,
-    0,  1, -1,  0
+struct EncState {
+    uint8_t       state;          // S_REST / S_CWx / S_CCWx
+    int32_t       count;          // accumulated detents (callers see ±1 per click)
+    unsigned long last_change_ms; // last time AB observably changed
 };
+static EncState re1 = {S_REST, 0, 0};
 
 // ── Button / switch state ──────────────────────────────────────────────────
 struct BtnState {
@@ -59,11 +69,54 @@ static BtnState re1_sw;
 static void _update_encoder(EncState &enc, uint8_t porta,
                              uint8_t clk_bit, uint8_t dt_bit)
 {
-    uint8_t clk = (porta >> clk_bit) & 1;
-    uint8_t dt  = (porta >> dt_bit)  & 1;
-    uint8_t new_ab = (clk << 1) | dt;
-    enc.count += enc_table[(enc.last_ab << 2) | new_ab];
-    enc.last_ab = new_ab;
+    uint8_t ab = (((porta >> clk_bit) & 1) << 1) | ((porta >> dt_bit) & 1);
+
+    uint8_t next = enc.state;
+    int8_t  emit = 0;
+
+    switch (enc.state) {
+        case S_REST:
+            if      (ab == 0b01) next = S_CW1;
+            else if (ab == 0b10) next = S_CCW1;
+            // ab == 11 or 00: stay at rest
+            break;
+        case S_CW1:
+            if      (ab == 0b00) next = S_CW2;
+            else if (ab == 0b11) next = S_REST;   // backed out
+            break;
+        case S_CW2:
+            if      (ab == 0b10) next = S_CW3;
+            else if (ab == 0b01) next = S_CW1;    // proper step-by-step backout
+            // ab == 0b11 here would be an impossible 00→11 jump — almost
+            // certainly a contact glitch. Stay in place rather than aborting
+            // the click. Only a real backout (00→01→11) reaches REST.
+            break;
+        case S_CW3:
+            if      (ab == 0b11) { emit = +1; next = S_REST; }
+            else if (ab == 0b00) next = S_CW2;    // proper step-by-step backout
+            // ab == 0b01 here is a 10→01 jump — glitch, ignore.
+            break;
+        case S_CCW1:
+            if      (ab == 0b00) next = S_CCW2;
+            else if (ab == 0b11) next = S_REST;
+            break;
+        case S_CCW2:
+            if      (ab == 0b01) next = S_CCW3;
+            else if (ab == 0b10) next = S_CCW1;
+            // ab == 0b11 here would be an impossible 00→11 jump — glitch,
+            // ignore (same reasoning as S_CW2).
+            break;
+        case S_CCW3:
+            if      (ab == 0b11) { emit = -1; next = S_REST; }
+            else if (ab == 0b00) next = S_CCW2;
+            break;
+    }
+
+    if (next != enc.state) {
+        enc.state = next;
+        enc.last_change_ms = millis();
+    }
+    enc.count += emit;
 }
 
 static void _update_btn(BtnState &b, bool raw_active)
@@ -86,6 +139,11 @@ static void _process_buttons(uint8_t porta)
     for (uint8_t i = 0; i < 4; i++) {
         _update_btn(btns[i], !((porta >> i) & 1));  // active LOW, SW1=bit0..SW4=bit3
     }
+    // RE1 push-switch (GPA6, active LOW). Treated as a regular button now —
+    // the previous "encoder must be quiet" guard rejected presses whenever the
+    // encoder was noisy (which on a flaky module is most of the time). The
+    // 30 ms button debounce in _update_btn handles ordinary contact bounce.
+    _update_btn(re1_sw, !((porta >> 6) & 1));
 }
 
 static void _process_encoders(uint8_t porta)
@@ -93,12 +151,27 @@ static void _process_encoders(uint8_t porta)
     // RE1 — CLK=GPA4 (bit4), DT=GPA5 (bit5)
     _update_encoder(re1, porta, 4, 5);
 
-    // Encoder push-switch (active LOW).
-    // Guard: only register SW press when CLK and DT are both HIGH (encoder at rest).
-    // When the shared GND contact is active during rotation it drags SW LOW too —
-    // this rejects those false triggers.
-    bool re1_still = ((porta >> 4) & 1) && ((porta >> 5) & 1);
-    _update_btn(re1_sw, !((porta >> 6) & 1) && re1_still);
+    // Watchdog: if the state machine has been parked in a non-rest state for
+    // over a second with no transitions, the encoder is probably just sitting
+    // at AB=11 while we mistakenly think we're mid-click. Silently reset so
+    // the next click starts fresh instead of being lost.
+    if (re1.state != S_REST && (millis() - re1.last_change_ms) > 1000) {
+        re1.state = S_REST;
+    }
+}
+
+// Direct GPIOA read that returns -1 on I2C failure, so callers can skip
+// processing instead of treating a failed read as "all pins HIGH" (which the
+// Adafruit lib does — and which masquerades as "all buttons released" with
+// our active-LOW wiring, silently breaking debounce).
+// GPIOA register is 0x12 in IOCON.BANK=0 (the Adafruit default).
+static int _read_porta_safe()
+{
+    Wire.beginTransmission(MCP_ADDR);
+    Wire.write(0x12);
+    if (Wire.endTransmission(false) != 0) return -1;
+    if (Wire.requestFrom((uint8_t)MCP_ADDR, (uint8_t)1) != 1) return -1;
+    return Wire.read();
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -135,9 +208,9 @@ void mcp_input_init()
     // GPIO35: input-only, no pull-up needed (INTA is push-pull)
     pinMode(MCP_INTA_PIN, INPUT);
 
-    // Seed encoder last-state from actual pin levels to avoid a false edge on boot
-    uint8_t porta = mcp.readGPIO(0);
-    re1.last_ab = (((porta >> 4) & 1) << 1) | ((porta >> 5) & 1);
+    // The state machine starts at S_REST; whatever AB the encoder is actually
+    // at on boot will resolve naturally once rotation begins (S_REST ignores
+    // AB=00 / AB=11 and only transitions on the first valid 01 or 10).
 
     Serial.println("MCP23017 ready (SDA=27, SCL=22, INTA=35)");
 }
@@ -163,14 +236,27 @@ void mcp_input_update()
     }
 
     static uint8_t last_porta = 0xFF;
+    static unsigned long last_read_ms = 0;
+
+    // Throttle ALL I2C traffic — both INTA-driven and polled — to one read per
+    // 2 ms. Originally added at 5 ms while the MCP solder joints were cold and
+    // the bus was hammered → flood. With the chip resoldered (bus healthy), we
+    // can poll faster so the encoder state machine catches every quadrature
+    // transition; the previous 5 ms window could miss the brief 01/10 phases
+    // of a fast click and look like a state jump. 2 ms = 500 reads/s, well
+    // within bus capacity and still imperceptible compared to 30 ms button
+    // debounce. Must apply to BOTH paths: when a read fails the MCP interrupt
+    // isn't cleared, INTA stays LOW, and an INTA-only rate-limit gets bypassed
+    // every iteration.
+    if (millis() - last_read_ms < 2) return;
 
     bool inta_low = (digitalRead(MCP_INTA_PIN) == LOW);
+    int p = _read_porta_safe();
+    last_read_ms = millis();
+    if (p < 0) return;  // skip on I2C failure — preserve debounce state
+    uint8_t porta = (uint8_t)p;
 
     if (inta_low) {
-        // Interrupt fired — read and clear immediately. Handles both encoder edges
-        // and button presses since all PA0-PA6 have interrupt-on-change enabled.
-        uint8_t porta = mcp.readGPIO(0);
-
 #ifdef MCP_DEBUG
         Serial.print("[INTA] ");
         _dbg_print_bits("PA", porta);
@@ -179,15 +265,10 @@ void mcp_input_update()
                       !((porta >> 2) & 1), !((porta >> 3) & 1),
                       (porta >> 4) & 1, (porta >> 5) & 1, (porta >> 6) & 1);
 #endif
-
         if (porta != last_porta) last_porta = porta;
-
         _process_encoders(porta);
         _process_buttons(porta);
     } else {
-        // No interrupt — poll Port A to keep debounce timers ticking and catch
-        // any button state that didn't produce a clean interrupt edge.
-        uint8_t porta = mcp.readGPIO(0);
         if (porta != last_porta) {
 #ifdef MCP_DEBUG
             Serial.printf("[POLL] PA changed: SW1=%d SW2=%d SW3=%d SW4=%d (raw=0x%02X)\n",
@@ -231,7 +312,9 @@ int32_t re2_get_delta()   { return 0; }  // RE2 not fitted
 bool btn_get_event(uint8_t i)
 {
     if (i >= 4) return false;
-    return btns[i].event_pending;
+    bool e = btns[i].event_pending;
+    btns[i].event_pending = false;  // consume on read
+    return e;
 }
 
 bool btn_is_held(uint8_t i)
@@ -240,5 +323,10 @@ bool btn_is_held(uint8_t i)
     return btns[i].pressed;
 }
 
-bool re1_sw_get_event() { return re1_sw.event_pending; }
+bool re1_sw_get_event()
+{
+    bool e = re1_sw.event_pending;
+    re1_sw.event_pending = false;  // consume on read
+    return e;
+}
 bool re2_sw_get_event() { return false; }  // RE2 not fitted

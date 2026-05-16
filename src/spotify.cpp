@@ -16,6 +16,12 @@ static const char* refresh_token;
 static String access_token = "";
 static unsigned long token_expiry = 0;
 
+// Most recently observed playback device id, captured from /v1/me/player polls.
+// Used to wake a paused-but-idle device when Play is pressed (Spotify drops
+// the active-device association after a short idle and returns 404 to
+// /me/player/play until playback is transferred back).
+static String last_device_id = "";
+
 SpotifyTrackInfo current_track_info = {false, "", "", "", 0, 0, "", -1, false, 50};
 bool track_info_updated = false;
 int  current_volume_pct = 50;
@@ -168,6 +174,11 @@ void spotify_fetch_player_state() {
                 current_track_info.is_playing   = doc["is_playing"].as<bool>();
                 current_track_info.shuffle_state = doc["shuffle_state"].as<bool>();
 
+                // Cache the device id so Play can wake an idle device later.
+                if (doc["device"]["id"]) {
+                    last_device_id = doc["device"]["id"].as<String>();
+                }
+
                 int vol = doc["device"]["volume_percent"] | current_volume_pct;
                 current_track_info.volume_pct = vol;
                 current_volume_pct = vol;
@@ -210,11 +221,12 @@ void spotify_fetch_player_state() {
 }
 
 // ── Playback controls ──────────────────────────────────────────────────────
-// Shared helper: send a command with optional JSON body; returns true on 2xx/204.
-static bool _spotify_command(const char* method, const char* path,
-                             const char* body = nullptr)
+// Shared helper: send a command with optional JSON body. Returns the HTTP
+// status code (or 0 on connection failure). Callers check via _is_ok().
+static int _spotify_command(const char* method, const char* path,
+                            const char* body = nullptr)
 {
-    if (access_token == "" || WiFi.status() != WL_CONNECTED) return false;
+    if (access_token == "" || WiFi.status() != WL_CONNECTED) return 0;
 
     ui_suspend_sprite();
     WiFiClientSecure *client = new WiFiClientSecure;
@@ -223,7 +235,7 @@ static bool _spotify_command(const char* method, const char* path,
     HTTPClient https;
     https.setTimeout(2000);
     String url = String("https://api.spotify.com") + path;
-    bool ok = false;
+    int code = 0;
 
     if (https.begin(*client, url)) {
         https.addHeader("Authorization", "Bearer " + access_token);
@@ -234,38 +246,52 @@ static bool _spotify_command(const char* method, const char* path,
             https.addHeader("Content-Length", "0");
         }
 
-        int code;
         if (strcmp(method, "POST") == 0) {
             code = https.POST(body ? String(body) : String(""));
         } else {
             // PUT
             code = https.PUT(body ? String(body) : String(""));
         }
-        ok = (code == 200 || code == 204 || code == 202);
-        if (!ok) Serial.printf("Spotify %s %s → %d\n", method, path, code);
+        if (!(code == 200 || code == 204 || code == 202)) {
+            Serial.printf("Spotify %s %s → %d\n", method, path, code);
+        }
         https.end();
     }
 
     delete client;
     ui_resume_sprite();
-    return ok;
+    return code;
+}
+
+static inline bool _is_ok(int code) {
+    return code == 200 || code == 204 || code == 202;
 }
 
 bool spotify_next_track() {
-    return _spotify_command("POST", "/v1/me/player/next");
+    return _is_ok(_spotify_command("POST", "/v1/me/player/next"));
 }
 
 bool spotify_prev_track() {
-    return _spotify_command("POST", "/v1/me/player/previous");
+    return _is_ok(_spotify_command("POST", "/v1/me/player/previous"));
 }
 
 bool spotify_toggle_play_pause() {
     if (current_track_info.is_playing) {
-        bool ok = _spotify_command("PUT", "/v1/me/player/pause");
+        bool ok = _is_ok(_spotify_command("PUT", "/v1/me/player/pause"));
         if (ok) current_track_info.is_playing = false;
         return ok;
     } else {
-        bool ok = _spotify_command("PUT", "/v1/me/player/play");
+        int code = _spotify_command("PUT", "/v1/me/player/play");
+        // Spotify returns 404 "No active device found" when the previously
+        // active device (e.g. the phone) has gone idle and dropped its
+        // Connect session. Recover by transferring playback back to the
+        // last-known device, which also starts playback in the same call.
+        if (code == 404 && last_device_id.length() > 0) {
+            String body = String("{\"device_ids\":[\"") + last_device_id +
+                          "\"],\"play\":true}";
+            code = _spotify_command("PUT", "/v1/me/player", body.c_str());
+        }
+        bool ok = _is_ok(code);
         if (ok) current_track_info.is_playing = true;
         return ok;
     }
@@ -274,7 +300,7 @@ bool spotify_toggle_play_pause() {
 bool spotify_toggle_shuffle() {
     bool new_state = !current_track_info.shuffle_state;
     String path = String("/v1/me/player/shuffle?state=") + (new_state ? "true" : "false");
-    bool ok = _spotify_command("PUT", path.c_str());
+    bool ok = _is_ok(_spotify_command("PUT", path.c_str()));
     if (ok) current_track_info.shuffle_state = new_state;
     return ok;
 }
@@ -282,7 +308,7 @@ bool spotify_toggle_shuffle() {
 bool spotify_set_volume(int pct) {
     pct = constrain(pct, 0, 100);
     String path = String("/v1/me/player/volume?volume_percent=") + pct;
-    bool ok = _spotify_command("PUT", path.c_str());
+    bool ok = _is_ok(_spotify_command("PUT", path.c_str()));
     if (ok) {
         current_volume_pct = pct;
         current_track_info.volume_pct = pct;
@@ -293,12 +319,12 @@ bool spotify_set_volume(int pct) {
 bool spotify_seek_position(int32_t pos_ms) {
     if (pos_ms < 0) pos_ms = 0;
     String path = String("/v1/me/player/seek?position_ms=") + pos_ms;
-    bool ok = _spotify_command("PUT", path.c_str());
+    bool ok = _is_ok(_spotify_command("PUT", path.c_str()));
     if (ok) current_track_info.progress_ms = (uint32_t)pos_ms;
     return ok;
 }
 
 bool spotify_play_album(const char* album_uri) {
     String body = String("{\"context_uri\": \"") + album_uri + "\"}";
-    return _spotify_command("PUT", "/v1/me/player/play", body.c_str());
+    return _is_ok(_spotify_command("PUT", "/v1/me/player/play", body.c_str()));
 }

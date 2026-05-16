@@ -36,7 +36,6 @@ static int album_count = 0; // Actual number loaded from SD
 // element: 8, 16, 26, or 48
 #define BROWSER_ALBUM_TEXT_SIZE 16
 #define BROWSER_ARTIST_TEXT_SIZE 8
-#define NP_ALBUM_TEXT_SIZE 8
 #define NP_TITLE_TEXT_SIZE 16
 #define NP_ARTIST_TEXT_SIZE 8
 
@@ -52,10 +51,11 @@ static int album_count = 0; // Actual number loaded from SD
   16 // Gap between title text and artist text
 
 // --- Now Playing Layout ---
-#define NP_TOP_TEXT_Y 40 // Standard Y position for the top Album text
 #define NP_ART_CENTER_Y 115 // Vertical center coordinate for the rotating vinyl/square art
-#define NP_BOTTOM_TITLE_Y 190  // Standard Y position for the bottom Title text
-#define NP_BOTTOM_ARTIST_Y 210 // Standard Y position for the bottom Artist text
+// Title sits just below the bottom of the 160 px art (art ends ~y=195).
+// Artist sits below that, ending just above the progress-bar clear zone (y=223).
+#define NP_BOTTOM_TITLE_Y 205  // Standard Y position for the bottom Title text
+#define NP_BOTTOM_ARTIST_Y 218 // Standard Y position for the bottom Artist text
 #define NP_SQUARE_ART_SIZE 120
 
 // ============================================================
@@ -145,21 +145,17 @@ static unsigned long hud_show_ms   = 0;
 static bool          hud_was_on    = false; // tracks expiry to trigger redraw
 
 static void _draw_volume_hud(int pct, bool muted) {
+    (void)muted;  // mute state is shown by the persistent badge in draw_now_playing()
     tft.fillRect(0, 0, SCREEN_W, HUD_H, TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
-    if (muted) {
-        tft.setTextColor(tft.color565(220, 80, 80));
-        tft.drawString("MUTED", SCREEN_W / 2, HUD_H / 2, GET_FONT_ID(16));
-    } else {
-        int bar_x = 16, bar_w = 200, bar_h = 6, bar_y = (HUD_H - bar_h) / 2;
-        int fill_w = pct * bar_w / 100;
-        tft.drawRect(bar_x, bar_y, bar_w, bar_h, tft.color565(80, 80, 80));
-        if (fill_w > 0) tft.fillRect(bar_x, bar_y, fill_w, bar_h, TFT_WHITE);
-        char buf[10];
-        snprintf(buf, sizeof(buf), "%d%%", pct);
-        tft.setTextColor(tft.color565(180, 180, 180));
-        tft.drawString(buf, bar_x + bar_w + 20, HUD_H / 2, GET_FONT_ID(8));
-    }
+    int bar_x = 16, bar_w = 200, bar_h = 6, bar_y = (HUD_H - bar_h) / 2;
+    int fill_w = pct * bar_w / 100;
+    tft.drawRect(bar_x, bar_y, bar_w, bar_h, tft.color565(80, 80, 80));
+    if (fill_w > 0) tft.fillRect(bar_x, bar_y, fill_w, bar_h, TFT_WHITE);
+    char buf[10];
+    snprintf(buf, sizeof(buf), "%d%%", pct);
+    tft.setTextColor(tft.color565(180, 180, 180));
+    tft.drawString(buf, bar_x + bar_w + 20, HUD_H / 2, GET_FONT_ID(8));
 }
 
 void ui_show_volume_hud(int pct, bool muted) {
@@ -593,13 +589,7 @@ static void draw_now_playing() {
     strncpy(np_last_album, current_track_info.album, sizeof(np_last_album) - 1);
     np_last_album[sizeof(np_last_album) - 1] = '\0';
 
-    tft.setTextColor(TFT_WHITE);
     tft.setTextDatum(MC_DATUM);
-
-    // Equalize the text margins: Top Album text
-    tft.setTextColor(tft.color565(180, 180, 180));
-    tft.drawString(current_track_info.album, SCREEN_W / 2, NP_TOP_TEXT_Y,
-                   GET_FONT_ID(NP_ALBUM_TEXT_SIZE));
 
     // Bottom Title and Artist
     tft.setTextColor(TFT_WHITE);
@@ -636,11 +626,16 @@ static void draw_now_playing() {
         // — without this we'd compute np_img_x = SCREEN_W/2 and draw the
         // remaining MCU blocks from there toward the bottom-right of the screen.
         if (w > 0 && h > 0) {
+          // JPEGDEC's JPEG_SCALE_HALF / _QUARTER / _EIGHTH are option bit-flags
+          // (2 / 4 / 8 in the iOptions field), NOT shift amounts. `w >> scale`
+          // gives a wrong (too-small) decoded size, which is what was pushing
+          // the centred position toward the bottom-right.
           int scale = 0;
-          if (w >= 480) scale = JPEG_SCALE_QUARTER;
-          else if (w >= 240) scale = JPEG_SCALE_HALF;
-          int dw = w >> scale;
-          int dh = h >> scale;
+          int divisor = 1;
+          if (w >= 480)      { scale = JPEG_SCALE_QUARTER; divisor = 4; }
+          else if (w >= 240) { scale = JPEG_SCALE_HALF;    divisor = 2; }
+          int dw = w / divisor;
+          int dh = h / divisor;
           np_img_x = (SCREEN_W / 2) - (dw / 2);
           np_img_y = NP_ART_CENTER_Y - (dh / 2);
           // Clamp so a too-large image still has its top-left on-screen
