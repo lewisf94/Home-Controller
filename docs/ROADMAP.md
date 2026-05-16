@@ -134,20 +134,23 @@ lives alongside it:
 
 ```
 Music-Controller/
-├── cyd-arduino/          # current Arduino build, frozen/maintained
-│   ├── src/  include/  platformio.ini ...
-│   └── README.md
-├── cyd-idf/              # new IDF build
-│   ├── main/
-│   ├── components/
-│   ├── sdkconfig.defaults
-│   ├── partitions.csv
-│   ├── idf_component.yml
-│   └── CMakeLists.txt
+├── cyd/                       # CYD board (ESP32-WROOM)
+│   ├── platformio/            # Arduino build via PlatformIO, frozen/maintained
+│   │   ├── src/  include/  platformio.ini ...
+│   │   └── README.md
+│   └── esp-idf/               # native ESP-IDF build
+│       ├── main/
+│       ├── components/
+│       ├── sdkconfig.defaults
+│       ├── partitions.csv
+│       ├── idf_component.yml
+│       └── CMakeLists.txt
+├── waveshare/                 # ESP32-P4 build (planned)
 ├── docs/
-│   ├── ROADMAP.md        (this file)
+│   ├── ROADMAP.md             (this file)
 │   ├── TESTING.md
-│   └── PORT-NOTES.md     (IDF gotchas as discovered)
+│   └── PORT-NOTES.md          (IDF gotchas as discovered)
+├── scripts/                   # album-art conversion (shared)
 ├── CLAUDE.md
 └── README.md
 ```
@@ -306,7 +309,7 @@ call the same command functions, just from a different backend.
 When the Waveshare ESP32-P4-WIFI6 (4.3" 480×800, capacitive touch) board
 arrives:
 
-- New project: `p4-idf/` alongside `cyd-idf/`
+- New project lives in `waveshare/` alongside `cyd/`
 - Display: MIPI-DSI via `esp_lcd_mipi_dsi` (not SPI)
 - Touch: GT911 capacitive via `esp_lcd_touch_gt911` managed component
 - WiFi: ESP-Hosted via onboard ESP32-C6 (not standard `esp_wifi.h`)

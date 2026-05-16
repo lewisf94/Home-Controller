@@ -18,18 +18,18 @@ archive/
 # Album art (personal/copyright - do not commit)
 scripts/input_albums/
 scripts/sd_card_albums/
-cyd-arduino/src/album_art/album_*.h
+cyd/platformio/src/album_art/album_*.h
 
 # User credentials
-cyd-arduino/include/secrets.h
+cyd/platformio/include/secrets.h
 scripts/album_preview.png
 
-# PlatformIO build artefacts (new path after reorg)
-cyd-arduino/.pio/
+# PlatformIO build artefacts
+cyd/platformio/.pio/
 
 # IDF build artefacts
-cyd-idf/build/
-cyd-idf/managed_components/
-cyd-idf/sdkconfig
-cyd-idf/sdkconfig.old
-cyd-idf/dependencies.lock
+cyd/esp-idf/build/
+cyd/esp-idf/managed_components/
+cyd/esp-idf/sdkconfig
+cyd/esp-idf/sdkconfig.old
+cyd/esp-idf/dependencies.lock

@@ -209,7 +209,7 @@ Full detail in `docs/ROADMAP.md`. Three phases:
 1. **Phase 1 — Bug fixes (Arduino/CYD):** JPEG blank, serial flood, poll
    interval bump. Short items, do before or during IDF port.
 2. **Phase 2 — ESP-IDF port (CYD hardware):** same hardware, same features,
-   ESP-IDF 5.x + LVGL. Runs in `cyd-idf/` subfolder alongside `cyd-arduino/`.
+   ESP-IDF 5.x + LVGL. Runs in `cyd/esp-idf/` subfolder alongside `cyd/platformio/`.
 3. **Phase 3 — Home Assistant integration (on IDF build):** Pi 5 runs HA OS
    with Spotify integration. ESP32 speaks HA WebSocket instead of Spotify API
    directly. Eliminates OAuth refresh, fixes volume, enables real-time push
@@ -251,17 +251,17 @@ from Phase 3 carries over untouched.
 
 ## Useful local commands
 
-### Arduino build (cyd-arduino/)
+### Arduino build (cyd/platformio/)
 ```bash
-cd cyd-arduino
+cd cyd/platformio
 pio run                        # build
 pio run -t upload              # build + flash
 pio device monitor -b 115200   # serial monitor
 ```
 
-### IDF build (cyd-idf/)
+### IDF build (cyd/esp-idf/)
 ```bash
-cd cyd-idf
+cd cyd/esp-idf
 idf.py set-target esp32        # first time only
 idf.py build                   # build
 idf.py -p COM<X> flash monitor # flash + serial monitor
@@ -280,6 +280,6 @@ git log --oneline -10          # recent history
 - **Plans for next phases:** `docs/ROADMAP.md`
 - **What still needs to be tested on hardware:** `docs/TESTING.md`
 - **IDF port gotchas discovered on hardware:** `docs/PORT-NOTES.md`
-- **Arduino build (Phase 1, maintenance):** `cyd-arduino/`
-- **IDF build (Phase 2, active):** `cyd-idf/`
+- **Arduino build (Phase 1, maintenance):** `cyd/platformio/`
+- **IDF build (Phase 2, active):** `cyd/esp-idf/`
 - **Current status:** Phase 2 started — repo reorganised, IDF Step 0 scaffold in place. Next: `idf.py build` + hardware verify (backlight blink), then Step 1 (colour cycle).
