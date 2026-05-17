@@ -1,0 +1,9 @@
+# Custom partition table for the Music Controller (4 MB flash, no OTA).
+# Default IDF table only gives 1 MB to the app, which overflows once
+# WiFi + mbedTLS + LVGL are linked in. This gives 2 MB to the app and
+# leaves ~2 MB free for future use (SPIFFS, FATFS, etc.).
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xf000,   0x1000,
+factory,    app,  factory,  0x10000,  0x200000,

@@ -22,6 +22,7 @@ cyd/platformio/src/album_art/album_*.h
 
 # User credentials
 cyd/platformio/include/secrets.h
+cyd/esp-idf/main/secrets.h
 scripts/album_preview.png
 
 # PlatformIO build artefacts

@@ -1,27 +1,32 @@
 /*
- * Step 3 — XPT2046 touch as LVGL input device
+ * Phase 2 Step 4 — WiFi STA connect
  *
- * Done when: a red 50x50 square follows the finger anywhere on the
- * panel. Serial shows "Music Controller IDF step 3".
+ * Cumulative state (steps 0..4 verified on hardware):
+ *   Step 0 backlight blink
+ *   Step 1 ILI9341 colour cycle
+ *   Step 2 LVGL "Hello CYD" label
+ *   Step 3 XPT2046 touch as LVGL input (red square follows finger)
+ *   Step 4 esp_wifi STA, blocks until IP is logged
  *
- * Touch lives on its own SPI bus (SPI3_HOST / HSPI) to keep the
- * display bus free. The touch panel reports raw 12-bit ADC values;
- * the esp_lcd_touch driver maps them to screen coordinates using
- * x_max/y_max and the swap/mirror flags.
+ * Orientation (180-deg landscape, USB connector on the LEFT):
+ *   Screen (0,0) is top-left; X increases right (0..319); Y down (0..239).
  *
- * Orientation (after the 180-deg landscape flip applied in Step 3):
- *   - Long edge horizontal, USB connector on the LEFT.
- *   - Screen origin (0,0) is TOP-LEFT corner.
- *   - X increases RIGHTWARD (0 -> 319).
- *   - Y increases DOWNWARD (0 -> 239).
- *   - Display flags: swap_xy=true, mirror_x=true, mirror_y=true.
- *   - Touch flags:   swap_xy=1,    mirror_x=1,    mirror_y=1.
- * If the orientation needs to change later, flip BOTH the display
- * rotation and the touch flags together so they stay in sync.
+ * Touch pipeline:
+ *   The atanisoft XPT2046 driver scales raw ADC into 0..x_max / 0..y_max,
+ *   then esp_lcd_touch applies mirror_x / mirror_y / swap_xy. We do the
+ *   full rotation inside touch_calibrate() and leave those flags zero so
+ *   the math stays in one place.
+ *
+ * WiFi:
+ *   SSID and password live in secrets.h (gitignored). The connect is
+ *   synchronous in app_main -- it blocks until WIFI_CONNECTED_BIT is set,
+ *   so subsequent steps can assume the network is up. Auto-reconnects on
+ *   transient drops via the event handler.
  */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_lcd_panel_io.h"
@@ -31,8 +36,13 @@
 #include "esp_lcd_touch.h"
 #include "esp_lcd_touch_xpt2046.h"
 #include "esp_lvgl_port.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "nvs_flash.h"
 #include "lvgl.h"
 #include "esp_log.h"
+#include "secrets.h"
 
 #define GPIO_BL     21
 #define LCD_HOST    SPI2_HOST
@@ -54,28 +64,23 @@
 
 #define SQUARE_SIZE 50
 
-/*
- * XPT2046 calibration measured at the four corners on this panel
- * (180-deg landscape orientation). The atanisoft driver pre-scales
- * raw ADC into 0..x_max / 0..y_max, but the usable range is squashed
- * to roughly [31..202] on raw_x and [25..261] on raw_y. The
- * process_coordinates callback below maps that observed range
- * straight to the final screen coords (so we set the touch
- * swap_xy / mirror_x / mirror_y flags to 0 and do the rotation here).
- *
- * Direction (after the 180-deg flip):
- *   raw_y HIGH  -> screen LEFT      raw_y LOW  -> screen RIGHT
- *   raw_x HIGH  -> screen TOP       raw_x LOW  -> screen BOTTOM
- */
 #define TOUCH_RAW_X_MIN  31
 #define TOUCH_RAW_X_MAX 202
 #define TOUCH_RAW_Y_MIN  25
 #define TOUCH_RAW_Y_MAX 261
 
+#define WIFI_MAX_RETRY        10
+#define WIFI_CONNECTED_BIT    BIT0
+#define WIFI_FAIL_BIT         BIT1
+
 static const char *TAG = "main";
 
 static lv_obj_t *coord_label = NULL;
 static lv_obj_t *square      = NULL;
+static lv_obj_t *wifi_label  = NULL;
+
+static EventGroupHandle_t s_wifi_event_group;
+static int                s_wifi_retry_count = 0;
 
 static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
                             uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
@@ -117,9 +122,79 @@ static void on_press(lv_event_t *e)
     ESP_LOGI(TAG, "touch x=%d y=%d", (int)p.x, (int)p.y);
 }
 
+static void wifi_event_handler(void *arg, esp_event_base_t base,
+                               int32_t event_id, void *event_data)
+{
+    (void)arg;
+    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_wifi_retry_count < WIFI_MAX_RETRY) {
+            s_wifi_retry_count++;
+            ESP_LOGW(TAG, "wifi disconnected, retry %d/%d",
+                     s_wifi_retry_count, WIFI_MAX_RETRY);
+            esp_wifi_connect();
+        } else {
+            ESP_LOGE(TAG, "wifi failed to connect after %d retries", WIFI_MAX_RETRY);
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+    } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "wifi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        s_wifi_retry_count = 0;
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+static esp_err_t wifi_init_sta(void)
+{
+    s_wifi_event_group = xEventGroupCreate();
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid     = WIFI_SSID,
+            .password = WIFI_PASS,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "wifi connecting to \"%s\"...", WIFI_SSID);
+
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
+
+    return (bits & WIFI_CONNECTED_BIT) ? ESP_OK : ESP_FAIL;
+}
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Music Controller IDF step 3 (calibrated build)");
+    ESP_LOGI(TAG, "Music Controller IDF step 4 (wifi build)");
+
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    if (wifi_init_sta() != ESP_OK) {
+        ESP_LOGE(TAG, "wifi did not connect -- continuing without network");
+    }
 
     gpio_config_t bl = {
         .pin_bit_mask = (1ULL << GPIO_BL),
@@ -177,13 +252,6 @@ void app_main(void)
 
     esp_lcd_touch_handle_t tp = NULL;
     esp_lcd_touch_config_t tp_cfg = {
-        /*
-         * x_max / y_max apply to the PRE-swap axes (the atanisoft
-         * driver scales raw_X into 0..x_max and raw_Y into 0..y_max
-         * before the common esp_lcd_touch layer applies mirror/swap).
-         * With swap_xy=1, the screen-horizontal axis comes from raw_Y,
-         * so y_max must be LCD_H (320) and x_max must be LCD_V (240).
-         */
         .x_max        = LCD_V,
         .y_max        = LCD_H,
         .rst_gpio_num = GPIO_NUM_NC,
@@ -192,17 +260,6 @@ void app_main(void)
             .reset     = 0,
             .interrupt = 0,
         },
-        /*
-         * Mirror is applied BEFORE swap in esp_lcd_touch, so mirror_x
-         * flips what becomes screen Y after swap, and mirror_y flips
-         * what becomes screen X. Both set to 1 here to match the
-         * 180-degree display rotation (mirror_x=true, mirror_y=true
-         * in disp_cfg.rotation).
-         */
-        /*
-         * The rotation + mirror is handled inside touch_calibrate(),
-         * so we leave the driver-level transforms off here.
-         */
         .flags = {
             .swap_xy  = 0,
             .mirror_x = 0,
@@ -247,6 +304,16 @@ void app_main(void)
     lv_obj_t *top_label = lv_label_create(lv_screen_active());
     lv_label_set_text(top_label, "TOP");
     lv_obj_align(top_label, LV_ALIGN_TOP_MID, 0, 2);
+
+    wifi_label = lv_label_create(lv_screen_active());
+    esp_netif_ip_info_t ip_info = {0};
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+        lv_label_set_text_fmt(wifi_label, "IP " IPSTR, IP2STR(&ip_info.ip));
+    } else {
+        lv_label_set_text(wifi_label, "wifi: offline");
+    }
+    lv_obj_align(wifi_label, LV_ALIGN_TOP_LEFT, 4, 2);
 
     coord_label = lv_label_create(lv_screen_active());
     lv_label_set_text(coord_label, "x=? y=?");
