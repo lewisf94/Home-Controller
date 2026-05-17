@@ -7,6 +7,7 @@ idf_component_register(
         esp_http_client
         esp-tls
         mbedtls
+        esp_timer
         nvs_flash
         esp_wifi
         esp_event
