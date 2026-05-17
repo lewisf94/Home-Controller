@@ -1,12 +1,14 @@
 /*
- * Phase 2 Step 4 — WiFi STA connect
+ * Phase 2 Step 5 — HTTPS to Spotify (token refresh + GET /me/player)
  *
- * Cumulative state (steps 0..4 verified on hardware):
+ * Cumulative state (steps 0..5 verified on hardware):
  *   Step 0 backlight blink
  *   Step 1 ILI9341 colour cycle
  *   Step 2 LVGL "Hello CYD" label
  *   Step 3 XPT2046 touch as LVGL input (red square follows finger)
  *   Step 4 esp_wifi STA, blocks until IP is logged
+ *   Step 5 esp_http_client to accounts.spotify.com (token refresh)
+ *           + api.spotify.com/v1/me/player (now-playing title logged)
  *
  * Orientation (180-deg landscape, USB connector on the LEFT):
  *   Screen (0,0) is top-left; X increases right (0..319); Y down (0..239).
@@ -22,6 +24,12 @@
  *   synchronous in app_main -- it blocks until WIFI_CONNECTED_BIT is set,
  *   so subsequent steps can assume the network is up. Auto-reconnects on
  *   transient drops via the event handler.
+ *
+ * Spotify polling:
+ *   A dedicated FreeRTOS task (spotify_task) wakes every 5 s, ensures
+ *   the access token is fresh, GETs /v1/me/player, and logs the current
+ *   track title. Keeping it off the main loop means HTTPS round-trips
+ *   (0.5..2 s each) never block LVGL or touch.
  */
 
 #include "freertos/FreeRTOS.h"
@@ -43,6 +51,7 @@
 #include "lvgl.h"
 #include "esp_log.h"
 #include "secrets.h"
+#include "spotify.h"
 
 #define GPIO_BL     21
 #define LCD_HOST    SPI2_HOST
@@ -146,6 +155,20 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 }
 
+static void spotify_task(void *arg)
+{
+    (void)arg;
+    spotify_init(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
+
+    char title[128];
+    while (1) {
+        if (spotify_fetch_now_playing(title, sizeof(title))) {
+            ESP_LOGI(TAG, "now playing: %s", title);
+        }
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
 static esp_err_t wifi_init_sta(void)
 {
     s_wifi_event_group = xEventGroupCreate();
@@ -165,7 +188,7 @@ static esp_err_t wifi_init_sta(void)
     wifi_config_t wifi_config = {
         .sta = {
             .ssid     = WIFI_SSID,
-            .password = WIFI_PASS,
+            .password = WIFI_PASSWORD,
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
@@ -183,7 +206,7 @@ static esp_err_t wifi_init_sta(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Music Controller IDF step 4 (wifi build)");
+    ESP_LOGI(TAG, "Music Controller IDF step 5 (spotify build)");
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -328,4 +351,6 @@ void app_main(void)
 
     lv_obj_add_event_cb(lv_screen_active(), on_press, LV_EVENT_PRESSING, NULL);
     lvgl_port_unlock();
+
+    xTaskCreate(spotify_task, "spotify", 8192, NULL, 5, NULL);
 }
