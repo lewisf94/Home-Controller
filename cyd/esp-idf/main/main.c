@@ -1,24 +1,26 @@
 /*
- * Step 1 — ILI9341 colour cycle
+ * Step 2 — LVGL init + centred "Hello CYD" label
  *
- * Done when: screen cycles full-screen red -> green -> blue at 1 Hz,
- * no tearing, no garbage, serial shows "Music Controller IDF step 1" once.
+ * Done when: screen shows white "Hello CYD" text centred on black,
+ * stable for at least 30 s, serial shows "Music Controller IDF step 2".
  *
- * Mirror note: swap_xy(true) + mirror(true, false) is the standard CYD
- * landscape orientation. If the image is upside-down or mirrored, toggle
- * the second argument of esp_lcd_panel_mirror(). Document the result in
- * docs/PORT-NOTES.md.
+ * Adds esp_lvgl_port on top of the Step 1 ILI9341 init. LVGL runs in
+ * its own FreeRTOS task; UI mutations must be wrapped in
+ * lvgl_port_lock() / lvgl_port_unlock(). The swap_bytes flag handles
+ * the ILI9341 big-endian RGB565 quirk (replaces the manual setSwapBytes
+ * pattern from the Arduino build).
  */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
-#include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_ili9341.h"
+#include "esp_lvgl_port.h"
+#include "lvgl.h"
 #include "esp_log.h"
 
 #define GPIO_BL     21
@@ -34,19 +36,9 @@
 
 static const char *TAG = "main";
 
-static void fill(esp_lcd_panel_handle_t panel, uint16_t colour)
-{
-    uint16_t *line = heap_caps_malloc(LCD_H * sizeof(uint16_t), MALLOC_CAP_DMA);
-    for (int x = 0; x < LCD_H; x++) line[x] = colour;
-    for (int y = 0; y < LCD_V; y++) {
-        esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_H, y + 1, line);
-    }
-    heap_caps_free(line);
-}
-
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Music Controller IDF step 1");
+    ESP_LOGI(TAG, "Music Controller IDF step 2");
 
     gpio_config_t bl = {
         .pin_bit_mask = (1ULL << GPIO_BL),
@@ -56,9 +48,9 @@ void app_main(void)
     gpio_set_level(GPIO_BL, 1);
 
     spi_bus_config_t bus = {
-        .mosi_io_num  = GPIO_MOSI,
-        .miso_io_num  = GPIO_MISO,
-        .sclk_io_num  = GPIO_SCLK,
+        .mosi_io_num   = GPIO_MOSI,
+        .miso_io_num   = GPIO_MISO,
+        .sclk_io_num   = GPIO_SCLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = LCD_H * 40 * sizeof(uint16_t),
@@ -67,12 +59,12 @@ void app_main(void)
 
     esp_lcd_panel_io_handle_t io = NULL;
     esp_lcd_panel_io_spi_config_t io_cfg = {
-        .dc_gpio_num      = GPIO_DC,
-        .cs_gpio_num      = GPIO_CS,
-        .pclk_hz          = LCD_PIX_CLK,
-        .lcd_cmd_bits     = 8,
-        .lcd_param_bits   = 8,
-        .spi_mode         = 0,
+        .dc_gpio_num       = GPIO_DC,
+        .cs_gpio_num       = GPIO_CS,
+        .pclk_hz           = LCD_PIX_CLK,
+        .lcd_cmd_bits      = 8,
+        .lcd_param_bits    = 8,
+        .spi_mode          = 0,
         .trans_queue_depth = 10,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io));
@@ -86,15 +78,35 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(io, &panel_cfg, &panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
-    const uint16_t colours[] = { 0xF800, 0x07E0, 0x001F };
-    int i = 0;
-    while (1) {
-        fill(panel, colours[i]);
-        i = (i + 1) % 3;
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
+    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle     = io,
+        .panel_handle  = panel,
+        .buffer_size   = LCD_H * 20,
+        .double_buffer = true,
+        .hres          = LCD_H,
+        .vres          = LCD_V,
+        .monochrome    = false,
+        .rotation = {
+            .swap_xy  = true,
+            .mirror_x = false,
+            .mirror_y = false,
+        },
+        .flags = {
+            .buff_dma   = true,
+            .swap_bytes = true,
+        },
+    };
+    lv_disp_t *disp = lvgl_port_add_disp(&disp_cfg);
+    (void)disp;
+
+    lvgl_port_lock(0);
+    lv_obj_t *label = lv_label_create(lv_screen_active());
+    lv_label_set_text(label, "Hello CYD");
+    lv_obj_center(label);
+    lvgl_port_unlock();
 }

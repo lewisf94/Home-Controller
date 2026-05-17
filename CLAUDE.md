@@ -282,4 +282,4 @@ git log --oneline -10          # recent history
 - **IDF port gotchas discovered on hardware:** `docs/PORT-NOTES.md`
 - **Arduino build (Phase 1, maintenance):** `cyd/platformio/`
 - **IDF build (Phase 2, active):** `cyd/esp-idf/`
-- **Current status:** Phase 2 — Steps 0 and 1 verified on hardware. Backlight blink (Step 0) and ILI9341 full-screen red/green/blue colour cycle (Step 1) both pass. Next: Step 2 — LVGL init + "Hello CYD" label centred on screen. See `docs/ROADMAP.md` Phase 2 table for the full checkpoint list.
+- **Current status:** Phase 2 — Steps 0, 1 and 2 verified on hardware. LVGL is up and a centred "Hello CYD" label renders correctly via `esp_lvgl_port` on the ILI9341. Next: Step 3 — XPT2046 touch driver wired up as an LVGL input device (drag a square with a finger). See `docs/ROADMAP.md` Phase 2 table for the full checkpoint list.
