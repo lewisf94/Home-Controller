@@ -282,4 +282,4 @@ git log --oneline -10          # recent history
 - **IDF port gotchas discovered on hardware:** `docs/PORT-NOTES.md`
 - **Arduino build (Phase 1, maintenance):** `cyd/platformio/`
 - **IDF build (Phase 2, active):** `cyd/esp-idf/`
-- **Current status:** Phase 2 started — repo reorganised, IDF Step 0 scaffold in place. Next: `idf.py build` + hardware verify (backlight blink), then Step 1 (colour cycle).
+- **Current status:** Phase 2 — Steps 0 and 1 verified on hardware. Backlight blink (Step 0) and ILI9341 full-screen red/green/blue colour cycle (Step 1) both pass. Next: Step 2 — LVGL init + "Hello CYD" label centred on screen. See `docs/ROADMAP.md` Phase 2 table for the full checkpoint list.
