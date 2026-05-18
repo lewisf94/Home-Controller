@@ -37,8 +37,9 @@ static const char *s_client_id      = NULL;
 static const char *s_client_secret  = NULL;
 static const char *s_refresh_token  = NULL;
 
-static char     s_access_token[256] = {0};
-static int64_t  s_token_expiry_us   = 0;
+static char     s_access_token[256]   = {0};
+static int64_t  s_token_expiry_us     = 0;
+static char     s_album_art_url[256]  = {0};
 
 typedef struct {
     char  *data;
@@ -46,8 +47,8 @@ typedef struct {
     size_t cap;
 } resp_buf_t;
 
-#define RESP_INITIAL_CAP  1024
-#define RESP_MAX_CAP     16384
+#define RESP_INITIAL_CAP   1024
+#define RESP_MAX_CAP     262144  /* 256 KB -- fits a 640x640 album JPEG */
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
@@ -275,6 +276,36 @@ bool spotify_fetch_now_playing(char *title_out, size_t title_len)
         const char *item = json_find_key(buf.data, "item");
         if (item && json_get_string(item, "name", title_out, title_len)) {
             ok = true;
+
+            /* Capture the second url inside item.album.images[]. Spotify
+             * returns three images, widest-first: 640x640, 300x300, 64x64.
+             * The 300x300 is closest to our 160x160 display size (decoded
+             * at /2 scale -> 150x150), and its CDN-served version uses
+             * less-aggressive Huffman tables than the 640x640 -- JPEGDEC
+             * 1.6.2's bitstream reader chokes on the 640. Skipping the
+             * first url and re-running json_get_string finds the next
+             * "url" key, which belongs to the 300x300 entry. */
+            const char *images = json_find_key(item, "images");
+            s_album_art_url[0] = '\0';
+            if (images) {
+                const char *first = json_find_key(images, "url");
+                if (first && *first == '"') {
+                    /* Walk past the 640x640 url's quoted value (handling
+                     * any backslash-escaped characters) to land on the
+                     * remainder of the array, where the 300x300 lives. */
+                    const char *p = first + 1;
+                    while (*p && *p != '"') {
+                        if (*p == '\\' && p[1]) p += 2;
+                        else p++;
+                    }
+                    if (*p == '"') p++;
+                    if (!json_get_string(p, "url",
+                                         s_album_art_url, sizeof(s_album_art_url))) {
+                        /* No 300x300 entry -- fall back to the 640x640. */
+                        json_copy_string(first, s_album_art_url, sizeof(s_album_art_url));
+                    }
+                }
+            }
         } else {
             ESP_LOGW(TAG, "player response had no item.name");
         }
@@ -290,4 +321,53 @@ bool spotify_fetch_now_playing(char *title_out, size_t title_len)
     esp_http_client_cleanup(client);
     free(buf.data);
     return ok;
+}
+
+const char *spotify_get_album_art_url(void)
+{
+    return s_album_art_url;
+}
+
+unsigned char *spotify_download_bytes(const char *url, size_t *out_len)
+{
+    if (!url || url[0] == '\0' || !out_len) return NULL;
+    *out_len = 0;
+
+    /* Album JPEGs are typically 30-120 KB. The growing-buffer in
+     * http_event_handler caps at RESP_MAX_CAP (16 KB) which is too
+     * small -- pre-allocate a larger buffer here so we don't trip
+     * that ceiling. The handler will realloc up if needed, but its
+     * own MAX still applies; we therefore set buf.cap up front. */
+    resp_buf_t buf = {0};
+    buf.cap  = 8 * 1024;
+    buf.data = malloc(buf.cap);
+    if (!buf.data) return NULL;
+
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_GET,
+        .event_handler     = http_event_handler,
+        .user_data         = &buf,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 10000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        free(buf.data);
+        return NULL;
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200 || buf.len == 0) {
+        ESP_LOGW(TAG, "download failed (err=%d status=%d len=%u)",
+                 (int)err, status, (unsigned)buf.len);
+        free(buf.data);
+        return NULL;
+    }
+
+    *out_len = buf.len;
+    return (unsigned char *)buf.data;
 }

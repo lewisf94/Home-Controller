@@ -7,3 +7,8 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+# LVGL 9.5.0 has an unconditional compile of lv_observer.c whose required
+# types are only declared when LV_USE_OBSERVER is enabled. Turn it on so
+# the types are visible. We don't use the Observer API directly; the cost
+# is a few KB of code.
+CONFIG_LV_USE_OBSERVER=y

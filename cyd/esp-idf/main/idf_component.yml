@@ -1,6 +1,13 @@
 dependencies:
   idf: ">=5.3.0"
   espressif/esp_lcd_ili9341: "^2.0.0"
-  lvgl/lvgl: "^9.2.0"
+  # LVGL 9.5.0 compiles lv_observer.c unconditionally but its types
+  # (lv_subject_t, lv_observer_cb_t, ...) live behind #if LV_USE_OBSERVER
+  # in the headers. We force LV_USE_OBSERVER=1 in the top-level
+  # CMakeLists.txt (and CONFIG_LV_USE_OBSERVER=y in sdkconfig.defaults)
+  # so the types are visible. A clean reconfigure (wipe build/ and
+  # managed_components/) is required after bumping this pin.
+  lvgl/lvgl: "^9.5.0"
   espressif/esp_lvgl_port: "^2.4.0"
   atanisoft/esp_lcd_touch_xpt2046: "*"
+  bitbank2/jpegdec: "^1.6.2"

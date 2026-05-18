@@ -1,7 +1,7 @@
 /*
- * Phase 2 Step 5 — HTTPS to Spotify (token refresh + GET /me/player)
+ * Phase 2 Step 6 — Download nowplaying album art and display via lv_image
  *
- * Cumulative state (steps 0..5 verified on hardware):
+ * Cumulative state (steps 0..6 verified on hardware):
  *   Step 0 backlight blink
  *   Step 1 ILI9341 colour cycle
  *   Step 2 LVGL "Hello CYD" label
@@ -9,6 +9,10 @@
  *   Step 4 esp_wifi STA, blocks until IP is logged
  *   Step 5 esp_http_client to accounts.spotify.com (token refresh)
  *           + api.spotify.com/v1/me/player (now-playing title logged)
+ *   Step 6 HTTPS GET on item.album.images[0].url; decode 640x640 JPEG
+ *           with esp_jpeg at scale /4 to a 160x160 RGB565 buffer;
+ *           render via lv_image. New art is fetched only when the
+ *           URL changes (i.e. on track-change), not on every poll.
  *
  * Orientation (180-deg landscape, USB connector on the LEFT):
  *   Screen (0,0) is top-left; X increases right (0..319); Y down (0..239).
@@ -50,8 +54,13 @@
 #include "nvs_flash.h"
 #include "lvgl.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "album_art.h"
 #include "secrets.h"
 #include "spotify.h"
+
+#include <string.h>
+#include <stdlib.h>
 
 #define GPIO_BL     21
 #define LCD_HOST    SPI2_HOST
@@ -73,6 +82,10 @@
 
 #define SQUARE_SIZE 50
 
+#define ART_W 160
+#define ART_H 160
+#define ART_RGB_BYTES (ART_W * ART_H * 2)
+
 #define TOUCH_RAW_X_MIN  31
 #define TOUCH_RAW_X_MAX 202
 #define TOUCH_RAW_Y_MIN  25
@@ -87,6 +100,11 @@ static const char *TAG = "main";
 static lv_obj_t *coord_label = NULL;
 static lv_obj_t *square      = NULL;
 static lv_obj_t *wifi_label  = NULL;
+static lv_obj_t *art_image   = NULL;
+
+static uint8_t        *s_art_rgb = NULL;          /* 160x160 RGB565 buffer */
+static lv_image_dsc_t  s_art_dsc = {0};
+static char            s_art_url_loaded[256] = {0};
 
 static EventGroupHandle_t s_wifi_event_group;
 static int                s_wifi_retry_count = 0;
@@ -155,6 +173,37 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 }
 
+/* Decodes JPEG bytes into the static RGB565 buffer (sized for 160x160
+ * at most), then updates the on-screen lv_image under the LVGL lock.
+ * JPEGDEC handles scale selection internally based on source size. */
+static bool update_album_art(const unsigned char *jpeg, size_t jpeg_len)
+{
+    if (!s_art_rgb || !jpeg || jpeg_len == 0) return false;
+
+    uint16_t w = 0, h = 0;
+    if (!album_art_decode(jpeg, jpeg_len,
+                          (uint16_t *)s_art_rgb, ART_W * ART_H,
+                          &w, &h)) {
+        ESP_LOGW(TAG, "jpeg decode failed");
+        return false;
+    }
+    ESP_LOGI(TAG, "decoded %ux%u album art (%u bytes)",
+             (unsigned)w, (unsigned)h, (unsigned)(w * h * 2));
+
+    lvgl_port_lock(0);
+    s_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+    s_art_dsc.header.w   = w;
+    s_art_dsc.header.h   = h;
+    s_art_dsc.data_size  = (uint32_t)w * h * 2;
+    s_art_dsc.data       = s_art_rgb;
+    if (art_image) {
+        lv_image_set_src(art_image, &s_art_dsc);
+        lv_obj_invalidate(art_image);
+    }
+    lvgl_port_unlock();
+    return true;
+}
+
 static void spotify_task(void *arg)
 {
     (void)arg;
@@ -164,6 +213,20 @@ static void spotify_task(void *arg)
     while (1) {
         if (spotify_fetch_now_playing(title, sizeof(title))) {
             ESP_LOGI(TAG, "now playing: %s", title);
+
+            const char *url = spotify_get_album_art_url();
+            if (url && url[0] && strcmp(url, s_art_url_loaded) != 0) {
+                size_t jpeg_len = 0;
+                unsigned char *jpeg = spotify_download_bytes(url, &jpeg_len);
+                if (jpeg) {
+                    ESP_LOGI(TAG, "downloaded %u bytes of jpeg", (unsigned)jpeg_len);
+                    if (update_album_art(jpeg, jpeg_len)) {
+                        strncpy(s_art_url_loaded, url, sizeof(s_art_url_loaded) - 1);
+                        s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
+                    }
+                    free(jpeg);
+                }
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
@@ -206,7 +269,12 @@ static esp_err_t wifi_init_sta(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Music Controller IDF step 5 (spotify build)");
+    ESP_LOGI(TAG, "Music Controller IDF step 6 (album art build)");
+
+    s_art_rgb = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_DEFAULT);
+    if (!s_art_rgb) {
+        ESP_LOGE(TAG, "failed to allocate %d byte art buffer", ART_RGB_BYTES);
+    }
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -348,6 +416,12 @@ void app_main(void)
     lv_obj_set_style_bg_color(square, lv_palette_main(LV_PALETTE_RED), 0);
     lv_obj_set_style_border_width(square, 0, 0);
     lv_obj_remove_flag(square, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Album-art placeholder, top-right. lv_image_set_src() runs once
+     * the first JPEG decode finishes inside spotify_task. */
+    art_image = lv_image_create(lv_screen_active());
+    lv_obj_set_size(art_image, ART_W, ART_H);
+    lv_obj_align(art_image, LV_ALIGN_TOP_RIGHT, -2, 18);
 
     lv_obj_add_event_cb(lv_screen_active(), on_press, LV_EVENT_PRESSING, NULL);
     lvgl_port_unlock();
