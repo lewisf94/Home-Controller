@@ -37,6 +37,8 @@ static const char *TAG = "album_art";
 extern "C" {
     int  JPEG_openRAM(JPEGIMAGE *pJPEG, uint8_t *pData, int iDataSize,
                       JPEG_DRAW_CALLBACK *pfnDraw);
+    int  JPEG_openFile(JPEGIMAGE *pJPEG, const char *szFilename,
+                       JPEG_DRAW_CALLBACK *pfnDraw);
     int  JPEG_getWidth(JPEGIMAGE *pJPEG);
     int  JPEG_getHeight(JPEGIMAGE *pJPEG);
     int  JPEG_decode(JPEGIMAGE *pJPEG, int x, int y, int iOptions);
@@ -75,6 +77,53 @@ int draw_callback(JPEGDRAW *pDraw)
                static_cast<size_t>(w) * sizeof(uint16_t));
     }
     return 1;
+}
+
+/* Shared post-open path. Caller must have already populated `pJPEG`
+ * via JPEG_openRAM / JPEG_openFile so getWidth/getHeight return real
+ * values. Always closes `pJPEG` before returning. */
+bool decode_opened(JPEGIMAGE *pJPEG,
+                   uint16_t *out_rgb, size_t out_max_pixels,
+                   uint16_t *out_w, uint16_t *out_h)
+{
+    const int src_w = JPEG_getWidth(pJPEG);
+    const int src_h = JPEG_getHeight(pJPEG);
+    int scale_flag  = 0;
+    int divisor     = 1;
+    if (src_w > 320 || src_h > 320) {
+        scale_flag = JPEG_SCALE_QUARTER;
+        divisor    = 4;
+    } else if (src_w > 200 || src_h > 200) {
+        scale_flag = JPEG_SCALE_HALF;
+        divisor    = 2;
+    }
+    const int dest_w = src_w / divisor;
+    const int dest_h = src_h / divisor;
+    ESP_LOGI(TAG, "src=%dx%d divisor=%d dest=%dx%d max_pixels=%u",
+             src_w, src_h, divisor, dest_w, dest_h, (unsigned)out_max_pixels);
+
+    if (dest_w <= 0 || dest_h <= 0 ||
+        static_cast<size_t>(dest_w) * static_cast<size_t>(dest_h) > out_max_pixels) {
+        ESP_LOGE(TAG, "size check failed");
+        JPEG_close(pJPEG);
+        return false;
+    }
+
+    DecodeCtx ctx = { out_rgb, dest_w, dest_h };
+    JPEG_setPixelType(pJPEG, RGB565_LITTLE_ENDIAN);
+    pJPEG->pUser = &ctx;
+
+    const int rc       = JPEG_decode(pJPEG, 0, 0, scale_flag);
+    const int last_err = JPEG_getLastError(pJPEG);
+    JPEG_close(pJPEG);
+    if (rc != 1) {
+        ESP_LOGE(TAG, "JPEG_decode rc=%d lastError=%d", rc, last_err);
+        return false;
+    }
+
+    *out_w = static_cast<uint16_t>(dest_w);
+    *out_h = static_cast<uint16_t>(dest_h);
+    return true;
 }
 
 }  // namespace
@@ -132,44 +181,38 @@ extern "C" bool album_art_decode(const uint8_t *jpeg, size_t jpeg_len,
         return false;
     }
 
-    const int src_w = JPEG_getWidth(pJPEG);
-    const int src_h = JPEG_getHeight(pJPEG);
-    int scale_flag  = 0;
-    int divisor     = 1;
-    if (src_w > 320 || src_h > 320) {
-        scale_flag = JPEG_SCALE_QUARTER;
-        divisor    = 4;
-    } else if (src_w > 200 || src_h > 200) {
-        scale_flag = JPEG_SCALE_HALF;
-        divisor    = 2;
-    }
-    const int dest_w = src_w / divisor;
-    const int dest_h = src_h / divisor;
-    ESP_LOGI(TAG, "src=%dx%d divisor=%d dest=%dx%d max_pixels=%u",
-             src_w, src_h, divisor, dest_w, dest_h, (unsigned)out_max_pixels);
+    bool ok = decode_opened(pJPEG, out_rgb, out_max_pixels, out_w, out_h);
+    free(pJPEG);
+    return ok;
+}
 
-    if (dest_w <= 0 || dest_h <= 0 ||
-        static_cast<size_t>(dest_w) * static_cast<size_t>(dest_h) > out_max_pixels) {
-        ESP_LOGE(TAG, "size check failed");
-        JPEG_close(pJPEG);
+extern "C" bool album_art_decode_file(const char *path,
+                                      uint16_t *out_rgb, size_t out_max_pixels,
+                                      uint16_t *out_w, uint16_t *out_h)
+{
+    if (!path || !out_rgb || !out_w || !out_h) {
+        ESP_LOGE(TAG, "bad args");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "decode-file start: %s, free heap=%u largest=%u",
+             path,
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+
+    JPEGIMAGE *pJPEG = static_cast<JPEGIMAGE *>(calloc(1, sizeof(JPEGIMAGE)));
+    if (!pJPEG) {
+        ESP_LOGE(TAG, "calloc(%u) failed", (unsigned)sizeof(JPEGIMAGE));
+        return false;
+    }
+
+    if (!JPEG_openFile(pJPEG, path, draw_callback)) {
+        ESP_LOGE(TAG, "JPEG_openFile failed, lastError=%d", JPEG_getLastError(pJPEG));
         free(pJPEG);
         return false;
     }
 
-    DecodeCtx ctx = { out_rgb, dest_w, dest_h };
-    JPEG_setPixelType(pJPEG, RGB565_LITTLE_ENDIAN);
-    pJPEG->pUser = &ctx;
-
-    const int rc = JPEG_decode(pJPEG, 0, 0, scale_flag);
-    const int last_err = JPEG_getLastError(pJPEG);
-    JPEG_close(pJPEG);
+    bool ok = decode_opened(pJPEG, out_rgb, out_max_pixels, out_w, out_h);
     free(pJPEG);
-    if (rc != 1) {
-        ESP_LOGE(TAG, "JPEG_decode rc=%d lastError=%d", rc, last_err);
-        return false;
-    }
-
-    *out_w = static_cast<uint16_t>(dest_w);
-    *out_h = static_cast<uint16_t>(dest_h);
-    return true;
+    return ok;
 }

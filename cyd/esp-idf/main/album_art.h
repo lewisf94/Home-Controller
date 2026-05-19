@@ -34,6 +34,15 @@ bool album_art_decode(const uint8_t *jpeg, size_t jpeg_len,
                       uint16_t *out_rgb, size_t out_max_pixels,
                       uint16_t *out_w, uint16_t *out_h);
 
+/* Same contract, but reads the JPEG via JPEGDEC's POSIX-backed file
+ * path instead of from a RAM buffer. This matches what the Arduino
+ * build does (the openRAM path appears to mis-handle Spotify's
+ * mozjpeg-encoded streams in JPEGDEC 1.6.2). The file at `path` must
+ * exist and contain a complete JPEG. */
+bool album_art_decode_file(const char *path,
+                           uint16_t *out_rgb, size_t out_max_pixels,
+                           uint16_t *out_w, uint16_t *out_h);
+
 #ifdef __cplusplus
 }
 #endif

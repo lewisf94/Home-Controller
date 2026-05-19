@@ -11,3 +11,4 @@ dependencies:
   espressif/esp_lvgl_port: "^2.4.0"
   atanisoft/esp_lcd_touch_xpt2046: "*"
   bitbank2/jpegdec: "^1.6.2"
+  joltwallet/littlefs: "^1.14.8"

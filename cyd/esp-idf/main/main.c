@@ -56,6 +56,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "album_art.h"
+#include "littlefs.h"
 #include "secrets.h"
 #include "spotify.h"
 
@@ -72,6 +73,11 @@
 #define LCD_H       320
 #define LCD_V       240
 #define LCD_PIX_CLK (40 * 1000 * 1000)
+
+/* XPT2046 touch is on SPI3_HOST (GPIO 25/32/33/39). Now that album art
+ * is stored in LittleFS (internal flash) instead of the SD card, SPI3
+ * is free and touch can be enabled again. */
+#define ENABLE_TOUCH 1
 
 #define TOUCH_HOST     SPI3_HOST
 #define GPIO_TOUCH_IRQ  36
@@ -109,6 +115,7 @@ static char            s_art_url_loaded[256] = {0};
 static EventGroupHandle_t s_wifi_event_group;
 static int                s_wifi_retry_count = 0;
 
+#if ENABLE_TOUCH
 static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
                             uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
 {
@@ -130,6 +137,7 @@ static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
         y[i] = (uint16_t)fy;
     }
 }
+#endif /* ENABLE_TOUCH */
 
 static void on_press(lv_event_t *e)
 {
@@ -173,17 +181,22 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 }
 
-/* Decodes JPEG bytes into the static RGB565 buffer (sized for 160x160
- * at most), then updates the on-screen lv_image under the LVGL lock.
- * JPEGDEC handles scale selection internally based on source size. */
-static bool update_album_art(const unsigned char *jpeg, size_t jpeg_len)
+/* LittleFS scratch path where the freshly-downloaded JPEG lives between
+ * spotify_download_to_file() and album_art_decode_file(). Overwritten
+ * on every track change. */
+#define ART_JPEG_PATH "/littlefs/nowplaying.jpg"
+
+/* Decodes the JPEG file at ART_JPEG_PATH into the static RGB565
+ * buffer (sized for 160x160 at most), then updates the on-screen
+ * lv_image under the LVGL lock. JPEGDEC picks the scale internally. */
+static bool update_album_art_from_file(void)
 {
-    if (!s_art_rgb || !jpeg || jpeg_len == 0) return false;
+    if (!s_art_rgb) return false;
 
     uint16_t w = 0, h = 0;
-    if (!album_art_decode(jpeg, jpeg_len,
-                          (uint16_t *)s_art_rgb, ART_W * ART_H,
-                          &w, &h)) {
+    if (!album_art_decode_file(ART_JPEG_PATH,
+                               (uint16_t *)s_art_rgb, ART_W * ART_H,
+                               &w, &h)) {
         ESP_LOGW(TAG, "jpeg decode failed");
         return false;
     }
@@ -215,16 +228,16 @@ static void spotify_task(void *arg)
             ESP_LOGI(TAG, "now playing: %s", title);
 
             const char *url = spotify_get_album_art_url();
-            if (url && url[0] && strcmp(url, s_art_url_loaded) != 0) {
-                size_t jpeg_len = 0;
-                unsigned char *jpeg = spotify_download_bytes(url, &jpeg_len);
-                if (jpeg) {
-                    ESP_LOGI(TAG, "downloaded %u bytes of jpeg", (unsigned)jpeg_len);
-                    if (update_album_art(jpeg, jpeg_len)) {
+            if (url && url[0] && strcmp(url, s_art_url_loaded) != 0 &&
+                littlefs_is_mounted()) {
+                size_t bytes = 0;
+                if (spotify_download_to_file(url, ART_JPEG_PATH, &bytes)) {
+                    ESP_LOGI(TAG, "downloaded %u bytes -> %s",
+                             (unsigned)bytes, ART_JPEG_PATH);
+                    if (update_album_art_from_file()) {
                         strncpy(s_art_url_loaded, url, sizeof(s_art_url_loaded) - 1);
                         s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
                     }
-                    free(jpeg);
                 }
             }
         }
@@ -327,6 +340,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
+#if ENABLE_TOUCH
     spi_bus_config_t touch_bus = {
         .mosi_io_num   = GPIO_TOUCH_MOSI,
         .miso_io_num   = GPIO_TOUCH_MISO,
@@ -359,6 +373,7 @@ void app_main(void)
         .process_coordinates = touch_calibrate,
     };
     ESP_ERROR_CHECK(esp_lcd_touch_new_spi_xpt2046(tp_io, &tp_cfg, &tp));
+#endif /* ENABLE_TOUCH */
 
     const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
@@ -382,12 +397,15 @@ void app_main(void)
         },
     };
     lv_disp_t *disp = lvgl_port_add_disp(&disp_cfg);
+    (void)disp;  /* only consumed by the touch indev when enabled */
 
+#if ENABLE_TOUCH
     const lvgl_port_touch_cfg_t touch_cfg = {
         .disp   = disp,
         .handle = tp,
     };
     lvgl_port_add_touch(&touch_cfg);
+#endif /* ENABLE_TOUCH */
 
     lvgl_port_lock(0);
     lv_obj_remove_flag(lv_screen_active(), LV_OBJ_FLAG_SCROLLABLE);
@@ -425,6 +443,13 @@ void app_main(void)
 
     lv_obj_add_event_cb(lv_screen_active(), on_press, LV_EVENT_PRESSING, NULL);
     lvgl_port_unlock();
+
+    /* Mount LittleFS before kicking off the Spotify task so the download
+     * path in spotify_task can write the JPEG immediately. The task
+     * checks littlefs_is_mounted() and skips art on failure. */
+    if (!littlefs_mount()) {
+        ESP_LOGE(TAG, "LittleFS mount failed -- album art disabled");
+    }
 
     xTaskCreate(spotify_task, "spotify", 8192, NULL, 5, NULL);
 }

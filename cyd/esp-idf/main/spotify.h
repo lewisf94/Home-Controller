@@ -44,3 +44,13 @@ const char *spotify_get_album_art_url(void);
  * NULL on any failure (network, status != 200, allocation, etc).
  * Uses the IDF cert bundle, no auth header. */
 unsigned char *spotify_download_bytes(const char *url, size_t *out_len);
+
+/* Streams `url` (HTTPS) straight to `path` on the local filesystem,
+ * never holding the whole body in RAM. `path` is overwritten if it
+ * already exists. Returns true on success and writes the on-disk
+ * byte count to *out_len (may be NULL if uninteresting).
+ *
+ * Use this for binary payloads larger than the heap's biggest free
+ * block -- a fragmented post-WiFi heap can't realloc-grow into one
+ * contiguous slab, which is what spotify_download_bytes() needs. */
+bool spotify_download_to_file(const char *url, const char *path, size_t *out_len);

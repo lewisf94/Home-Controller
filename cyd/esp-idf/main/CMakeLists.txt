@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "spotify.c"
         "album_art.cpp"
+        "littlefs.c"
     INCLUDE_DIRS "." "../include"
     PRIV_REQUIRES
         esp_http_client
@@ -13,4 +14,6 @@ idf_component_register(
         esp_wifi
         esp_event
         esp_netif
+        joltwallet__littlefs
+        vfs
 )
