@@ -12,3 +12,6 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 # the types are visible. We don't use the Observer API directly; the cost
 # is a few KB of code.
 CONFIG_LV_USE_OBSERVER=y
+# Extra Montserrat sizes for the now-playing title and artist labels.
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_16=y

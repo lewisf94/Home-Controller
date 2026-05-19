@@ -1,18 +1,9 @@
 /*
- * Phase 2 Step 6 — Download nowplaying album art and display via lv_image
+ * Music Controller -- ESP-IDF main.
  *
- * Cumulative state (steps 0..6 verified on hardware):
- *   Step 0 backlight blink
- *   Step 1 ILI9341 colour cycle
- *   Step 2 LVGL "Hello CYD" label
- *   Step 3 XPT2046 touch as LVGL input (red square follows finger)
- *   Step 4 esp_wifi STA, blocks until IP is logged
- *   Step 5 esp_http_client to accounts.spotify.com (token refresh)
- *           + api.spotify.com/v1/me/player (now-playing title logged)
- *   Step 6 HTTPS GET on item.album.images[0].url; decode 640x640 JPEG
- *           with esp_jpeg at scale /4 to a 160x160 RGB565 buffer;
- *           render via lv_image. New art is fetched only when the
- *           URL changes (i.e. on track-change), not on every poll.
+ * Wiring only: brings up LCD + touch + LVGL + WiFi + Spotify polling,
+ * then hands the UI surface to ui.c which builds the album browser
+ * and now-playing screens.
  *
  * Orientation (180-deg landscape, USB connector on the LEFT):
  *   Screen (0,0) is top-left; X increases right (0..319); Y down (0..239).
@@ -23,17 +14,12 @@
  *   full rotation inside touch_calibrate() and leave those flags zero so
  *   the math stays in one place.
  *
- * WiFi:
- *   SSID and password live in secrets.h (gitignored). The connect is
- *   synchronous in app_main -- it blocks until WIFI_CONNECTED_BIT is set,
- *   so subsequent steps can assume the network is up. Auto-reconnects on
- *   transient drops via the event handler.
- *
  * Spotify polling:
- *   A dedicated FreeRTOS task (spotify_task) wakes every 5 s, ensures
- *   the access token is fresh, GETs /v1/me/player, and logs the current
- *   track title. Keeping it off the main loop means HTTPS round-trips
- *   (0.5..2 s each) never block LVGL or touch.
+ *   spotify_task wakes every 5 s, ensures the access token is fresh,
+ *   GETs /v1/me/player, and pushes the result into the UI. If the
+ *   album-art URL changed (track-change), it also downloads and
+ *   JPEG-decodes the art into s_art_rgb, then publishes via
+ *   ui_art_refresh().
  */
 
 #include "freertos/FreeRTOS.h"
@@ -59,6 +45,7 @@
 #include "littlefs.h"
 #include "secrets.h"
 #include "spotify.h"
+#include "ui.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -74,19 +61,12 @@
 #define LCD_V       240
 #define LCD_PIX_CLK (40 * 1000 * 1000)
 
-/* XPT2046 touch is on SPI3_HOST (GPIO 25/32/33/39). Now that album art
- * is stored in LittleFS (internal flash) instead of the SD card, SPI3
- * is free and touch can be enabled again. */
-#define ENABLE_TOUCH 1
-
 #define TOUCH_HOST     SPI3_HOST
 #define GPIO_TOUCH_IRQ  36
 #define GPIO_TOUCH_MOSI 32
 #define GPIO_TOUCH_MISO 39
 #define GPIO_TOUCH_CLK  25
 #define GPIO_TOUCH_CS   33
-
-#define SQUARE_SIZE 50
 
 #define ART_W 160
 #define ART_H 160
@@ -103,19 +83,13 @@
 
 static const char *TAG = "main";
 
-static lv_obj_t *coord_label = NULL;
-static lv_obj_t *square      = NULL;
-static lv_obj_t *wifi_label  = NULL;
-static lv_obj_t *art_image   = NULL;
-
-static uint8_t        *s_art_rgb = NULL;          /* 160x160 RGB565 buffer */
+static uint8_t        *s_art_rgb = NULL;
 static lv_image_dsc_t  s_art_dsc = {0};
 static char            s_art_url_loaded[256] = {0};
 
 static EventGroupHandle_t s_wifi_event_group;
 static int                s_wifi_retry_count = 0;
 
-#if ENABLE_TOUCH
 static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
                             uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
 {
@@ -136,25 +110,6 @@ static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
         x[i] = (uint16_t)fx;
         y[i] = (uint16_t)fy;
     }
-}
-#endif /* ENABLE_TOUCH */
-
-static void on_press(lv_event_t *e)
-{
-    (void)e;
-    lv_indev_t *indev = lv_indev_active();
-    if (!indev) {
-        return;
-    }
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
-    if (square) {
-        lv_obj_set_pos(square, p.x - SQUARE_SIZE / 2, p.y - SQUARE_SIZE / 2);
-    }
-    if (coord_label) {
-        lv_label_set_text_fmt(coord_label, "x=%d y=%d", (int)p.x, (int)p.y);
-    }
-    ESP_LOGI(TAG, "touch x=%d y=%d", (int)p.x, (int)p.y);
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
@@ -186,10 +141,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
  * on every track change. */
 #define ART_JPEG_PATH "/littlefs/nowplaying.jpg"
 
-/* Decodes the JPEG file at ART_JPEG_PATH into the static RGB565
- * buffer (sized for 160x160 at most), then updates the on-screen
- * lv_image under the LVGL lock. JPEGDEC picks the scale internally. */
-static bool update_album_art_from_file(void)
+/* Decode the JPEG at ART_JPEG_PATH into s_art_rgb and hand the buffer
+ * to ui.c, which publishes it under the LVGL lock. Returns true if
+ * the new art is now visible. */
+static bool decode_and_publish_art(void)
 {
     if (!s_art_rgb) return false;
 
@@ -203,17 +158,7 @@ static bool update_album_art_from_file(void)
     ESP_LOGI(TAG, "decoded %ux%u album art (%u bytes)",
              (unsigned)w, (unsigned)h, (unsigned)(w * h * 2));
 
-    lvgl_port_lock(0);
-    s_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
-    s_art_dsc.header.w   = w;
-    s_art_dsc.header.h   = h;
-    s_art_dsc.data_size  = (uint32_t)w * h * 2;
-    s_art_dsc.data       = s_art_rgb;
-    if (art_image) {
-        lv_image_set_src(art_image, &s_art_dsc);
-        lv_obj_invalidate(art_image);
-    }
-    lvgl_port_unlock();
+    ui_art_refresh(s_art_rgb, w, h);
     return true;
 }
 
@@ -222,24 +167,35 @@ static void spotify_task(void *arg)
     (void)arg;
     spotify_init(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
 
-    char title[128];
+    spotify_track_t info;
     while (1) {
-        if (spotify_fetch_now_playing(title, sizeof(title))) {
-            ESP_LOGI(TAG, "now playing: %s", title);
+        if (spotify_fetch_player(&info)) {
+            ESP_LOGI(TAG, "now playing: %s -- %s [%lu/%lu ms, %s]",
+                     info.artist, info.title,
+                     (unsigned long)info.progress_ms,
+                     (unsigned long)info.duration_ms,
+                     info.is_playing ? "playing" : "paused");
+            ui_set_track_info(&info);
 
-            const char *url = spotify_get_album_art_url();
-            if (url && url[0] && strcmp(url, s_art_url_loaded) != 0 &&
+            if (info.album_art_url[0] &&
+                strcmp(info.album_art_url, s_art_url_loaded) != 0 &&
                 littlefs_is_mounted()) {
                 size_t bytes = 0;
-                if (spotify_download_to_file(url, ART_JPEG_PATH, &bytes)) {
+                if (spotify_download_to_file(info.album_art_url, ART_JPEG_PATH, &bytes)) {
                     ESP_LOGI(TAG, "downloaded %u bytes -> %s",
                              (unsigned)bytes, ART_JPEG_PATH);
-                    if (update_album_art_from_file()) {
-                        strncpy(s_art_url_loaded, url, sizeof(s_art_url_loaded) - 1);
+                    if (decode_and_publish_art()) {
+                        strncpy(s_art_url_loaded, info.album_art_url,
+                                sizeof(s_art_url_loaded) - 1);
                         s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
                     }
                 }
             }
+        } else {
+            /* HTTP 204 (no active playback) or transient error: blank labels
+             * so a previous track isn't shown stale. The art widget keeps
+             * its last image; it'll refresh when playback resumes. */
+            ui_set_track_info(NULL);
         }
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
@@ -282,7 +238,7 @@ static esp_err_t wifi_init_sta(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Music Controller IDF step 6 (album art build)");
+    ESP_LOGI(TAG, "Music Controller IDF (browser + now-playing UI)");
 
     s_art_rgb = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_DEFAULT);
     if (!s_art_rgb) {
@@ -340,7 +296,6 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
-#if ENABLE_TOUCH
     spi_bus_config_t touch_bus = {
         .mosi_io_num   = GPIO_TOUCH_MOSI,
         .miso_io_num   = GPIO_TOUCH_MISO,
@@ -373,7 +328,6 @@ void app_main(void)
         .process_coordinates = touch_calibrate,
     };
     ESP_ERROR_CHECK(esp_lcd_touch_new_spi_xpt2046(tp_io, &tp_cfg, &tp));
-#endif /* ENABLE_TOUCH */
 
     const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
@@ -397,59 +351,20 @@ void app_main(void)
         },
     };
     lv_disp_t *disp = lvgl_port_add_disp(&disp_cfg);
-    (void)disp;  /* only consumed by the touch indev when enabled */
 
-#if ENABLE_TOUCH
     const lvgl_port_touch_cfg_t touch_cfg = {
         .disp   = disp,
         .handle = tp,
     };
     lvgl_port_add_touch(&touch_cfg);
-#endif /* ENABLE_TOUCH */
-
-    lvgl_port_lock(0);
-    lv_obj_remove_flag(lv_screen_active(), LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *top_label = lv_label_create(lv_screen_active());
-    lv_label_set_text(top_label, "TOP");
-    lv_obj_align(top_label, LV_ALIGN_TOP_MID, 0, 2);
-
-    wifi_label = lv_label_create(lv_screen_active());
-    esp_netif_ip_info_t ip_info = {0};
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
-        lv_label_set_text_fmt(wifi_label, "IP " IPSTR, IP2STR(&ip_info.ip));
-    } else {
-        lv_label_set_text(wifi_label, "wifi: offline");
-    }
-    lv_obj_align(wifi_label, LV_ALIGN_TOP_LEFT, 4, 2);
-
-    coord_label = lv_label_create(lv_screen_active());
-    lv_label_set_text(coord_label, "x=? y=?");
-    lv_obj_align(coord_label, LV_ALIGN_BOTTOM_MID, 0, -2);
-
-    square = lv_obj_create(lv_screen_active());
-    lv_obj_set_size(square, SQUARE_SIZE, SQUARE_SIZE);
-    lv_obj_set_pos(square, (LCD_H - SQUARE_SIZE) / 2, (LCD_V - SQUARE_SIZE) / 2);
-    lv_obj_set_style_bg_color(square, lv_palette_main(LV_PALETTE_RED), 0);
-    lv_obj_set_style_border_width(square, 0, 0);
-    lv_obj_remove_flag(square, LV_OBJ_FLAG_CLICKABLE);
-
-    /* Album-art placeholder, top-right. lv_image_set_src() runs once
-     * the first JPEG decode finishes inside spotify_task. */
-    art_image = lv_image_create(lv_screen_active());
-    lv_obj_set_size(art_image, ART_W, ART_H);
-    lv_obj_align(art_image, LV_ALIGN_TOP_RIGHT, -2, 18);
-
-    lv_obj_add_event_cb(lv_screen_active(), on_press, LV_EVENT_PRESSING, NULL);
-    lvgl_port_unlock();
 
     /* Mount LittleFS before kicking off the Spotify task so the download
-     * path in spotify_task can write the JPEG immediately. The task
-     * checks littlefs_is_mounted() and skips art on failure. */
+     * path can write the JPEG immediately. */
     if (!littlefs_mount()) {
         ESP_LOGE(TAG, "LittleFS mount failed -- album art disabled");
     }
+
+    ui_init(&s_art_dsc);
 
     xTaskCreate(spotify_task, "spotify", 8192, NULL, 5, NULL);
 }

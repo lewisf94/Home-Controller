@@ -81,7 +81,13 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 /* Find "<key>" in `json` and return a pointer to the value byte that
  * follows. Tolerates whitespace on either side of the colon, which
  * Spotify's API uses (e.g. `"name" : "iPhone"`). NULL if not present
- * or if the next non-space byte after the key isn't a colon. */
+ * or if the next non-space byte after the key isn't a colon.
+ *
+ * Note: this is a flat strstr-based search and does NOT respect object
+ * nesting. Fine for keys that are globally unique in the response (e.g.
+ * "access_token" in the token response, "expires_in", "progress_ms",
+ * "duration_ms"), but unsafe for keys like "name" that appear at many
+ * different depths. For those, use json_obj_get(). */
 static const char *json_find_key(const char *json, const char *key)
 {
     char needle[64];
@@ -95,6 +101,96 @@ static const char *json_find_key(const char *json, const char *key)
     p++;
     while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
     return p;
+}
+
+/* Advance past a JSON string starting at `p` (must point at the opening
+ * quote). Returns the byte after the closing quote. Handles backslash
+ * escapes so an escaped quote does not end the string early. */
+static const char *json_skip_string(const char *p)
+{
+    if (*p != '"') return p;
+    p++;
+    while (*p && *p != '"') {
+        if (*p == '\\' && p[1]) p += 2;
+        else p++;
+    }
+    if (*p == '"') p++;
+    return p;
+}
+
+/* Advance past a JSON value starting at `p`. Handles objects/arrays
+ * (with nesting), strings (with escapes), and primitives (numbers,
+ * true, false, null). Returns the byte after the value. */
+static const char *json_skip_value(const char *p)
+{
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == '"') {
+        return json_skip_string(p);
+    }
+    if (*p == '{' || *p == '[') {
+        char open = *p;
+        char close = (open == '{') ? '}' : ']';
+        int depth = 0;
+        while (*p) {
+            if (*p == '"') {
+                p = json_skip_string(p);
+                continue;
+            }
+            if (*p == open) depth++;
+            else if (*p == close) {
+                depth--;
+                if (depth == 0) { p++; return p; }
+            }
+            p++;
+        }
+        return p;
+    }
+    while (*p && *p != ',' && *p != '}' && *p != ']' &&
+           *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
+    return p;
+}
+
+/* Find `key` at the TOP LEVEL of the JSON object beginning at `obj`
+ * (which must start with '{'). Skips nested objects/arrays so we
+ * don't accidentally match the same key name at a deeper level.
+ * Returns pointer to the value (whitespace already consumed) or NULL. */
+static const char *json_obj_get(const char *obj, const char *key)
+{
+    if (!obj || *obj != '{') return NULL;
+    size_t key_len = strlen(key);
+
+    const char *p = obj + 1;
+    while (*p && *p != '}') {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+        if (*p != '"') break;
+
+        const char *key_start = p + 1;
+        const char *key_end = json_skip_string(p);  /* points after closing quote */
+        bool match = (key_end > key_start + 1) &&
+                     ((size_t)(key_end - key_start - 1) == key_len) &&
+                     (memcmp(key_start, key, key_len) == 0);
+        p = key_end;
+
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p != ':') break;
+        p++;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+
+        if (match) return p;
+        p = json_skip_value(p);
+    }
+    return NULL;
+}
+
+/* Returns pointer to the first '{' inside a JSON array (which must
+ * start with '['). NULL if the array is empty or malformed. Used to
+ * descend into `artists[0]` and `images[0]`. */
+static const char *json_arr_first_obj(const char *arr)
+{
+    if (!arr || *arr != '[') return NULL;
+    arr++;
+    while (*arr == ' ' || *arr == '\t' || *arr == '\n' || *arr == '\r') arr++;
+    return (*arr == '{') ? arr : NULL;
 }
 
 /* Copy the JSON string value starting at `p` (which must point at the
@@ -240,10 +336,10 @@ static bool ensure_token(void)
     return true;
 }
 
-bool spotify_fetch_now_playing(char *title_out, size_t title_len)
+bool spotify_fetch_player(spotify_track_t *info)
 {
-    if (!title_out || title_len == 0) return false;
-    title_out[0] = '\0';
+    if (!info) return false;
+    memset(info, 0, sizeof(*info));
 
     if (!ensure_token()) return false;
 
@@ -269,29 +365,58 @@ bool spotify_fetch_now_playing(char *title_out, size_t title_len)
     int status = esp_http_client_get_status_code(client);
 
     if (err == ESP_OK && status == 200 && buf.data) {
-        /* Scope the "name" lookup to the "item":{...} object so we get
-         * the track title, not the album name or first artist name.
-         * Use json_find_key so we tolerate Spotify's "item" : { ... }
-         * pretty-printed spacing. */
-        const char *item = json_find_key(buf.data, "item");
-        if (item && json_get_string(item, "name", title_out, title_len)) {
-            ok = true;
+        /* Top-level scalars: is_playing and progress_ms appear only at
+         * the root of the response so flat strstr is safe. */
+        const char *is_playing_v = json_obj_get(buf.data, "is_playing");
+        if (is_playing_v) info->is_playing = (*is_playing_v == 't');
 
-            /* Capture the first url inside item.album.images[]. Spotify
-             * orders the array widest-first, so this is the 640x640
-             * variant -- same one the Arduino build downloads. We rely
-             * on the file-callback decode path (album_art_decode_file)
-             * to handle it; the openRAM path in JPEGDEC 1.6.2 reliably
-             * fails on Spotify's mozjpeg-encoded streams, but openFile
-             * handles them fine. */
-            const char *images = json_find_key(item, "images");
-            s_album_art_url[0] = '\0';
-            if (images) {
-                json_get_string(images, "url",
-                                s_album_art_url, sizeof(s_album_art_url));
+        const char *progress_v = json_obj_get(buf.data, "progress_ms");
+        if (progress_v) info->progress_ms = (uint32_t)atoi(progress_v);
+
+        /* Drill into item.{name, duration_ms, album.name, artists[0].name,
+         * album.images[0].url} using depth-aware lookups so we don't
+         * accidentally match a "name" or "duration_ms" inside a nested
+         * device/context block. */
+        const char *item = json_obj_get(buf.data, "item");
+        if (item && *item == '{') {
+            const char *name_v = json_obj_get(item, "name");
+            if (name_v) json_copy_string(name_v, info->title, sizeof(info->title));
+
+            const char *duration_v = json_obj_get(item, "duration_ms");
+            if (duration_v) info->duration_ms = (uint32_t)atoi(duration_v);
+
+            const char *album_obj = json_obj_get(item, "album");
+            if (album_obj && *album_obj == '{') {
+                const char *album_name_v = json_obj_get(album_obj, "name");
+                if (album_name_v) json_copy_string(album_name_v, info->album, sizeof(info->album));
+
+                /* Spotify orders images widest-first, so [0] is the 640x640
+                 * variant. The openFile decode path in album_art.cpp handles
+                 * it. */
+                const char *images_arr = json_obj_get(album_obj, "images");
+                const char *first_img = json_arr_first_obj(images_arr);
+                if (first_img) {
+                    const char *url_v = json_obj_get(first_img, "url");
+                    if (url_v) json_copy_string(url_v, info->album_art_url,
+                                                sizeof(info->album_art_url));
+                }
             }
+
+            const char *artists_arr = json_obj_get(item, "artists");
+            const char *first_artist = json_arr_first_obj(artists_arr);
+            if (first_artist) {
+                const char *artist_name_v = json_obj_get(first_artist, "name");
+                if (artist_name_v) json_copy_string(artist_name_v, info->artist,
+                                                    sizeof(info->artist));
+            }
+
+            /* Cache for spotify_get_album_art_url() callers. */
+            strncpy(s_album_art_url, info->album_art_url, sizeof(s_album_art_url) - 1);
+            s_album_art_url[sizeof(s_album_art_url) - 1] = '\0';
+
+            ok = (info->title[0] != '\0');
         } else {
-            ESP_LOGW(TAG, "player response had no item.name");
+            ESP_LOGW(TAG, "player response had no item object");
         }
     } else if (err == ESP_OK && status == 204) {
         ESP_LOGI(TAG, "no active playback");
@@ -304,6 +429,20 @@ bool spotify_fetch_now_playing(char *title_out, size_t title_len)
 
     esp_http_client_cleanup(client);
     free(buf.data);
+    return ok;
+}
+
+bool spotify_fetch_now_playing(char *title_out, size_t title_len)
+{
+    if (!title_out || title_len == 0) return false;
+    spotify_track_t info;
+    bool ok = spotify_fetch_player(&info);
+    if (ok) {
+        strncpy(title_out, info.title, title_len - 1);
+        title_out[title_len - 1] = '\0';
+    } else {
+        title_out[0] = '\0';
+    }
     return ok;
 }
 
@@ -423,4 +562,43 @@ bool spotify_download_to_file(const char *url, const char *path, size_t *out_len
 
     if (out_len) *out_len = sink.written;
     return true;
+}
+
+bool spotify_play_album(const char *context_uri)
+{
+    if (!context_uri || context_uri[0] == '\0') return false;
+    if (!ensure_token()) return false;
+
+    char body[160];
+    int body_len = snprintf(body, sizeof(body),
+                            "{\"context_uri\":\"%s\"}", context_uri);
+    if (body_len <= 0 || body_len >= (int)sizeof(body)) return false;
+
+    esp_http_client_config_t cfg = {
+        .url               = "https://api.spotify.com/v1/me/player/play",
+        .method            = HTTP_METHOD_PUT,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 5000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+
+    char bearer[320];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
+    esp_http_client_set_header(client, "Authorization", bearer);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, body, body_len);
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    /* Spotify returns 204 No Content on success. 202 Accepted is also
+     * reported on some devices. 404 means no active device. */
+    bool ok = (err == ESP_OK && (status == 204 || status == 202));
+    if (!ok) {
+        ESP_LOGW(TAG, "play_album(%s) failed err=%d status=%d",
+                 context_uri, (int)err, status);
+    }
+    return ok;
 }

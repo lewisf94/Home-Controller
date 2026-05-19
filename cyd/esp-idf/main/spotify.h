@@ -1,56 +1,55 @@
 /*
- * Spotify Web API client (ESP-IDF, Phase 2 Step 5).
+ * Spotify Web API client (ESP-IDF).
  *
- * Minimal slice for the Step 5 milestone: refresh an OAuth access token
- * and fetch the current track title from /v1/me/player. Subsequent steps
- * will extend this with /play, /pause, /next, /previous, /seek, /volume
- * and the now-playing image URL.
+ * Read path:
+ *   spotify_refresh_access_token()  - rotate OAuth token via refresh token
+ *   spotify_fetch_player(&info)     - full player state into spotify_track_t
+ *   spotify_fetch_now_playing(buf)  - legacy title-only helper
  *
- * Threading: not thread-safe. Call from a single FreeRTOS task (the
- * one spawned in app_main()). Every call blocks on HTTPS I/O for
- * 0.5..2 s on a typical home connection.
+ * Write path:
+ *   spotify_play_album(uri)         - PUT /me/player/play with context_uri
+ *
+ * Threading: not thread-safe. Call from a single FreeRTOS task. Every
+ * call blocks on HTTPS I/O for 0.5..2 s on a typical home connection.
  */
 
 #pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+    bool      is_playing;
+    char      title[64];
+    char      artist[64];
+    char      album[64];
+    uint32_t  progress_ms;
+    uint32_t  duration_ms;
+    char      album_art_url[256];
+} spotify_track_t;
 
 void spotify_init(const char *client_id,
                   const char *client_secret,
                   const char *refresh_token);
 
-/* Rotates the access token using the refresh token. Returns true on
- * success. The token is cached internally and reused until ~1 minute
- * before its expiry, at which point the next API call refreshes it. */
 bool spotify_refresh_access_token(void);
 
-/* Calls GET /v1/me/player. On success writes the current track title
- * (UTF-8, NUL-terminated, truncated to title_len-1 chars) and returns
- * true. Returns false if nothing is currently playing (HTTP 204) or
- * the request fails. Caller supplies the buffer.
- *
- * Side effect: caches the largest album_art URL (item.album.images[0].url)
- * for subsequent retrieval via spotify_get_album_art_url(). */
+/* Populates *info with the current player state. Returns true on success.
+ * Returns false if no active playback (HTTP 204) or on any error. The
+ * album_art_url is cached internally; spotify_get_album_art_url() still
+ * returns the same string. */
+bool spotify_fetch_player(spotify_track_t *info);
+
+/* Legacy helper retained for the title-only Step 5 path. Equivalent to
+ * spotify_fetch_player() but copies just the title. */
 bool spotify_fetch_now_playing(char *title_out, size_t title_len);
 
-/* Returns the album-art URL captured by the last successful
- * spotify_fetch_now_playing() call. Pointer is valid until the next
- * fetch. Returns an empty string if no URL was captured. */
 const char *spotify_get_album_art_url(void);
 
-/* Downloads `url` (HTTPS) and returns a malloc'd buffer of bytes plus
- * the byte count via *out_len. Caller must free() the buffer. Returns
- * NULL on any failure (network, status != 200, allocation, etc).
- * Uses the IDF cert bundle, no auth header. */
 unsigned char *spotify_download_bytes(const char *url, size_t *out_len);
-
-/* Streams `url` (HTTPS) straight to `path` on the local filesystem,
- * never holding the whole body in RAM. `path` is overwritten if it
- * already exists. Returns true on success and writes the on-disk
- * byte count to *out_len (may be NULL if uninteresting).
- *
- * Use this for binary payloads larger than the heap's biggest free
- * block -- a fragmented post-WiFi heap can't realloc-grow into one
- * contiguous slab, which is what spotify_download_bytes() needs. */
 bool spotify_download_to_file(const char *url, const char *path, size_t *out_len);
+
+/* PUT /v1/me/player/play with body {"context_uri": context_uri}.
+ * Returns true on HTTP 2xx. */
+bool spotify_play_album(const char *context_uri);

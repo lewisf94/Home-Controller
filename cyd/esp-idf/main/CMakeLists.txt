@@ -4,6 +4,8 @@ idf_component_register(
         "spotify.c"
         "album_art.cpp"
         "littlefs.c"
+        "albums.c"
+        "ui.c"
     INCLUDE_DIRS "." "../include"
     PRIV_REQUIRES
         esp_http_client
