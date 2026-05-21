@@ -29,6 +29,7 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "mbedtls/base64.h"
 
 static const char *TAG = "spotify";
@@ -40,6 +41,41 @@ static const char *s_refresh_token  = NULL;
 static char     s_access_token[256]   = {0};
 static int64_t  s_token_expiry_us     = 0;
 static char     s_album_art_url[256]  = {0};
+static bool     s_is_playing          = false;
+
+#define NVS_NAMESPACE   "spotify"
+#define NVS_KEY_TOKEN   "access_token"
+
+static void token_save_to_nvs(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, NVS_KEY_TOKEN, s_access_token);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* Pre-load whatever token we cached in flash. On success the token is
+ * marked "untrusted" by leaving s_token_expiry_us at 0 -- the next API
+ * call will use it speculatively; if it has expired Spotify will reply
+ * 401 and the regular refresh path picks up. Worst case we waste one
+ * round-trip; typical case we skip an entire token refresh on boot. */
+static void token_load_from_nvs(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    size_t len = sizeof(s_access_token);
+    if (nvs_get_str(h, NVS_KEY_TOKEN, s_access_token, &len) == ESP_OK) {
+        /* Push expiry into the future so ensure_token() doesn't refresh
+         * immediately. A 401 in spotify_fetch_player() zeros it again. */
+        s_token_expiry_us = INT64_MAX;
+        ESP_LOGI(TAG, "loaded cached access token from NVS (%u bytes)",
+                 (unsigned)len);
+    } else {
+        s_access_token[0] = '\0';
+    }
+    nvs_close(h);
+}
 
 typedef struct {
     char  *data;
@@ -245,6 +281,10 @@ void spotify_init(const char *client_id,
     s_refresh_token = refresh_token;
     s_access_token[0] = '\0';
     s_token_expiry_us = 0;
+    /* Prime s_access_token with whatever we cached in flash last time so
+     * the first /v1/me/player request can use it directly. If it's stale
+     * the regular 401 path triggers a refresh. */
+    token_load_from_nvs();
 }
 
 static bool basic_auth_header(char *out, size_t out_len)
@@ -314,6 +354,7 @@ bool spotify_refresh_access_token(void)
             int64_t lifetime_us = (int64_t)exp * 1000000;
             s_token_expiry_us = esp_timer_get_time() + lifetime_us - 60 * 1000000;
             ESP_LOGI(TAG, "access token refreshed (expires in %d s)", exp);
+            token_save_to_nvs();
             ok = true;
         } else {
             ESP_LOGE(TAG, "token response missing fields: %.200s", buf.data);
@@ -415,14 +456,21 @@ bool spotify_fetch_player(spotify_track_t *info)
             s_album_art_url[sizeof(s_album_art_url) - 1] = '\0';
 
             ok = (info->title[0] != '\0');
+            if (ok) s_is_playing = info->is_playing;
         } else {
             ESP_LOGW(TAG, "player response had no item object");
         }
     } else if (err == ESP_OK && status == 204) {
         ESP_LOGI(TAG, "no active playback");
-    } else if (err == ESP_OK && status == 401) {
-        ESP_LOGW(TAG, "got 401, invalidating cached token");
+    } else if (status == 401) {
+        /* Expired/invalid token. NOTE: esp_http_client_perform() returns a
+         * non-ESP_OK err on 401 because it can't satisfy the Bearer auth
+         * challenge, so we must key off `status` alone here -- gating on
+         * err==ESP_OK would never fire and we'd loop forever on the stale
+         * token. Clear it so ensure_token() refreshes on the next poll. */
+        ESP_LOGW(TAG, "got 401, invalidating cached token; will refresh next poll");
         s_token_expiry_us = 0;
+        s_access_token[0]  = '\0';
     } else {
         ESP_LOGE(TAG, "/me/player failed (err=%d status=%d)", (int)err, status);
     }
@@ -601,4 +649,80 @@ bool spotify_play_album(const char *context_uri)
                  context_uri, (int)err, status);
     }
     return ok;
+}
+
+/* ── Playback controls ───────────────────────────────────────────────── */
+
+static int _do_cmd(esp_http_client_method_t method, const char *url, const char *body)
+{
+    if (!ensure_token()) return -1;
+
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = method,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 5000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return -1;
+
+    char bearer[320];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
+    esp_http_client_set_header(client, "Authorization", bearer);
+    if (body && body[0]) {
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(client, body, (int)strlen(body));
+    }
+
+    esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    return status;
+}
+
+static inline bool _cmd_ok(int status)
+{
+    return status == 200 || status == 204 || status == 202;
+}
+
+bool spotify_toggle_play_pause(void)
+{
+    const char *url = s_is_playing
+        ? "https://api.spotify.com/v1/me/player/pause"
+        : "https://api.spotify.com/v1/me/player/play";
+    int st = _do_cmd(HTTP_METHOD_PUT, url, NULL);
+    bool ok = _cmd_ok(st);
+    if (ok) s_is_playing = !s_is_playing;
+    return ok;
+}
+
+bool spotify_prev_track(void)
+{
+    return _cmd_ok(_do_cmd(HTTP_METHOD_POST,
+                           "https://api.spotify.com/v1/me/player/previous", NULL));
+}
+
+bool spotify_next_track(void)
+{
+    return _cmd_ok(_do_cmd(HTTP_METHOD_POST,
+                           "https://api.spotify.com/v1/me/player/next", NULL));
+}
+
+bool spotify_seek_position(uint32_t position_ms)
+{
+    char url[96];
+    snprintf(url, sizeof(url),
+             "https://api.spotify.com/v1/me/player/seek?position_ms=%lu",
+             (unsigned long)position_ms);
+    return _cmd_ok(_do_cmd(HTTP_METHOD_PUT, url, NULL));
+}
+
+bool spotify_set_volume(int pct)
+{
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    char url[80];
+    snprintf(url, sizeof(url),
+             "https://api.spotify.com/v1/me/player/volume?volume_percent=%d", pct);
+    return _cmd_ok(_do_cmd(HTTP_METHOD_PUT, url, NULL));
 }

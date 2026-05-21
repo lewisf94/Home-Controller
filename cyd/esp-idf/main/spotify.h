@@ -53,3 +53,10 @@ bool spotify_download_to_file(const char *url, const char *path, size_t *out_len
 /* PUT /v1/me/player/play with body {"context_uri": context_uri}.
  * Returns true on HTTP 2xx. */
 bool spotify_play_album(const char *context_uri);
+
+/* Playback controls -- all blocking HTTPS, call from the Spotify task. */
+bool spotify_toggle_play_pause(void);
+bool spotify_prev_track(void);
+bool spotify_next_track(void);
+bool spotify_seek_position(uint32_t position_ms);
+bool spotify_set_volume(int pct);

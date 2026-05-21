@@ -24,6 +24,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -46,6 +47,8 @@
 #include "secrets.h"
 #include "spotify.h"
 #include "ui.h"
+#include "mcp_input.h"
+#include "input.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -89,6 +92,40 @@ static char            s_art_url_loaded[256] = {0};
 
 static EventGroupHandle_t s_wifi_event_group;
 static int                s_wifi_retry_count = 0;
+
+/* Typed Spotify command queue.  All requests from the LVGL / input tasks
+ * go here; spotify_task drains them.  Depth 8 is generous -- commands
+ * are dispatched in <2 s so the queue is almost always empty. */
+typedef enum {
+    SCMD_PLAY_ALBUM,
+    SCMD_TOGGLE_PLAY,
+    SCMD_PREV_TRACK,
+    SCMD_NEXT_TRACK,
+    SCMD_SEEK_MS,
+    SCMD_SET_VOLUME,
+} scmd_type_t;
+
+typedef struct {
+    scmd_type_t  type;
+    uint32_t     param;  /* seek_ms (SCMD_SEEK_MS) or volume_pct (SCMD_SET_VOLUME) */
+    const char  *uri;    /* SCMD_PLAY_ALBUM only; points into .rodata, always valid */
+} scmd_t;
+
+static QueueHandle_t s_cmd_queue = NULL;
+
+static void _post_cmd(scmd_type_t type, uint32_t param, const char *uri)
+{
+    if (!s_cmd_queue) return;
+    scmd_t cmd = { .type = type, .param = param, .uri = uri };
+    (void)xQueueSend(s_cmd_queue, &cmd, 0);
+}
+
+void ui_request_play(const char *uri)         { _post_cmd(SCMD_PLAY_ALBUM,   0,     uri); }
+void ui_request_toggle_play(void)             { _post_cmd(SCMD_TOGGLE_PLAY,  0,     NULL); }
+void ui_request_prev(void)                    { _post_cmd(SCMD_PREV_TRACK,   0,     NULL); }
+void ui_request_next(void)                    { _post_cmd(SCMD_NEXT_TRACK,   0,     NULL); }
+void ui_request_seek(uint32_t ms)             { _post_cmd(SCMD_SEEK_MS,      ms,    NULL); }
+void ui_request_volume(int pct)               { _post_cmd(SCMD_SET_VOLUME,   (uint32_t)pct, NULL); }
 
 static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
                             uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
@@ -192,12 +229,48 @@ static void spotify_task(void *arg)
                 }
             }
         } else {
-            /* HTTP 204 (no active playback) or transient error: blank labels
-             * so a previous track isn't shown stale. The art widget keeps
-             * its last image; it'll refresh when playback resumes. */
             ui_set_track_info(NULL);
         }
-        vTaskDelay(pdMS_TO_TICKS(5000));
+
+        /* Poll every 5 s, but wake up early for any queued command. */
+        TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
+        for (;;) {
+            scmd_t cmd = {0};
+            TickType_t now  = xTaskGetTickCount();
+            TickType_t wait = (now >= deadline) ? 0 : (deadline - now);
+            if (xQueueReceive(s_cmd_queue, &cmd, wait) == pdTRUE) {
+                bool ok = false;
+                switch (cmd.type) {
+                    case SCMD_PLAY_ALBUM:
+                        ok = spotify_play_album(cmd.uri);
+                        ESP_LOGI(TAG, "play_album(%s) -> %s", cmd.uri, ok ? "ok" : "FAILED");
+                        break;
+                    case SCMD_TOGGLE_PLAY:  ok = spotify_toggle_play_pause();         break;
+                    case SCMD_PREV_TRACK:   ok = spotify_prev_track();                break;
+                    case SCMD_NEXT_TRACK:   ok = spotify_next_track();                break;
+                    case SCMD_SEEK_MS:      ok = spotify_seek_position(cmd.param);    break;
+                    case SCMD_SET_VOLUME:   ok = spotify_set_volume((int)cmd.param);  break;
+                }
+                (void)ok;
+                break;
+            }
+            if (xTaskGetTickCount() >= deadline) break;
+        }
+    }
+}
+
+static void input_task(void *arg)
+{
+    (void)arg;
+    mcp_input_init();
+    input_init();
+    for (;;) {
+        mcp_input_update();
+        if (lvgl_port_lock(10)) {
+            input_update();
+            lvgl_port_unlock();
+        }
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
@@ -366,5 +439,11 @@ void app_main(void)
 
     ui_init(&s_art_dsc);
 
+    s_cmd_queue = xQueueCreate(8, sizeof(scmd_t));
+    if (!s_cmd_queue) {
+        ESP_LOGE(TAG, "cmd queue alloc failed");
+    }
+
     xTaskCreate(spotify_task, "spotify", 8192, NULL, 5, NULL);
+    xTaskCreate(input_task,   "input",   4096, NULL, 4, NULL);
 }

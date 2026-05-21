@@ -123,6 +123,55 @@ interrupt path to keep debounce timers ticking. Port B unused.
 
 ## Architecture
 
+The project targets the same hardware from two codebases, with two future
+targets planned. Each is a self-contained section below so they stay decoupled
+as work moves between them.
+
+### CYD — ESP-IDF build (current, Phase 2) — `cyd/esp-idf/`
+
+ESP-IDF 5.x/6.0 + LVGL 9.5. Cooperative multitasking via three FreeRTOS tasks;
+input is fully decoupled from rendering and network I/O, which is why the
+encoder and buttons stay smooth even during blocking Spotify HTTPS calls.
+
+```
+app_main (main.c) ── init NVS/WiFi/LittleFS, bring up LVGL port + display + touch,
+   │                 mount albums, create the task set and the command queue
+   │
+   ├── lvgl task (esp_lvgl_port) ── owns all rendering; LVGL objects only
+   │                                touched under lvgl_port_lock()
+   │
+   ├── input_task (main.c) ── 2 ms loop: mcp_input_update() then, under the LVGL
+   │     │                    lock, input_update(). Never blocks on the network.
+   │     ├── mcp_input.c ── low-level MCP23017 driver (new IDF i2c_master API):
+   │     │                  gray-code encoder state machine, button debounce
+   │     └── input.c ── dispatcher: encoder/button events → ui_request_*() which
+   │                    post typed scmd_t commands onto s_cmd_queue
+   │
+   └── spotify_task (main.c) ── drains s_cmd_queue (scmd_t) and runs the blocking
+         │                      HTTPS calls off the LVGL/input path; also polls
+         │                      /me/player and pushes state into ui.c
+         ├── spotify.c ── Web API client (token refresh persisted to NVS, GET
+         │                /me/player, POST /next /previous, PUT /play /pause
+         │                /seek, volume); JSON via a small purpose-built scanner
+         ├── ui.c ── LVGL album browser + now-playing + volume HUD
+         ├── album_art.cpp ── JPEGDEC decode of now-playing art → LittleFS
+         ├── album_thumbs.c ── embedded RGB565 browser thumbnails (EMBED_FILES)
+         ├── albums.c ── album list / metadata
+         └── littlefs.c ── internal-flash storage mount (album art)
+```
+
+Threading rule: LVGL is single-threaded — only the lvgl task and code holding
+`lvgl_port_lock()` may touch LVGL objects. Cross-task work flows one way:
+`input_task` → `s_cmd_queue` → `spotify_task`. No blocking call runs under the
+LVGL lock.
+
+### CYD — Arduino/PlatformIO build (Phase 1, maintenance) — `cyd/platformio/`
+
+Single-threaded `loop()`: `mcp_input_update()` → `input_update()` →
+`spotify_update()` → `ui_update()`. Simpler, but input is polled only once per
+loop, so a blocking Spotify call or large redraw can starve the encoder (see the
+responsiveness note in "Known bugs / follow-ups").
+
 ```
 main.cpp ── setup wiring, mounts SD, polls touch, runs main loop
    │
@@ -145,6 +194,22 @@ kept so `ui.cpp` can call it without knowing about the MCP driver. This is a
 deliberate compatibility shim from the MCP migration.
 
 `ui_fancy_backup.cpp/h` are unused legacy files — safe to ignore.
+
+### Future: Home Assistant integration (Phase 3) — not started
+
+**Not in use yet — this is the next stage.** The ESP32 will speak the HA
+WebSocket API instead of calling Spotify directly: HA OS on a Pi 5 owns the
+Spotify integration, eliminating on-device OAuth refresh, fixing phone volume,
+and enabling real-time push state. This will land as its own component on the
+ESP-IDF build (the IDF architecture above is the carrier). See `docs/ROADMAP.md`
+Phase 3 for the handshake and HA setup. Keep this separate from the Spotify
+client — the goal is to swap the backend, not entangle the two.
+
+### Future: ESP32-P4 board — not started (board not yet arrived)
+
+A later migration to the ESP32-P4. The HA client component from Phase 3 is meant
+to carry over untouched. Tracked as its own target so CYD-specific wiring and
+P4-specific bring-up don't bleed into each other.
 
 ---
 
@@ -193,9 +258,19 @@ full analysis and fix options.
    state-corruption bug on consecutive `open()`/`decode()` calls on the
    same instance. Fix: make `jpeg_np` a local variable inside the decode
    block (2-line change).
-2. **Encoder sluggish under fast spin** — `mcp_input_update()` Serial.printf
-   flood fills the TX FIFO and blocks the loop ~60 ms per event. Fix: gate
-   all hot-path prints behind `#define MCP_DEBUG`.
+2. **Encoder less responsive than the IDF build (Arduino only)** — the original
+   Serial.printf-flood cause is already fixed (all hot-path prints are gated
+   behind `#define MCP_DEBUG`, which is off). The remaining limit is structural:
+   the Arduino build polls input once per single-threaded `loop()`, so a
+   blocking `spotify_update()` (0.5–2 s HTTPS) or a large `ui_update()` redraw
+   starves `mcp_input_update()` and fast spins drop quadrature steps. The IDF
+   build avoids this with a dedicated 2 ms input task. To match it on Arduino,
+   move *only* `mcp_input_update()` (pure I2C read + state machine, touches only
+   its own statics) onto a FreeRTOS task pinned to core 0, leaving
+   `input_update()` / Spotify / UI on the loop — a clean producer/consumer split
+   over the existing `re1.count` / `event_pending` counters. Note the standing
+   caution below about not forking the driver into a task without explicit ask;
+   this is the lower-risk variant if pursued.
 3. **Volume PUT doesn't change phone volume** — Spotify API limitation on
    Android/iOS. Works on desktop / Spotify Connect speakers. Fix comes in
    Phase 3 (HA integration).
@@ -282,4 +357,25 @@ git log --oneline -10          # recent history
 - **IDF port gotchas discovered on hardware:** `docs/PORT-NOTES.md`
 - **Arduino build (Phase 1, maintenance):** `cyd/platformio/`
 - **IDF build (Phase 2, active):** `cyd/esp-idf/`
-- **Current status:** Phase 2 — Steps 0–6 verified on hardware. Display, LVGL, XPT2046 touch, WiFi STA, Spotify HTTPS, and album art are all up. Boot log shows `access token refreshed`, `now playing: <title>`, `downloaded N bytes -> /littlefs/nowplaying.jpg`, and `decoded 160x160 album art`. Album art is stored in a 256 KB LittleFS partition on internal flash (`storage` label, 0x210000) — avoids SD/SPI/DMA conflicts. JPEGDEC `openFile` path (via VFS) scales 640×640 Spotify JPEGs to 160×160 RGB565 and renders via `lv_image`. Touch re-enabled (SPI3 free now SD is gone). WiFi + Spotify credentials live in `cyd/esp-idf/include/secrets.h` (gitignored; template at `include/secrets.h.example`). Next: Step 7 onwards — see `docs/ROADMAP.md` Phase 2 table.
+- **Current status: MILESTONE — CYD fully working on ESP-IDF.** The ESP-IDF
+  build is now feature-complete for the CYD hardware and verified smooth on
+  device: display, LVGL 9.5, XPT2046 touch, WiFi STA, Spotify HTTPS (token
+  persisted to NVS), album art, the LVGL album browser + now-playing UI, and
+  **MCP23017 hardware controls — four buttons + RE1 rotary encoder — all
+  responsive**. Input runs in its own 2 ms FreeRTOS task and posts typed
+  commands to the Spotify task via a queue, so controls stay smooth during
+  blocking HTTPS calls. The encoder snaps the carousel to the centred album per
+  detent; RE1 turn in now-playing adjusts volume (clockwise = louder) with a
+  300 ms-debounced PUT and a volume HUD; long titles ellipsise instead of
+  overlapping the artist. Album art is stored in a 256 KB LittleFS partition on
+  internal flash (`storage` label, 0x210000) — avoids SD/SPI/DMA conflicts.
+  JPEGDEC `openFile` path (via VFS) scales 640×640 Spotify JPEGs to 160×160
+  RGB565 and renders via `lv_image`. WiFi + Spotify credentials live in
+  `cyd/esp-idf/include/secrets.h` (gitignored; template at
+  `include/secrets.h.example`).
+  - **Known hardware limit:** browser scroll tearing — the CYD's ILI9341 TE pin
+    isn't wired, so there's no vsync to sync redraws to. Buffer-size and
+    SPI-clock tweaks were tried and reverted (both degraded TLS heap / made it
+    worse). Accepted as unfixable without hardware TE wiring.
+  - **Next:** Phase 3 — Home Assistant integration (see Architecture → "Future:
+    Home Assistant integration" and `docs/ROADMAP.md` Phase 3).

@@ -39,3 +39,26 @@ void ui_set_track_info(const spotify_track_t *info);
  * Mutates the dsc passed at ui_init and refreshes the image, all
  * under the LVGL lock. Safe to call from any task. */
 void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h);
+
+/* Hook used by ui.c when the user taps a card on the browser. The host
+ * (main.c) implements this and forwards the URI to the Spotify task via
+ * a FreeRTOS queue so the HTTPS PUT doesn't block the LVGL render loop.
+ * The pointer must stay valid until the task picks it up -- in practice
+ * we hand over album URIs that live in .rodata, which is always valid. */
+void ui_request_play(const char *context_uri);
+
+/* Spotify command callbacks -- implemented in main.c, post to the Spotify
+ * task queue. Safe to call from any context including under the LVGL lock. */
+void ui_request_toggle_play(void);
+void ui_request_prev(void);
+void ui_request_next(void);
+void ui_request_seek(uint32_t ms);
+void ui_request_volume(int pct);
+
+/* UI state queries and actions -- must be called under the LVGL lock. */
+bool     ui_is_now_playing(void);
+void     ui_toggle_view(void);
+void     ui_play_centered_album(void);
+void     ui_scroll_browser(int32_t delta);
+uint32_t ui_get_progress_ms(void);
+void     ui_show_volume_hud(int pct, bool muted);

@@ -19,6 +19,49 @@ Known issues still open (see below, Phase 1):
 
 ---
 
+## Build matrix — 6 variants (3 platforms × 2 backends)
+
+Each of the three hardware/toolchain iterations should ship in **two
+backend flavours**: a **non-HA** build that talks to the Spotify Web API
+directly, and an **HA** build that talks to Home Assistant over WebSocket
+(see Phase 3 for the HA backend design). The UI/input layers are shared
+within a platform; only the backend component (`spotify/` vs `ha_client/`)
+swaps out.
+
+| Platform | Non-HA (direct Spotify Web API) | HA (WebSocket to Home Assistant) |
+|---|---|---|
+| **PlatformIO CYD** (Arduino) | Shipped, live product. Needs polish (Phase 1 bugs). | Not started. |
+| **ESP-IDF CYD** | Active — Phase 2, on hardware. Needs polish. | Not started — Phase 3. |
+| **ESP-IDF P4** (Waveshare) | Future — board not arrived. | Future — board not arrived. |
+
+**Status legend:** "Needs polish" = functional on hardware but has open
+bugs / rough edges to clean up before it's a finished variant.
+
+**How the two backends differ (applies to every platform):**
+- *Non-HA:* `esp_http_client`/`WiFiClientSecure` HTTPS to Spotify; OAuth
+  refresh-token flow; polls `GET /v1/me/player`; album art from Spotify CDN.
+- *HA:* `esp_websocket_client` to `ws://<ha-host>:8123/api/websocket`; one
+  static long-lived token (no OAuth refresh); real-time `state_changed`
+  push (no polling); album art via HA-proxied `entity_picture` (local
+  network, no TLS). Fixes the Spotify mobile volume limitation (1C).
+
+**Selection mechanism (decide during Phase 3 build-out):** a compile-time
+switch — e.g. a `BACKEND=spotify|ha` CMake/PlatformIO option (or a
+`menuconfig` choice on IDF) that selects which backend component links in.
+Keeps one source tree per platform rather than forked branches.
+
+**Shared across all 6:** album-art conversion scripts (`scripts/`), album
+list/metadata, the `current_track_info`-style state struct, and command
+function signatures (`*_next_track`, `*_play_album`, etc.) so the UI never
+needs to know which backend is compiled in.
+
+**Polish backlog (pre-existing variants):**
+- PlatformIO CYD non-HA: clear Phase 1 bug list (1A/1E hardware verify, 1D poll).
+- ESP-IDF CYD non-HA: now-playing layout, album browser thumbnails/scroll,
+  async play, NVS token (in progress on hardware).
+
+---
+
 ## Phase 1 — Fix known CYD/Arduino bugs (do before or during IDF port)
 
 These are confirmed root causes with clear fixes. Short work items.

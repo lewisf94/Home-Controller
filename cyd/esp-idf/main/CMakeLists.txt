@@ -3,10 +3,15 @@ idf_component_register(
         "main.c"
         "spotify.c"
         "album_art.cpp"
+        "album_thumbs.c"
         "littlefs.c"
         "albums.c"
         "ui.c"
+        "mcp_input.c"
+        "input.c"
     INCLUDE_DIRS "." "../include"
+    EMBED_FILES
+        "album_thumbs.bin"
     PRIV_REQUIRES
         esp_http_client
         esp-tls
@@ -18,4 +23,6 @@ idf_component_register(
         esp_netif
         joltwallet__littlefs
         vfs
+        esp_driver_i2c
+        esp_driver_gpio
 )

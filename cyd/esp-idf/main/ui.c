@@ -27,6 +27,7 @@
 #include "ui.h"
 
 #include "albums.h"
+#include "album_thumbs.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "spotify.h"
@@ -66,15 +67,23 @@ static lv_obj_t *s_np_art      = NULL;
 static lv_obj_t *s_np_title    = NULL;
 static lv_obj_t *s_np_artist   = NULL;
 static lv_obj_t *s_np_progress = NULL;
+static lv_obj_t *s_vol_hud     = NULL;
+
+static lv_timer_t *s_vol_hud_timer = NULL;
 
 static lv_obj_t *s_browser_scroller = NULL;
 static lv_obj_t *s_browser_title    = NULL;
 static lv_obj_t *s_browser_artist   = NULL;
 
 #define MAX_CARDS 32
-static lv_obj_t *s_cards[MAX_CARDS] = {0};
-static size_t    s_card_count       = 0;
-static int       s_centered_card    = -1;
+static lv_obj_t       *s_cards[MAX_CARDS]    = {0};
+static lv_image_dsc_t  s_card_dscs[MAX_CARDS] = {0};
+static size_t          s_card_count          = 0;
+static int             s_centered_card       = -1;
+/* Logical target card for encoder scrolling. Tracked independently of the
+ * live (possibly mid-animation) scroll position so fast spins don't lose
+ * detents. Re-synced to the visually centered card on touch-driven scrolls. */
+static int             s_target_card         = 0;
 
 static lv_image_dsc_t *s_art_dsc = NULL;
 
@@ -111,6 +120,9 @@ static void style_label(lv_obj_t *label, const lv_font_t *font,
 {
     lv_label_set_text(label, "");
     lv_obj_set_width(label, SCREEN_W);
+    /* Pin to a single line's height so LONG_DOT ellipsises overflow instead of
+     * wrapping to a second line (which would grow down over the label below). */
+    lv_obj_set_height(label, lv_font_get_line_height(font));
     lv_obj_set_style_text_color(label, color, 0);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(label, font, 0);
@@ -150,27 +162,45 @@ static void build_browser_screen(void)
     if (s_card_count > MAX_CARDS) s_card_count = MAX_CARDS;
 
     for (size_t i = 0; i < s_card_count; i++) {
-        const album_entry_t *a = albums_get(i);
+        const album_entry_t *a    = albums_get(i);
+        const uint16_t      *thumb = album_thumb_data(i);
+
         lv_obj_t *card = lv_obj_create(s_browser_scroller);
         lv_obj_set_size(card, CARD_SIZE, CARD_SIZE);
-        lv_obj_set_style_radius(card, 8, 0);
+        lv_obj_set_style_radius(card, 0, 0);
         lv_obj_set_style_border_width(card, 0, 0);
-        lv_obj_set_style_bg_color(card, card_color(i), 0);
-        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_set_style_pad_all(card, 0, 0);
         lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(card, on_card_clicked, LV_EVENT_CLICKED,
                             (void *)(uintptr_t)i);
 
-        /* First letter of the title as a placeholder glyph so each
-         * coloured square is still visually distinguishable. */
-        lv_obj_t *letter = lv_label_create(card);
-        char ini[2] = { a->title[0] ? a->title[0] : '?', '\0' };
-        lv_label_set_text(letter, ini);
-        lv_obj_set_style_text_color(letter, lv_color_white(), 0);
-        lv_obj_set_style_text_font(letter, &lv_font_montserrat_16, 0);
-        lv_obj_center(letter);
+        if (thumb) {
+            /* Real artwork: use the embedded 120x120 RGB565 thumb as
+             * the card's background image. Rounded corners are masked
+             * by the card's radius + CLIP_CORNER flag. */
+            s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
+            s_card_dscs[i].header.w   = ALBUM_THUMB_W;
+            s_card_dscs[i].header.h   = ALBUM_THUMB_H;
+            s_card_dscs[i].data       = (const uint8_t *)thumb;
+            s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
+            lv_obj_set_style_bg_color(card, lv_color_black(), 0);
+            lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_image_src(card, &s_card_dscs[i], 0);
+            lv_obj_set_style_bg_image_opa(card, LV_OPA_COVER, 0);
+        } else {
+            /* No embedded thumb (shouldn't happen with the generated
+             * blob, but fall back gracefully): coloured square with
+             * first-letter initial. */
+            lv_obj_set_style_bg_color(card, card_color(i), 0);
+            lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+            lv_obj_t *letter = lv_label_create(card);
+            char ini[2] = { a->title[0] ? a->title[0] : '?', '\0' };
+            lv_label_set_text(letter, ini);
+            lv_obj_set_style_text_color(letter, lv_color_white(), 0);
+            lv_obj_set_style_text_font(letter, &lv_font_montserrat_16, 0);
+            lv_obj_center(letter);
+        }
 
         s_cards[i] = card;
     }
@@ -237,6 +267,13 @@ static void build_np_screen(void)
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(s_np_progress, 1, LV_PART_MAIN);
     lv_obj_set_style_radius(s_np_progress, 1, LV_PART_INDICATOR);
+
+    s_vol_hud = lv_label_create(s_screen_np);
+    lv_label_set_text(s_vol_hud, "");
+    lv_obj_set_style_text_color(s_vol_hud, lv_color_hex(0xFF4040), 0);
+    lv_obj_set_style_text_font(s_vol_hud, &lv_font_montserrat_12, 0);
+    lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -4, 2);
+    lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
 }
 
 void ui_init(lv_image_dsc_t *art_dsc)
@@ -315,30 +352,33 @@ static void on_card_clicked(lv_event_t *e)
     const album_entry_t *a = albums_get(idx);
     if (!a) return;
     ESP_LOGI(TAG, "play album: %s -- %s", a->artist, a->title);
-    /* spotify_play_album does HTTPS; safe here because LVGL dispatches
-     * events from the LVGL task. It will block for ~1 s. Acceptable
-     * latency for a button press. */
-    bool ok = spotify_play_album(a->uri);
-    if (ok) {
-        lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP,
-                            250, 0, false);
-    } else {
-        ESP_LOGW(TAG, "play_album rejected -- staying on browser");
-    }
+    /* Hand the URI off to the Spotify task; ui_request_play() must NOT
+     * block (HTTPS PUT runs on the other task). The screen transition
+     * happens immediately and the play completes asynchronously. */
+    ui_request_play(a->uri);
+    lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP,
+                        250, 0, false);
 }
 
 static int find_centered_card(void)
 {
     if (!s_browser_scroller || s_card_count == 0) return -1;
-    int32_t scroll_x   = lv_obj_get_scroll_x(s_browser_scroller);
-    int32_t scroller_w = lv_obj_get_width(s_browser_scroller);
-    int32_t target     = scroll_x + scroller_w / 2;
+    /* Use absolute screen coordinates so we don't have to reason about
+     * LVGL's content-vs-visual coordinate semantics. lv_obj_get_coords()
+     * reflects each card's real on-screen position (it moves as the
+     * carousel scrolls), so the card whose centre is closest to the
+     * scroller's screen centre is the one snapped under the viewport. */
+    lv_area_t sa;
+    lv_obj_get_coords(s_browser_scroller, &sa);
+    int32_t target = (sa.x1 + sa.x2) / 2;
 
     int best_i = 0;
     int32_t best_d = INT32_MAX;
     for (size_t i = 0; i < s_card_count; i++) {
         if (!s_cards[i]) continue;
-        int32_t cx = lv_obj_get_x(s_cards[i]) + CARD_SIZE / 2;
+        lv_area_t ca;
+        lv_obj_get_coords(s_cards[i], &ca);
+        int32_t cx = (ca.x1 + ca.x2) / 2;
         int32_t d  = (cx > target) ? (cx - target) : (target - cx);
         if (d < best_d) {
             best_d = d;
@@ -351,6 +391,11 @@ static int find_centered_card(void)
 static void on_browser_scroll(lv_event_t *e)
 {
     int idx = find_centered_card();
+    /* When a touch/pointer is driving the scroll, adopt the visually centered
+     * card as the encoder's target so the two input paths stay in sync. During
+     * our own programmatic scroll animation no indev is active, so the target
+     * set in ui_scroll_browser is preserved. */
+    if (idx >= 0 && lv_indev_active() != NULL) s_target_card = idx;
     if (idx < 0 || idx == s_centered_card) return;
     s_centered_card = idx;
     const album_entry_t *a = albums_get((size_t)idx);
@@ -383,4 +428,82 @@ static void progress_timer_cb(lv_timer_t *t)
         s_track.progress_ms = s_track.duration_ms;
     }
     update_progress_bar();
+}
+
+bool ui_is_now_playing(void)
+{
+    return lv_screen_active() == s_screen_np;
+}
+
+void ui_toggle_view(void)
+{
+    lv_obj_t *active = lv_screen_active();
+    if (active == s_screen_browser) {
+        lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP, 250, 0, false);
+    } else {
+        lv_screen_load_anim(s_screen_browser, LV_SCR_LOAD_ANIM_OVER_BOTTOM, 250, 0, false);
+    }
+}
+
+void ui_play_centered_album(void)
+{
+    int idx = find_centered_card();
+    if (idx < 0) return;
+    const album_entry_t *a = albums_get((size_t)idx);
+    if (!a) return;
+    ESP_LOGI(TAG, "play album (encoder): %s -- %s", a->artist, a->title);
+    ui_request_play(a->uri);
+    lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP, 250, 0, false);
+}
+
+void ui_scroll_browser(int32_t delta)
+{
+    if (!s_browser_scroller || delta == 0 || s_card_count == 0) return;
+
+    int t = s_target_card + (int)delta;
+    if (t < 0) t = 0;
+    if (t >= (int)s_card_count) t = (int)s_card_count - 1;
+    s_target_card = t;
+    if (!s_cards[t]) return;
+
+    /* Scroll by the exact distance to bring the target card's centre onto the
+     * scroller's centre. Self-correcting: any accumulated drift is absorbed
+     * each step, so the carousel always lands snapped on a card. */
+    lv_area_t sa, ca;
+    lv_obj_get_coords(s_browser_scroller, &sa);
+    lv_obj_get_coords(s_cards[t], &ca);
+    int32_t v = ((sa.x1 + sa.x2) - (ca.x1 + ca.x2)) / 2;
+    if (v != 0) lv_obj_scroll_by(s_browser_scroller, v, 0, LV_ANIM_ON);
+}
+
+uint32_t ui_get_progress_ms(void)
+{
+    return s_track.progress_ms;
+}
+
+static void vol_hud_hide_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_vol_hud) lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
+    s_vol_hud_timer = NULL;
+}
+
+void ui_show_volume_hud(int pct, bool muted)
+{
+    if (!s_vol_hud) return;
+    char buf[20];
+    if (muted) {
+        snprintf(buf, sizeof(buf), "MUTED");
+    } else {
+        snprintf(buf, sizeof(buf), "VOL %d%%", pct);
+    }
+    lv_label_set_text(s_vol_hud, buf);
+    lv_obj_remove_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
+
+    if (s_vol_hud_timer) {
+        lv_timer_reset(s_vol_hud_timer);
+    } else {
+        s_vol_hud_timer = lv_timer_create(vol_hud_hide_cb, 2000, NULL);
+        lv_timer_set_repeat_count(s_vol_hud_timer, 1);
+    }
 }
