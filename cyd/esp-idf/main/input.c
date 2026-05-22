@@ -37,20 +37,27 @@ void input_update(void)
         }
     }
 
-    /* SW1: prev (seek to start if >5 s in, else previous track) */
+    /* SW1: browser -> scroll one album left; now-playing -> prev/restart */
     if (btn_get_event(0)) {
-        if (ui_get_progress_ms() > 5000) {
-            ui_request_seek(0);
+        if (now_playing) {
+            if (ui_get_progress_ms() > 5000) ui_request_seek(0);
+            else                             ui_request_prev();
         } else {
-            ui_request_prev();
+            ui_scroll_browser(-1);
         }
     }
 
-    /* SW2: play / pause */
-    if (btn_get_event(1)) ui_request_toggle_play();
+    /* SW2: browser -> select centred album; now-playing -> play/pause */
+    if (btn_get_event(1)) {
+        if (now_playing) ui_request_toggle_play();
+        else             ui_play_centered_album();
+    }
 
-    /* SW3: next track */
-    if (btn_get_event(2)) ui_request_next();
+    /* SW3: browser -> scroll one album right; now-playing -> next track */
+    if (btn_get_event(2)) {
+        if (now_playing) ui_request_next();
+        else             ui_scroll_browser(1);
+    }
 
     /* SW4: toggle browser <-> now-playing */
     if (btn_get_event(3)) ui_toggle_view();

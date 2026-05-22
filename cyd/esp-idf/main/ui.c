@@ -30,6 +30,7 @@
 #include "album_thumbs.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_wifi.h"
 #include "spotify.h"
 
 #include <string.h>
@@ -75,6 +76,8 @@ static lv_obj_t *s_browser_scroller = NULL;
 static lv_obj_t *s_browser_title    = NULL;
 static lv_obj_t *s_browser_artist   = NULL;
 
+static lv_obj_t *s_wifi_bars[4]     = {0};
+
 #define MAX_CARDS 32
 static lv_obj_t       *s_cards[MAX_CARDS]    = {0};
 static lv_image_dsc_t  s_card_dscs[MAX_CARDS] = {0};
@@ -96,6 +99,7 @@ static void on_gesture(lv_event_t *e);
 static void on_card_clicked(lv_event_t *e);
 static void on_browser_scroll(lv_event_t *e);
 static void progress_timer_cb(lv_timer_t *t);
+static void wifi_timer_cb(lv_timer_t *t);
 static void update_progress_bar(void);
 
 static lv_color_t card_color(size_t i)
@@ -219,6 +223,21 @@ static void build_browser_screen(void)
         s_centered_card = 0;
     }
 
+    /* WiFi-strength indicator: four bars top-left, updated by wifi_timer_cb. */
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *bar = lv_obj_create(s_screen_browser);
+        int h = 4 + i * 3;
+        lv_obj_set_size(bar, 4, h);
+        lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_border_width(bar, 0, 0);
+        lv_obj_set_style_radius(bar, 0, 0);
+        lv_obj_set_style_pad_all(bar, 0, 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(0x303030), 0);
+        lv_obj_set_pos(bar, 4 + i * 6, 16 - h);
+        s_wifi_bars[i] = bar;
+    }
+
     /* "^ now playing" hint at the bottom edge. */
     lv_obj_t *hint = lv_label_create(s_screen_browser);
     lv_label_set_text(hint, LV_SYMBOL_UP " now playing");
@@ -289,6 +308,8 @@ void ui_init(lv_image_dsc_t *art_dsc)
     /* Local-progress simulation -- ticks 200 ms of progress every 200 ms
      * so the bar advances smoothly between Spotify polls. */
     lv_timer_create(progress_timer_cb, 200, NULL);
+    /* WiFi strength refresh. */
+    lv_timer_create(wifi_timer_cb, 2000, NULL);
 
     lvgl_port_unlock();
 }
@@ -428,6 +449,24 @@ static void progress_timer_cb(lv_timer_t *t)
         s_track.progress_ms = s_track.duration_ms;
     }
     update_progress_bar();
+}
+
+static void wifi_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    int bars = 0;
+    int rssi = 0;
+    if (esp_wifi_sta_get_rssi(&rssi) == ESP_OK) {
+        if      (rssi >= -55) bars = 4;
+        else if (rssi >= -65) bars = 3;
+        else if (rssi >= -75) bars = 2;
+        else                  bars = 1;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (!s_wifi_bars[i]) continue;
+        lv_color_t c = (i < bars) ? lv_color_white() : lv_color_hex(0x303030);
+        lv_obj_set_style_bg_color(s_wifi_bars[i], c, 0);
+    }
 }
 
 bool ui_is_now_playing(void)

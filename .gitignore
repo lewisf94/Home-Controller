@@ -1,6 +1,9 @@
 .pio
 .vscode/
 .DS_Store
+
+# Claude Code per-machine local settings (permission allowlist; not for sharing)
+.claude/settings.local.json
 *.swp
 *.bak
 *.orig
@@ -24,6 +27,10 @@ cyd/platformio/src/album_art/album_*.h
 cyd/platformio/include/secrets.h
 cyd/esp-idf/include/secrets.h
 scripts/album_preview.png
+
+# spotipy token cache written by get_spotify_token.py (contains the refresh token)
+.cache
+**/.cache
 
 # PlatformIO build artefacts
 cyd/platformio/.pio/

@@ -1,970 +1,516 @@
+/*
+ * LVGL UI for the Arduino/PlatformIO build.
+ *
+ * Ported from the ESP-IDF build (cyd/esp-idf/main/ui.c) so both builds share
+ * the same look and behaviour: a horizontal album carousel of 120x120 RGB565
+ * thumbnails with centre-snap scrolling, a now-playing screen, Montserrat
+ * fonts, and slide transitions between the two. The only addition over the IDF
+ * version is the WiFi-strength indicator (kept from the original Arduino UI).
+ *
+ * Threading: every public entry point that touches LVGL takes lvgl_lock();
+ * the render loop on core 1 holds the same lock around lv_timer_handler().
+ *
+ * Stage 1 now-playing art shows the embedded thumbnail of the album that was
+ * launched from the browser. Dynamic Spotify album art (decoded to RGB565 and
+ * published via ui_art_refresh) is wired in a later stage.
+ */
+
 #include "ui.h"
-#include "spotify.h"
+
+#include "albums.h"
+#include "album_thumbs.h"
+#include "lvgl_app.h"
+
 #include <Arduino.h>
-#include <JPEGDEC.h>
-#include <SD.h>
-#include <TFT_eSPI.h>
 #include <WiFi.h>
-#include <XPT2046_Touchscreen.h>
-
-
-extern TFT_eSPI tft;
-extern bool get_touch_coords(int16_t *x, int16_t *y);
-
-// Main display and touch objects
-extern TFT_eSPI tft;
-extern XPT2046_Touchscreen ts;
-
-// View state
-enum ViewMode { VIEW_BROWSER, VIEW_NOW_PLAYING };
-static ViewMode current_view = VIEW_BROWSER;
-
-// --- Album Capacity ---
-#define MAX_ALBUMS 100
-static int album_count = 0; // Actual number loaded from SD
+#include <lvgl.h>
 
 #define SCREEN_W 320
 #define SCREEN_H 240
 
-// ============================================================
-// UI LAYOUT CONFIGURATION (Easy Tweaks)
-// ============================================================
+#define CARD_SIZE     120
+#define CARD_GAP       20
+#define SCROLLER_Y     15
+#define SCROLLER_H    130
 
-// --- Text Sizes (Hardcoded Pixel Heights) ---
-// Note: To save RAM, the ESP32 graphics library uses static bitmap fonts.
-// You MUST choose one of the following exact pixel heights for every text
-// element: 8, 16, 26, or 48
-#define BROWSER_ALBUM_TEXT_SIZE 16
-#define BROWSER_ARTIST_TEXT_SIZE 8
-#define NP_TITLE_TEXT_SIZE 16
-#define NP_ARTIST_TEXT_SIZE 8
+#define NP_ART_W      120
+#define NP_ART_H      120
+#define NP_ART_X       ((SCREEN_W - NP_ART_W) / 2)
+#define NP_ART_Y       28
 
-// Internal macro to convert pixel heights to TFT_eSPI font IDs
-// Do not modify this macro.
-#define GET_FONT_ID(px)                                                        \
-  ((px) == 48 ? 6 : ((px) == 26 ? 4 : ((px) == 16 ? 2 : 1)))
+#define PROG_W        200
+#define PROG_H          6
+#define PROG_X         ((SCREEN_W - PROG_W) / 2)
+#define PROG_Y        226
 
-// --- Album Browser Layout ---
-#define BROWSER_ALBUM_GAP_BELOW_ART                                            \
-  4 // Gap between bottom of album art and title text
-#define BROWSER_ARTIST_GAP_BELOW_TITLE                                         \
-  16 // Gap between title text and artist text
+#define NP_TITLE_Y    188
+#define NP_ARTIST_Y   208
 
-// --- Now Playing Layout ---
-#define NP_ART_CENTER_Y 115 // Vertical center coordinate for the rotating vinyl/square art
-// Title sits just below the bottom of the 160 px art (art ends ~y=195).
-// Artist sits below that, ending just above the progress-bar clear zone (y=223).
-#define NP_BOTTOM_TITLE_Y 205  // Standard Y position for the bottom Title text
-#define NP_BOTTOM_ARTIST_Y 218 // Standard Y position for the bottom Artist text
-#define NP_SQUARE_ART_SIZE 120
+#define BR_TITLE_Y    160
+#define BR_ARTIST_Y   185
 
-// ============================================================
+static lv_obj_t *s_screen_np      = NULL;
+static lv_obj_t *s_screen_browser = NULL;
 
-// Simple horizontal slide layout — drawn at 1.5x scale
-#define ALBUM_SIZE 120
-#define ALBUM_SPACING 140 // Center-to-center distance between albums
-#define SPRITE_H 130
-#define IMG_SRC_SIZE 80
-#define IMG_PIXELS (IMG_SRC_SIZE * IMG_SRC_SIZE)
+static lv_obj_t *s_np_art      = NULL;
+static lv_obj_t *s_np_title    = NULL;
+static lv_obj_t *s_np_artist   = NULL;
+static lv_obj_t *s_np_progress = NULL;
+static lv_obj_t *s_vol_hud     = NULL;
 
-// --- Per-Album Metadata (loaded from SD metadata.csv) ---
-static char album_filenames[MAX_ALBUMS][128];
-static char album_titles[MAX_ALBUMS][32];
-static char album_artists[MAX_ALBUMS][24];
-static char album_uris[MAX_ALBUMS][48];
+static lv_timer_t *s_vol_hud_timer = NULL;
 
-// --- 1-Slot SD Image Cache (heap-allocated) ---
-extern bool sd_ok;
-#define CACHE_SLOTS 1
-static uint16_t *sd_img_cache[CACHE_SLOTS] = {nullptr};
-static int cache_album_idx[CACHE_SLOTS] = {-1};
-static unsigned long cache_access_time[CACHE_SLOTS] = {0};
+static lv_obj_t *s_browser_scroller = NULL;
+static lv_obj_t *s_browser_title    = NULL;
+static lv_obj_t *s_browser_artist   = NULL;
 
-static uint16_t fallback_color = 0x4208;
+static lv_obj_t *s_wifi_bars[4] = {0};
 
-static void initCache() {
-  for (int s = 0; s < CACHE_SLOTS; s++) {
-    if (!sd_img_cache[s]) {
-      if (ESP.getFreeHeap() < 20000) {
-        Serial.print("Not enough heap for cache slot ");
-        Serial.println(s);
-        break;
-      }
-      sd_img_cache[s] = (uint16_t *)malloc(IMG_PIXELS * 2);
-      if (sd_img_cache[s]) {
-        Serial.print("Cache slot ");
-        Serial.print(s);
-        Serial.println(" OK");
-      } else {
-        Serial.print("Cache slot ");
-        Serial.print(s);
-        Serial.println(" malloc failed");
-      }
+#define MAX_CARDS 32
+static lv_obj_t       *s_cards[MAX_CARDS]     = {0};
+static lv_image_dsc_t  s_card_dscs[MAX_CARDS] = {0};
+static size_t          s_card_count           = 0;
+static int             s_centered_card        = -1;
+/* Logical target card for encoder scrolling, tracked independently of the
+ * live (possibly mid-animation) scroll position so fast spins don't lose
+ * detents. Re-synced to the visually centred card on touch-driven scrolls. */
+static int             s_target_card          = 0;
+
+/* Image descriptor backing the now-playing art (points at an embedded thumb
+ * in Stage 1; ui_art_refresh repoints it at a decoded buffer later). */
+static lv_image_dsc_t  s_np_art_dsc = {0};
+
+/* Cached track state. The progress timer ticks progress_ms between Spotify
+ * polls so the bar advances smoothly. */
+static SpotifyTrackInfo s_track = {false, "", "", "", 0, 0, "", -1, false, 50};
+
+static void on_gesture(lv_event_t *e);
+static void on_card_clicked(lv_event_t *e);
+static void on_browser_scroll(lv_event_t *e);
+static void progress_timer_cb(lv_timer_t *t);
+static void wifi_timer_cb(lv_timer_t *t);
+static void update_progress_bar(void);
+
+static void style_label(lv_obj_t *label, const lv_font_t *font,
+                        lv_color_t color, int16_t y)
+{
+    lv_label_set_text(label, "");
+    lv_obj_set_width(label, SCREEN_W);
+    /* Pin to a single line's height so LONG_DOT ellipsises overflow instead of
+     * wrapping to a second line (which would grow down over the label below). */
+    lv_obj_set_height(label, lv_font_get_line_height(font));
+    lv_obj_set_style_text_color(label, color, 0);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(label, font, 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, y);
+}
+
+static void np_set_art_thumb(size_t idx)
+{
+    const uint16_t *thumb = album_thumb_data(idx);
+    if (!thumb || !s_np_art) return;
+    s_np_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+    s_np_art_dsc.header.w   = ALBUM_THUMB_W;
+    s_np_art_dsc.header.h   = ALBUM_THUMB_H;
+    s_np_art_dsc.data       = (const uint8_t *)thumb;
+    s_np_art_dsc.data_size  = ALBUM_THUMB_BYTES;
+    lv_image_set_src(s_np_art, &s_np_art_dsc);
+}
+
+static void build_browser_screen(void)
+{
+    s_screen_browser = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_browser, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_screen_browser, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_browser, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_screen_browser, on_gesture, LV_EVENT_GESTURE, NULL);
+
+    s_browser_scroller = lv_obj_create(s_screen_browser);
+    lv_obj_set_size(s_browser_scroller, SCREEN_W, SCROLLER_H);
+    lv_obj_set_pos(s_browser_scroller, 0, SCROLLER_Y);
+    lv_obj_set_style_bg_color(s_browser_scroller, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_browser_scroller, 0, 0);
+    lv_obj_set_style_pad_top(s_browser_scroller, 0, 0);
+    lv_obj_set_style_pad_bottom(s_browser_scroller, 0, 0);
+    /* Pad left/right so the first and last cards can fully snap to centre. */
+    lv_obj_set_style_pad_left (s_browser_scroller, (SCREEN_W - CARD_SIZE) / 2, 0);
+    lv_obj_set_style_pad_right(s_browser_scroller, (SCREEN_W - CARD_SIZE) / 2, 0);
+    lv_obj_set_style_pad_column(s_browser_scroller, CARD_GAP, 0);
+    lv_obj_set_flex_flow(s_browser_scroller, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_browser_scroller, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scroll_dir(s_browser_scroller, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(s_browser_scroller, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_snap_x(s_browser_scroller, LV_SCROLL_SNAP_CENTER);
+    lv_obj_add_event_cb(s_browser_scroller, on_browser_scroll, LV_EVENT_SCROLL, NULL);
+
+    s_card_count = albums_count();
+    if (s_card_count > MAX_CARDS) s_card_count = MAX_CARDS;
+
+    for (size_t i = 0; i < s_card_count; i++) {
+        const album_entry_t *a    = albums_get(i);
+        const uint16_t      *thumb = album_thumb_data(i);
+
+        lv_obj_t *card = lv_obj_create(s_browser_scroller);
+        lv_obj_set_size(card, CARD_SIZE, CARD_SIZE);
+        lv_obj_set_style_radius(card, 0, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_pad_all(card, 0, 0);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(card, on_card_clicked, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+
+        if (thumb) {
+            s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
+            s_card_dscs[i].header.w   = ALBUM_THUMB_W;
+            s_card_dscs[i].header.h   = ALBUM_THUMB_H;
+            s_card_dscs[i].data       = (const uint8_t *)thumb;
+            s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
+            lv_obj_set_style_bg_color(card, lv_color_black(), 0);
+            lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_image_src(card, &s_card_dscs[i], 0);
+            lv_obj_set_style_bg_image_opa(card, LV_OPA_COVER, 0);
+        } else {
+            lv_obj_set_style_bg_color(card, lv_palette_darken(LV_PALETTE_BLUE_GREY, 1), 0);
+            lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+            lv_obj_t *letter = lv_label_create(card);
+            char ini[2] = { a->title[0] ? a->title[0] : '?', '\0' };
+            lv_label_set_text(letter, ini);
+            lv_obj_set_style_text_color(letter, lv_color_white(), 0);
+            lv_obj_set_style_text_font(letter, &lv_font_montserrat_16, 0);
+            lv_obj_center(letter);
+        }
+
+        s_cards[i] = card;
     }
-  }
-}
 
-// --- Scroll State (fixed-point, x100) ---
-// ============================================================
-// TUNING — Change these values to adjust feel
-// ============================================================
+    s_browser_title = lv_label_create(s_screen_browser);
+    style_label(s_browser_title, &lv_font_montserrat_16, lv_color_white(), BR_TITLE_Y);
 
-// --- Encoder tuning ---
-// Easing speed when scrolling via encoder.
-// Lower = faster snap. 5 = near-instant, 12 = smooth, 20 = slow.
-#define ENCODER_EASE_SPEED 5
-// Min step per frame for encoder (prevents slow crawl at end).
-#define ENCODER_MIN_STEP 8
+    s_browser_artist = lv_label_create(s_screen_browser);
+    style_label(s_browser_artist, &lv_font_montserrat_12,
+                lv_color_hex(0xA0A0A0), BR_ARTIST_Y);
 
-// --- Touch tuning ---
-// Easing speed when snapping after touch release.
-// Lower = faster snap. 5 = near-instant, 12 = smooth, 20 = slow.
-#define TOUCH_EASE_SPEED 10
-// Min step per frame for touch snap.
-#define TOUCH_MIN_STEP 5
-// How many pixels of finger movement = 1 album scroll.
-// Lower = more sensitive. 30 = very fast, 50 = moderate, 100 = slow.
-#define TOUCH_DRAG_DIVISOR 40
-// How far you can scroll past the first/last album.
-#define OVERSCROLL_LIMIT 30
+    if (s_card_count > 0) {
+        const album_entry_t *a = albums_get(0);
+        lv_label_set_text(s_browser_title, a->title);
+        lv_label_set_text(s_browser_artist, a->artist);
+        s_centered_card = 0;
+    }
 
-// --- Scroll State (fixed-point, x100) ---
-static int32_t scroll_pos = 0;
-static int32_t target_scroll = 0;
-#define SCROLL_SCALE 140
-
-// ── Overlay / HUD state ────────────────────────────────────────────────────
-#include "input.h"
-
-#define HUD_DURATION_MS   2000  // volume HUD auto-hides after 2 s
-#define HUD_H             26    // pixel height of the HUD strip
-
-static int           hud_vol_pct   = -1;
-static bool          hud_muted_    = false;
-static unsigned long hud_show_ms   = 0;
-static bool          hud_was_on    = false; // tracks expiry to trigger redraw
-
-static void _draw_volume_hud(int pct, bool muted) {
-    (void)muted;  // mute state is shown by the persistent badge in draw_now_playing()
-    tft.fillRect(0, 0, SCREEN_W, HUD_H, TFT_BLACK);
-    tft.setTextDatum(MC_DATUM);
-    int bar_x = 16, bar_w = 200, bar_h = 6, bar_y = (HUD_H - bar_h) / 2;
-    int fill_w = pct * bar_w / 100;
-    tft.drawRect(bar_x, bar_y, bar_w, bar_h, tft.color565(80, 80, 80));
-    if (fill_w > 0) tft.fillRect(bar_x, bar_y, fill_w, bar_h, TFT_WHITE);
-    char buf[10];
-    snprintf(buf, sizeof(buf), "%d%%", pct);
-    tft.setTextColor(tft.color565(180, 180, 180));
-    tft.drawString(buf, bar_x + bar_w + 20, HUD_H / 2, GET_FONT_ID(8));
-}
-
-void ui_show_volume_hud(int pct, bool muted) {
-    hud_vol_pct  = pct;
-    hud_muted_   = muted;
-    hud_show_ms  = millis();
-    _draw_volume_hud(pct, muted);
-}
-
-// ── WiFi signal indicator ──────────────────────────────────────────────────
-#define WIFI_CHECK_INTERVAL_MS 5000
-
-static int           last_wifi_bars     = -1;  // -1 = never drawn
-static unsigned long last_wifi_check_ms = 0;
-
-static int _wifi_bars() {
-    if (WiFi.status() != WL_CONNECTED) return 0;
-    int rssi = WiFi.RSSI();
-    if (rssi >= -55) return 4;
-    if (rssi >= -65) return 3;
-    if (rssi >= -75) return 2;
-    if (rssi >= -85) return 1;
-    return 0;
-}
-
-static void _draw_wifi_indicator(int bars) {
-    // 4-bar icon, bottom-aligned, top-left corner
-    // Each bar: 2px wide, 2px gap, heights 4/6/8/10 px, bottom at y=13
-    tft.fillRect(2, 2, 18, 13, TFT_BLACK);
+    /* WiFi-strength indicator: four bars top-left, updated by wifi_timer_cb. */
     for (int i = 0; i < 4; i++) {
-        int bh    = 4 + i * 2;
-        int bx    = 3 + i * 4;
-        int by    = 14 - bh;
-        uint16_t c = (i < bars) ? TFT_WHITE : tft.color565(55, 55, 55);
-        tft.fillRect(bx, by, 2, bh, c);
+        lv_obj_t *bar = lv_obj_create(s_screen_browser);
+        int h = 4 + i * 3;
+        lv_obj_set_size(bar, 4, h);
+        lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_border_width(bar, 0, 0);
+        lv_obj_set_style_radius(bar, 0, 0);
+        lv_obj_set_style_pad_all(bar, 0, 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(0x303030), 0);
+        lv_obj_set_pos(bar, 4 + i * 6, 16 - h);
+        s_wifi_bars[i] = bar;
     }
+
+    /* "^ now playing" hint at the bottom edge. */
+    lv_obj_t *hint = lv_label_create(s_screen_browser);
+    lv_label_set_text(hint, LV_SYMBOL_UP " now playing");
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x606060), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -2);
 }
 
-// ── Play/Pause flash ───────────────────────────────────────────────────────
-#define PLAY_FLASH_MS 1500
+static void build_np_screen(void)
+{
+    s_screen_np = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_np, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_screen_np, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_np, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_screen_np, on_gesture, LV_EVENT_GESTURE, NULL);
 
-static unsigned long play_flash_ms        = 0;
-static bool          play_flash_is_play   = true;  // true=play icon, false=pause
+    /* "v albums" hint at the top so the user knows the swipe-down gesture. */
+    lv_obj_t *hint = lv_label_create(s_screen_np);
+    lv_label_set_text(hint, LV_SYMBOL_DOWN " albums");
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x606060), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 2);
 
-static void _draw_play_pause_icon(bool is_play, int cx, int cy) {
-    int r = 22;
-    tft.fillCircle(cx, cy, r + 5, tft.color565(0, 0, 0));
-    tft.drawCircle(cx, cy, r + 5, tft.color565(70, 70, 70));
-    if (is_play) {
-        tft.fillTriangle(cx - r / 2, cy - r, cx - r / 2, cy + r, cx + r, cy, TFT_WHITE);
+    s_np_art = lv_image_create(s_screen_np);
+    lv_obj_set_size(s_np_art, NP_ART_W, NP_ART_H);
+    lv_obj_set_pos(s_np_art, NP_ART_X, NP_ART_Y);
+    if (s_card_count > 0) np_set_art_thumb(0);
+
+    s_np_title = lv_label_create(s_screen_np);
+    style_label(s_np_title, &lv_font_montserrat_16, lv_color_white(), NP_TITLE_Y);
+
+    s_np_artist = lv_label_create(s_screen_np);
+    style_label(s_np_artist, &lv_font_montserrat_12,
+                lv_color_hex(0xA0A0A0), NP_ARTIST_Y);
+
+    s_np_progress = lv_bar_create(s_screen_np);
+    lv_obj_set_size(s_np_progress, PROG_W, PROG_H);
+    lv_obj_set_pos(s_np_progress, PROG_X, PROG_Y);
+    lv_bar_set_range(s_np_progress, 0, 1000);
+    lv_bar_set_value(s_np_progress, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(0x303030), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_np_progress, lv_color_white(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_np_progress, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_np_progress, 1, LV_PART_INDICATOR);
+
+    s_vol_hud = lv_label_create(s_screen_np);
+    lv_label_set_text(s_vol_hud, "");
+    lv_obj_set_style_text_color(s_vol_hud, lv_color_hex(0xFF4040), 0);
+    lv_obj_set_style_text_font(s_vol_hud, &lv_font_montserrat_12, 0);
+    lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -4, 2);
+    lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_init()
+{
+    lvgl_lock();
+
+    build_browser_screen();
+    build_np_screen();
+    lv_screen_load(s_screen_browser);
+
+    /* Local-progress simulation -- ticks 200 ms of progress every 200 ms so
+     * the bar advances smoothly between Spotify polls. */
+    lv_timer_create(progress_timer_cb, 200, NULL);
+    /* WiFi strength refresh. */
+    lv_timer_create(wifi_timer_cb, 2000, NULL);
+
+    lvgl_unlock();
+}
+
+void ui_set_track_info(const SpotifyTrackInfo *info)
+{
+    lvgl_lock();
+    if (!info) {
+        s_track.is_playing = false;
     } else {
-        int bw = r / 2 - 2, bh = r * 2;
-        tft.fillRect(cx - r + 2, cy - r, bw, bh, TFT_WHITE);
-        tft.fillRect(cx + 4,     cy - r, bw, bh, TFT_WHITE);
+        s_track = *info;
+        if (s_np_title)  lv_label_set_text(s_np_title, info->title);
+        if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
     }
+    update_progress_bar();
+    lvgl_unlock();
 }
 
-// --- Touch State ---
-static bool is_dragging = false;
-static int16_t touch_start_x = 0;
-static int16_t touch_start_y = 0;
-static int32_t scroll_start = 0;
-static unsigned long touch_start_time = 0;
-static int32_t momentum_velocity = 0;
-static bool ease_from_encoder = false; // Which input triggered current easing
-
-// ============================================================
-// SD Card Album Loading
-// ============================================================
-
-// Parse one CSV line into fields (handles quoted fields with commas)
-static int parseCsvLine(char *line, char *fields[], int maxFields) {
-  int count = 0;
-  char *p = line;
-  while (*p && count < maxFields) {
-    if (*p == '"') {
-      p++; // Skip the opening quote
-      fields[count] = p;
-      // Read until we hit a quote followed by a comma, or end of string
-      while (*p && !(*p == '"' && (*(p + 1) == ',' || *(p + 1) == '\0' ||
-                                   *(p + 1) == '\r' || *(p + 1) == '\n'))) {
-        p++;
-      }
-      if (*p == '"') {
-        *p = '\0'; // Replace closing quote with null terminator
-        p++;       // Move past the old quote position
-      }
-      if (*p == ',') {
-        p++;       // Move past the comma
-      }
-    } else {
-      fields[count] = p;
-      while (*p && *p != ',' && *p != '\r' && *p != '\n') {
-        p++;
-      }
-      if (*p == ',') {
-        *p = '\0';
-        p++;
-      } else if (*p) {
-        *p = '\0';
-        p++;
-      }
+void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
+{
+    if (!rgb_data || w == 0 || h == 0) return;
+    lvgl_lock();
+    s_np_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+    s_np_art_dsc.header.w   = w;
+    s_np_art_dsc.header.h   = h;
+    s_np_art_dsc.data       = rgb_data;
+    s_np_art_dsc.data_size  = (uint32_t)w * h * 2;
+    if (s_np_art) {
+        lv_image_set_src(s_np_art, &s_np_art_dsc);
+        lv_obj_invalidate(s_np_art);
     }
-    count++;
-  }
-  return count;
+    lvgl_unlock();
 }
 
-static void loadAlbumsFromSD() {
-  if (!sd_ok) {
-    Serial.println("SD not available, no albums loaded");
-    return;
-  }
+static void on_gesture(lv_event_t *e)
+{
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+    lv_obj_t *active = lv_screen_active();
 
-  Serial.println("SD card mounted. Scanning /sd_card_albums/...");
-
-  File dir = SD.open("/sd_card_albums");
-  if (!dir) {
-    Serial.println("ERROR: /sd_card_albums folder not found!");
-    return;
-  }
-  int fileCount = 0;
-  while (File entry = dir.openNextFile()) {
-    Serial.print("  Found: ");
-    Serial.println(entry.name());
-    fileCount++;
-    entry.close();
-  }
-  dir.close();
-  Serial.print("Total files in folder: ");
-  Serial.println(fileCount);
-
-  File f = SD.open("/sd_card_albums/metadata.csv", FILE_READ);
-  if (!f) {
-    Serial.println("ERROR: metadata.csv not found!");
-    return;
-  }
-
-  char lineBuf[512];
-  album_count = 0;
-
-  while (f.available() && album_count < MAX_ALBUMS) {
-    int len = 0;
-    while (f.available() && len < 511) {
-      char c = f.read();
-      if (c == '\n')
-        break;
-      if (c != '\r')
-        lineBuf[len++] = c;
+    if (dir == LV_DIR_TOP && active == s_screen_browser) {
+        lv_indev_wait_release(indev);
+        lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP, 250, 0, false);
+    } else if (dir == LV_DIR_BOTTOM && active == s_screen_np) {
+        lv_indev_wait_release(indev);
+        lv_screen_load_anim(s_screen_browser, LV_SCR_LOAD_ANIM_OVER_BOTTOM, 250, 0, false);
     }
-    lineBuf[len] = '\0';
-    if (len == 0)
-      continue;
-
-    char *fields[4] = {nullptr, nullptr, nullptr, nullptr};
-    int fieldCount = parseCsvLine(lineBuf, fields, 4);
-    if (fieldCount < 3)
-      continue;
-
-    int i = album_count;
-    strncpy(album_filenames[i], fields[0], 127);
-    album_filenames[i][127] = '\0';
-    strncpy(album_titles[i], fields[1], 31);
-    album_titles[i][31] = '\0';
-    strncpy(album_artists[i], fields[2], 23);
-    album_artists[i][23] = '\0';
-    if (fieldCount >= 4 && fields[3]) {
-      strncpy(album_uris[i], fields[3], 47);
-      album_uris[i][47] = '\0';
-    } else {
-      album_uris[i][0] = '\0';
-    }
-
-    // Verify this file actually exists on SD
-    char path[128];
-    snprintf(path, sizeof(path), "/sd_card_albums/%s", album_filenames[i]);
-    File test = SD.open(path, FILE_READ);
-    if (test) {
-      test.close();
-      album_count++;
-    } else {
-      Serial.print("SKIP (file not found): ");
-      Serial.println(path);
-    }
-  }
-  f.close();
-
-  Serial.print("Loaded ");
-  Serial.print(album_count);
-  Serial.println(" albums from SD card");
+    (void)e;
 }
 
-// ============================================================
-// Image Loading & Drawing
-// ============================================================
-
-// Find a cache slot for an album (returns slot index, or -1 on failure)
-static int loadAlbumImage(int index) {
-  if (!sd_ok || index < 0 || index >= album_count)
-    return -1;
-
-  // Check if already cached
-  for (int s = 0; s < CACHE_SLOTS; s++) {
-    if (cache_album_idx[s] == index && sd_img_cache[s]) {
-      cache_access_time[s] = millis();
-      return s;
-    }
-  }
-
-  // Find LRU slot
-  int lru = -1;
-  for (int s = 0; s < CACHE_SLOTS; s++) {
-    if (!sd_img_cache[s])
-      continue;
-    if (lru == -1 || cache_access_time[s] < cache_access_time[lru])
-      lru = s;
-  }
-  if (lru == -1)
-    return -1;
-
-  char path[128];
-  snprintf(path, sizeof(path), "/sd_card_albums/%s", album_filenames[index]);
-
-  File f = SD.open(path, FILE_READ);
-  if (!f)
-    return -1;
-
-  size_t bytesRead = f.read((uint8_t *)sd_img_cache[lru], IMG_PIXELS * 2);
-  f.close();
-
-  if (bytesRead != (size_t)(IMG_PIXELS * 2))
-    return -1;
-
-  for (int i = 0; i < IMG_PIXELS; i++) {
-    uint16_t v = sd_img_cache[lru][i];
-    sd_img_cache[lru][i] = (v >> 8) | (v << 8);
-  }
-
-  cache_album_idx[lru] = index;
-  cache_access_time[lru] = millis();
-  return lru;
+static void on_card_clicked(lv_event_t *e)
+{
+    size_t idx = (size_t)(uintptr_t)lv_event_get_user_data(e);
+    const album_entry_t *a = albums_get(idx);
+    if (!a) return;
+    Serial.printf("play album: %s -- %s\n", a->artist, a->title);
+    np_set_art_thumb(idx);
+    ui_request_play(a->uri);
+    lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP, 250, 0, false);
 }
 
-static void drawAlbumArt(int x, int y, int index) {
-  int slot = loadAlbumImage(index);
-  if (slot >= 0) {
-    uint16_t *img = sd_img_cache[slot];
-    uint16_t line_buf[ALBUM_SIZE];
+static int find_centered_card(void)
+{
+    if (!s_browser_scroller || s_card_count == 0) return -1;
+    lv_area_t sa;
+    lv_obj_get_coords(s_browser_scroller, &sa);
+    int32_t target = (sa.x1 + sa.x2) / 2;
 
-    tft.setSwapBytes(true);
-    // 1.5x scaling: Map destination (0-119) to source (0-79)
-    for (int dst_y = 0; dst_y < ALBUM_SIZE; dst_y++) {
-      int src_y = (dst_y * 2) / 3;
-      int src_idx = src_y * IMG_SRC_SIZE;
-
-      for (int dst_x = 0; dst_x < ALBUM_SIZE; dst_x++) {
-        int src_x = (dst_x * 2) / 3;
-        line_buf[dst_x] = img[src_idx + src_x];
-      }
-      tft.pushImage(x, y + dst_y, ALBUM_SIZE, 1, line_buf);
-    }
-    tft.setSwapBytes(false);
-  } else {
-    tft.fillRoundRect(x, y, ALBUM_SIZE, ALBUM_SIZE, 4, fallback_color);
-  }
-}
-
-// ============================================================
-// Drawing
-// ============================================================
-
-// View redraw flags (forward-used by both draw_album_browser and draw_now_playing)
-static bool np_needs_full_redraw = true;
-static bool browser_needs_redraw = true;
-
-static void draw_album_browser() {
-  if (album_count == 0) {
-    // Show error message instead of blank screen
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("No albums found", SCREEN_W / 2, SCREEN_H / 2 - 20, 2);
-    tft.setTextColor(tft.color565(160, 160, 160));
-    tft.setTextDatum(MC_DATUM);
-    if (!sd_ok) {
-      tft.drawString("SD card not detected", SCREEN_W / 2, SCREEN_H / 2 + 10,
-                     1);
-    } else {
-      tft.drawString("Copy metadata.csv to SD card", SCREEN_W / 2,
-                     SCREEN_H / 2 + 10, 1);
-    }
-    return;
-  }
-
-  int32_t scroll_px = scroll_pos * ALBUM_SPACING / SCROLL_SCALE;
-  int y_offset = (SCREEN_H - SPRITE_H) / 2 - 15;
-  int album_y = y_offset + (SPRITE_H - ALBUM_SIZE) / 2;
-
-  // Optimize: Avoid redrawing if nothing has changed.
-  // browser_needs_redraw is set true by ui_show_album_browser() so that
-  // returning from the now-playing view always forces a fresh paint,
-  // otherwise the static guard below would short-circuit and leave a black
-  // screen (ui_show_album_browser blanks the screen before calling us).
-  static int32_t last_drawn_scroll = -999;
-  static ViewMode last_drawn_view = (ViewMode)-1;
-
-  if (!browser_needs_redraw &&
-      last_drawn_scroll == scroll_pos && last_drawn_view == current_view) {
-    return;
-  }
-  browser_needs_redraw = false;
-
-  // Clear background area for albums
-  tft.fillRect(0, y_offset, SCREEN_W, SPRITE_H, TFT_BLACK);
-  last_drawn_scroll = scroll_pos;
-  last_drawn_view = current_view;
-
-  for (int i = 0; i < album_count; i++) {
-    int cx = SCREEN_W / 2 + i * ALBUM_SPACING - scroll_px;
-    int ax = cx - ALBUM_SIZE / 2;
-
-    // Skip if off-screen
-    if (ax + ALBUM_SIZE < 0 || ax >= SCREEN_W)
-      continue;
-
-    drawAlbumArt(ax, album_y, i);
-  }
-
-  // Album title + artist text (center only)
-  tft.fillRect(0, y_offset + SPRITE_H, SCREEN_W, 30, TFT_BLACK);
-  int centerIndex = (scroll_pos + SCROLL_SCALE / 2) / SCROLL_SCALE;
-  centerIndex = constrain(centerIndex, 0, album_count - 1);
-
-  int32_t snapDist = abs(scroll_pos - (int32_t)centerIndex * SCROLL_SCALE);
-  if (snapDist < 35) {
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextDatum(TC_DATUM);
-    tft.drawString(album_titles[centerIndex], SCREEN_W / 2,
-                   y_offset + SPRITE_H + BROWSER_ALBUM_GAP_BELOW_ART,
-                   GET_FONT_ID(BROWSER_ALBUM_TEXT_SIZE));
-    tft.setTextColor(tft.color565(160, 160, 160));
-    tft.drawString(album_artists[centerIndex], SCREEN_W / 2,
-                   y_offset + SPRITE_H + BROWSER_ALBUM_GAP_BELOW_ART +
-                       BROWSER_ARTIST_GAP_BELOW_TITLE,
-                   GET_FONT_ID(BROWSER_ARTIST_TEXT_SIZE));
-  }
-
-  // Clear top
-  tft.fillRect(0, 0, SCREEN_W, y_offset, TFT_BLACK);
-
-  // Up chevron signifier for "Now Playing" at the bottom of the screen (^)
-  tft.drawLine(SCREEN_W / 2 - 10, SCREEN_H - 10, SCREEN_W / 2, SCREEN_H - 20,
-               tft.color565(180, 180, 180));
-  tft.drawLine(SCREEN_W / 2, SCREEN_H - 20, SCREEN_W / 2 + 10, SCREEN_H - 10,
-               tft.color565(180, 180, 180));
-}
-
-File npFile;
-
-void *npOpen(const char *filename, int32_t *size) {
-  npFile = SD.open(filename);
-  if (!npFile)
-    return nullptr;
-  *size = npFile.size();
-  return &npFile;
-}
-void npClose(void *handle) {
-  if (npFile)
-    npFile.close();
-}
-int32_t npRead(JPEGFILE *handle, uint8_t *buffer, int32_t length) {
-  if (!npFile)
-    return 0;
-  return npFile.read(buffer, length);
-}
-int32_t npSeek(JPEGFILE *handle, int32_t position) {
-  if (!npFile)
-    return 0;
-  return npFile.seek(position) ? position : -1;
-}
-
-int np_img_x = 0;
-int np_img_y = 0;
-static int JPEGDraw_NowPlaying(JPEGDRAW *pDraw) {
-  tft.pushImage(np_img_x + pDraw->x, np_img_y + pDraw->y,
-                pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
-  return 1;
-}
-
-static void drawLocalAlbumArt(int center_x, int center_y, int index) {
-  int slot = loadAlbumImage(index);
-  if (slot < 0) {
-    tft.fillRoundRect(center_x - NP_SQUARE_ART_SIZE / 2, center_y - NP_SQUARE_ART_SIZE / 2,
-                      NP_SQUARE_ART_SIZE, NP_SQUARE_ART_SIZE, 4, fallback_color);
-    return;
-  }
-  uint16_t *img = sd_img_cache[slot];
-  int img_x = center_x - NP_SQUARE_ART_SIZE / 2;
-  int img_y = center_y - NP_SQUARE_ART_SIZE / 2;
-  uint16_t line_buf[NP_SQUARE_ART_SIZE];
-  tft.setSwapBytes(true);
-  for (int dy = 0; dy < NP_SQUARE_ART_SIZE; dy++) {
-    int src_y = (dy * IMG_SRC_SIZE) / NP_SQUARE_ART_SIZE;
-    int src_idx = src_y * IMG_SRC_SIZE;
-    for (int dx = 0; dx < NP_SQUARE_ART_SIZE; dx++) {
-      int src_x = (dx * IMG_SRC_SIZE) / NP_SQUARE_ART_SIZE;
-      line_buf[dx] = img[src_idx + src_x];
-    }
-    tft.pushImage(img_x, img_y + dy, NP_SQUARE_ART_SIZE, 1, line_buf);
-  }
-  tft.setSwapBytes(false);
-}
-
-
-// Track-change detection: keep last drawn title/album so we only redo the
-// expensive full redraw (and JPEG re-decode) when the track actually changes.
-// Spotify polling sets track_info_updated every 2 s for progress; using that
-// as the redraw trigger flickered the screen every poll.
-static char np_last_title[64] = "";
-static char np_last_album[64] = "";
-
-static void draw_now_playing() {
-  bool track_changed = strncmp(np_last_title, current_track_info.title, sizeof(np_last_title)) != 0 ||
-                        strncmp(np_last_album, current_track_info.album, sizeof(np_last_album)) != 0;
-  bool initial_draw = np_needs_full_redraw || track_changed;
-
-  if (initial_draw) {
-    tft.fillScreen(TFT_BLACK);
-    strncpy(np_last_title, current_track_info.title, sizeof(np_last_title) - 1);
-    np_last_title[sizeof(np_last_title) - 1] = '\0';
-    strncpy(np_last_album, current_track_info.album, sizeof(np_last_album) - 1);
-    np_last_album[sizeof(np_last_album) - 1] = '\0';
-
-    tft.setTextDatum(MC_DATUM);
-
-    // Bottom Title and Artist
-    tft.setTextColor(TFT_WHITE);
-    tft.drawString(current_track_info.title, SCREEN_W / 2, NP_BOTTOM_TITLE_Y,
-                   GET_FONT_ID(NP_TITLE_TEXT_SIZE));
-    tft.setTextColor(tft.color565(160, 160, 160));
-    tft.drawString(current_track_info.artist, SCREEN_W / 2, NP_BOTTOM_ARTIST_Y,
-                   GET_FONT_ID(NP_ARTIST_TEXT_SIZE));
-
-    // Down chevron signifier for "Album Browser" at the top of the screen (V)
-    tft.drawLine(SCREEN_W / 2 - 10, 5, SCREEN_W / 2, 12,
-                 tft.color565(180, 180, 180));
-    tft.drawLine(SCREEN_W / 2, 12, SCREEN_W / 2 + 10, 5,
-                 tft.color565(180, 180, 180));
-
-    // WiFi indicator (top-left corner)
-    _draw_wifi_indicator(last_wifi_bars >= 0 ? last_wifi_bars : _wifi_bars());
-
-    np_needs_full_redraw = false;
-    track_info_updated = false; // consume the flag
-  }
-
-  if (initial_draw) {
-    if (current_track_info.local_album_idx >= 0) {
-      drawLocalAlbumArt(SCREEN_W / 2, NP_ART_CENTER_Y, current_track_info.local_album_idx);
-    } else {
-      JPEGDEC *jpeg_np = new JPEGDEC();
-      bool decoded = false;
-      if (jpeg_np->open("/sd_card_albums/nowplaying.jpg", npOpen, npClose, npRead,
-                       npSeek, JPEGDraw_NowPlaying)) {
-        int w = jpeg_np->getWidth();
-        int h = jpeg_np->getHeight();
-        // Guard against unparseable / progressive JPEGs reporting w==0 or h==0
-        // — without this we'd compute np_img_x = SCREEN_W/2 and draw the
-        // remaining MCU blocks from there toward the bottom-right of the screen.
-        if (w > 0 && h > 0) {
-          // JPEGDEC's JPEG_SCALE_HALF / _QUARTER / _EIGHTH are option bit-flags
-          // (2 / 4 / 8 in the iOptions field), NOT shift amounts. `w >> scale`
-          // gives a wrong (too-small) decoded size, which is what was pushing
-          // the centred position toward the bottom-right.
-          int scale = 0;
-          int divisor = 1;
-          if (w >= 480)      { scale = JPEG_SCALE_QUARTER; divisor = 4; }
-          else if (w >= 240) { scale = JPEG_SCALE_HALF;    divisor = 2; }
-          int dw = w / divisor;
-          int dh = h / divisor;
-          np_img_x = (SCREEN_W / 2) - (dw / 2);
-          np_img_y = NP_ART_CENTER_Y - (dh / 2);
-          // Clamp so a too-large image still has its top-left on-screen
-          if (np_img_x < 0) np_img_x = 0;
-          if (np_img_y < HUD_H) np_img_y = HUD_H;
-          // JPEGDEC outputs little-endian RGB565; ILI9341 wants big-endian.
-          // Without this byte-swap the colours come out inverted (R/B swapped).
-          tft.setSwapBytes(true);
-          decoded = (jpeg_np->decode(0, 0, scale) == 1);
-          tft.setSwapBytes(false);
+    int best_i = 0;
+    int32_t best_d = INT32_MAX;
+    for (size_t i = 0; i < s_card_count; i++) {
+        if (!s_cards[i]) continue;
+        lv_area_t ca;
+        lv_obj_get_coords(s_cards[i], &ca);
+        int32_t cx = (ca.x1 + ca.x2) / 2;
+        int32_t d  = (cx > target) ? (cx - target) : (target - cx);
+        if (d < best_d) {
+            best_d = d;
+            best_i = (int)i;
         }
-        jpeg_np->close();
-      }
-      if (!decoded) {
-        tft.fillRect((SCREEN_W - NP_SQUARE_ART_SIZE) / 2,
-                     NP_ART_CENTER_Y - NP_SQUARE_ART_SIZE / 2,
-                     NP_SQUARE_ART_SIZE, NP_SQUARE_ART_SIZE, fallback_color);
-      }
-      delete jpeg_np;
     }
-  }
+    return best_i;
+}
 
-  // ── Play/Pause flash (drawn on top of art for 1.5 s after state change) ─
-  if (play_flash_ms > 0 && millis() - play_flash_ms < PLAY_FLASH_MS) {
-      _draw_play_pause_icon(play_flash_is_play, SCREEN_W / 2, NP_ART_CENTER_Y);
-  }
+static void on_browser_scroll(lv_event_t *e)
+{
+    int idx = find_centered_card();
+    /* When a touch/pointer is driving the scroll, adopt the visually centred
+     * card as the encoder's target so the two input paths stay in sync. During
+     * our own programmatic scroll animation no indev is active, so the target
+     * set in ui_scroll_browser is preserved. */
+    if (idx >= 0 && lv_indev_active() != NULL) s_target_card = idx;
+    if (idx < 0 || idx == s_centered_card) return;
+    s_centered_card = idx;
+    const album_entry_t *a = albums_get((size_t)idx);
+    if (!a) return;
+    if (s_browser_title)  lv_label_set_text(s_browser_title, a->title);
+    if (s_browser_artist) lv_label_set_text(s_browser_artist, a->artist);
+    (void)e;
+}
 
-  // ── Mute badge (persistent small indicator top-right) ─────────────────
-  static bool last_muted_badge = false;
-  bool cur_muted = input_is_muted();
-  if (cur_muted != last_muted_badge || initial_draw) {
-      // Clear the badge area (top-right corner, 60x14 px)
-      tft.fillRect(SCREEN_W - 62, 2, 60, 14, TFT_BLACK);
-      if (cur_muted) {
-          tft.setTextDatum(MR_DATUM);
-          tft.setTextColor(tft.color565(220, 80, 80));
-          tft.drawString("MUTED", SCREEN_W - 4, 9, GET_FONT_ID(8));
-      }
-      last_muted_badge = cur_muted;
-  }
-
-  static uint32_t last_prog = 0xFFFFFFFF; // force first draw
-  static int last_fill_w = -1;
-
-  int prog_w = 200;
-  int prog_x = (SCREEN_W - prog_w) / 2;
-  int prog_y = 225; // Move progress bar to the very bottom
-  
-  int current_fill_w = 0;
-  if (current_track_info.duration_ms > 0) {
-      current_fill_w = (int)(((float)current_track_info.progress_ms /
-                          current_track_info.duration_ms) *
-                         prog_w);
-      if (current_fill_w > prog_w) current_fill_w = prog_w;
-  }
-
-  // Determine if we need to redraw progress bar (if jumped, resized, or initialized)
-  bool reset_prog = (current_track_info.progress_ms < last_prog) || (last_prog == 0xFFFFFFFF) || initial_draw;
-  
-  bool redraw_prog = reset_prog || (current_fill_w != last_fill_w);
-
-  if (redraw_prog) {
-    // To stop flicker, only draw the fill extending, don't clear the whole rect
-    // unless reset
-    if (reset_prog) {
-      tft.fillRect(prog_x, prog_y - 2, prog_w + 4, 10, TFT_BLACK); // clearing rect safely
-      tft.drawRect(prog_x, prog_y, prog_w, 6, tft.color565(100, 100, 100)); // dark grey outline rect
+static void update_progress_bar(void)
+{
+    if (!s_np_progress) return;
+    int32_t pct = 0;
+    if (s_track.duration_ms > 0) {
+        uint32_t p = s_track.progress_ms;
+        if (p > s_track.duration_ms) p = s_track.duration_ms;
+        pct = (int32_t)((uint64_t)p * 1000 / s_track.duration_ms);
     }
+    lv_bar_set_value(s_np_progress, pct, LV_ANIM_OFF);
+}
 
-    if (current_track_info.duration_ms > 0) {
-      // Draw pure white fill instead of green
-      tft.fillRect(prog_x, prog_y, current_fill_w, 6, TFT_WHITE);
+static void progress_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_track.is_playing || s_track.duration_ms == 0) return;
+    s_track.progress_ms += 200;
+    if (s_track.progress_ms > s_track.duration_ms) {
+        s_track.progress_ms = s_track.duration_ms;
     }
-    
-    last_prog = current_track_info.progress_ms;
-    last_fill_w = current_fill_w;
-  }
+    update_progress_bar();
 }
 
-static void draw_ui() {
-  if (current_view == VIEW_BROWSER) {
-    draw_album_browser();
-  } else if (current_view == VIEW_NOW_PLAYING) {
-    draw_now_playing();
-  }
-}
-
-// ============================================================
-// Public API
-// ============================================================
-
-void ui_init() {
-  // We no longer allocate the 83.2KB Sprite. This guarantees Spotify TLS connection success.
-
-  // Now allocate cache slots from remaining heap
-  Serial.print("Free heap: ");
-  Serial.println(ESP.getFreeHeap());
-  initCache();
-
-  loadAlbumsFromSD();
-  scroll_pos = 0;
-  target_scroll = 0;
-  draw_ui();
-}
-
-void ui_suspend_sprite() {
-  // Empty stub: Direct draw uses 0 RAM overhead!
-}
-
-void ui_resume_sprite() {
-  // Empty stub: Direct draw uses 0 RAM overhead!
-}
-
-void ui_update() {
-  if (album_count == 0)
-    return;
-
-  static int32_t last_scroll_pos = -1;
-  static unsigned long last_update_time = 0;
-  unsigned long now = millis();
-  unsigned long dt = now - last_update_time;
-  if (dt > 100)
-    dt = 16;
-  if (dt > 0)
-    last_update_time = now;
-
-  // Simulate progress bar incrementing if we are playing local track
-  if (current_track_info.is_playing && current_track_info.duration_ms > 0) {
-    current_track_info.progress_ms += dt;
-    if (current_track_info.progress_ms >= current_track_info.duration_ms) {
-      current_track_info.progress_ms = 0;
-      current_track_info.is_playing = false;
+static void wifi_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    int bars = 0;
+    if (WiFi.status() == WL_CONNECTED) {
+        long rssi = WiFi.RSSI();
+        if      (rssi >= -55) bars = 4;
+        else if (rssi >= -65) bars = 3;
+        else if (rssi >= -75) bars = 2;
+        else                  bars = 1;
     }
-  }
-
-  int16_t tx, ty;
-  bool touched = get_touch_coords(&tx, &ty);
-
-  // --- Rotary encoder: sets target, cancels touch ---
-  extern int32_t get_encoder_delta();
-
-  int32_t enc = -get_encoder_delta();
-  if (enc > 1)
-    enc = 1;
-  if (enc < -1)
-    enc = -1;
-  bool encoder_active = false;
-  if (enc != 0 && current_view == VIEW_BROWSER) {
-    encoder_active = true;
-    is_dragging = false;
-    momentum_velocity = 0;
-
-    int current_album = constrain(
-        (target_scroll + SCROLL_SCALE / 2) / SCROLL_SCALE, 0, album_count - 1);
-    int next_album = constrain(current_album + enc, 0, album_count - 1);
-    target_scroll = (int32_t)next_album * SCROLL_SCALE;
-    ease_from_encoder = true;
-  }
-
-  // --- Touch input (only if encoder didn't fire this frame) ---
-  if (!encoder_active) {
-    if (touched) {
-      if (!is_dragging) {
-        is_dragging = true;
-        touch_start_x = tx;
-        touch_start_y = ty;
-        scroll_start = scroll_pos;
-        touch_start_time = now;
-        momentum_velocity = 0;
-      } else {
-        int16_t dx = tx - touch_start_x;
-        int16_t dy = ty - touch_start_y;
-
-        // Check for vertical swipe to switch views
-        if (abs(dy) > 50 && abs(dy) > abs(dx) * 2) {
-          if (dy < -50 && current_view == VIEW_BROWSER) {
-            ui_show_now_playing();
-          } else if (dy > 50 && current_view == VIEW_NOW_PLAYING) {
-            ui_show_album_browser();
-          }
-        }
-
-        if (current_view == VIEW_BROWSER) {
-          scroll_pos =
-              scroll_start - (int32_t)dx * SCROLL_SCALE / TOUCH_DRAG_DIVISOR;
-
-          int32_t lo = -OVERSCROLL_LIMIT;
-          int32_t hi =
-              (int32_t)(album_count - 1) * SCROLL_SCALE + OVERSCROLL_LIMIT;
-          scroll_pos = constrain(scroll_pos, lo, hi);
-          target_scroll = scroll_pos;
-        } else if (current_view == VIEW_NOW_PLAYING) {
-          // Ignored dragged in now playing
-        }
-      }
-    } else if (is_dragging) {
-      // Touch released — snap to nearest album (no momentum fling)
-      is_dragging = false;
-      unsigned long duration = now - touch_start_time;
-      int32_t totalDrag = abs(scroll_pos - scroll_start);
-
-      if (current_view == VIEW_BROWSER) {
-        if (totalDrag < 6 && duration < 300) {
-          // Tap — play center album
-          int ci = constrain((scroll_pos + SCROLL_SCALE / 2) / SCROLL_SCALE, 0,
-                             album_count - 1);
-          Serial.print("Tapped: ");
-          Serial.println(album_titles[ci]);
-
-          // Send play command to Spotify API
-          if (strlen(album_uris[ci]) > 0) {
-            spotify_play_album(album_uris[ci]);
-          } else {
-            Serial.println("Warning: No Spotify URI for this album.");
-          }
-
-          // We switch to the Now Playing view immediately. 
-          // The background API poller will catch the new track metadata automatically 
-          // on its next 2-second checking interval.
-          ui_show_now_playing();
-        }
-
-        // Snap to nearest album
-        int closest = constrain((scroll_pos + SCROLL_SCALE / 2) / SCROLL_SCALE,
-                                0, album_count - 1);
-        target_scroll = (int32_t)closest * SCROLL_SCALE;
-        ease_from_encoder = false;
-      }
+    for (int i = 0; i < 4; i++) {
+        if (!s_wifi_bars[i]) continue;
+        lv_color_t c = (i < bars) ? lv_color_white() : lv_color_hex(0x303030);
+        lv_obj_set_style_bg_color(s_wifi_bars[i], c, 0);
     }
-  }
+}
 
-  // --- Easing toward target (uses encoder or touch speed) ---
-  if (dt > 0 && !is_dragging && scroll_pos != target_scroll &&
-      current_view == VIEW_BROWSER) {
-    int32_t ease_spd =
-        ease_from_encoder ? ENCODER_EASE_SPEED : TOUCH_EASE_SPEED;
-    int32_t min_stp = ease_from_encoder ? ENCODER_MIN_STEP : TOUCH_MIN_STEP;
-    int32_t diff = target_scroll - scroll_pos;
-    int32_t step = diff * (int32_t)dt / ease_spd;
-    if (step == 0 || (abs(step) < min_stp && abs(diff) > 1))
-      step = (diff > 0) ? min_stp : -min_stp;
+bool ui_is_now_playing()
+{
+    return lv_screen_active() == s_screen_np;
+}
 
-    if (abs(diff) <= abs(step))
-      scroll_pos = target_scroll;
-    else
-      scroll_pos += step;
-  }
-
-  // ── Volume HUD expiry ─────────────────────────────────────────────────
-  bool hud_now_on = (hud_show_ms > 0 && now - hud_show_ms < HUD_DURATION_MS);
-  if (hud_was_on && !hud_now_on) {
-      // HUD just expired — restore background beneath it
-      if (current_view == VIEW_NOW_PLAYING) {
-          np_needs_full_redraw = true;
-      } else {
-          // Browser: blank the strip then restore the WiFi indicator
-          tft.fillRect(0, 0, SCREEN_W, HUD_H, TFT_BLACK);
-          if (last_wifi_bars >= 0) _draw_wifi_indicator(last_wifi_bars);
-      }
-  }
-  hud_was_on = hud_now_on;
-
-  // ── Play/Pause change detection ───────────────────────────────────────
-  static bool last_is_playing = false;
-  if (current_track_info.is_playing != last_is_playing) {
-      play_flash_is_play = current_track_info.is_playing;
-      play_flash_ms      = now;
-      last_is_playing    = current_track_info.is_playing;
-  }
-
-  // ── WiFi signal poll (every 5 s, redraw only on bar change) ──────────
-  if (now - last_wifi_check_ms > WIFI_CHECK_INTERVAL_MS) {
-      last_wifi_check_ms = now;
-      int bars = _wifi_bars();
-      if (bars != last_wifi_bars) {
-          last_wifi_bars = bars;
-          if (!hud_now_on) {
-              _draw_wifi_indicator(bars);
-          }
-          // If HUD is covering it, the expiry redraw above will restore it
-      }
-  }
-
-  // --- Draw at ~60fps ---
-  static unsigned long last_frame = 0;
-  if (now - last_frame >= 16) {
-    if (scroll_pos != last_scroll_pos || current_view == VIEW_NOW_PLAYING ||
-        track_info_updated) {
-      draw_ui();
-      last_scroll_pos = scroll_pos;
-      track_info_updated = false;
+void ui_toggle_view()
+{
+    lvgl_lock();
+    lv_obj_t *active = lv_screen_active();
+    if (active == s_screen_browser) {
+        lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP, 250, 0, false);
+    } else {
+        lv_screen_load_anim(s_screen_browser, LV_SCR_LOAD_ANIM_OVER_BOTTOM, 250, 0, false);
     }
-    last_frame = now;
-  }
+    lvgl_unlock();
 }
 
-void ui_show_album_browser() {
-  if (current_view != VIEW_BROWSER) {
-    current_view = VIEW_BROWSER;
-    tft.fillScreen(TFT_BLACK);
-    browser_needs_redraw = true; // bypass the static-guard short-circuit
-    draw_album_browser();        // Force an immediate redraw of the browser
-  }
+void ui_play_centered_album()
+{
+    lvgl_lock();
+    int idx = find_centered_card();
+    if (idx < 0) { lvgl_unlock(); return; }
+    const album_entry_t *a = albums_get((size_t)idx);
+    if (!a) { lvgl_unlock(); return; }
+    Serial.printf("play album (encoder): %s -- %s\n", a->artist, a->title);
+    np_set_art_thumb((size_t)idx);
+    ui_request_play(a->uri);
+    lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP, 250, 0, false);
+    lvgl_unlock();
 }
 
-void ui_show_now_playing() {
-  if (current_view != VIEW_NOW_PLAYING) {
-    current_view = VIEW_NOW_PLAYING;
-    np_needs_full_redraw = true; // force the initial draw
-    draw_ui();                   // Force an immediate redraw of now playing
-  }
+void ui_scroll_browser(int32_t delta)
+{
+    if (delta == 0) return;
+    lvgl_lock();
+    if (!s_browser_scroller || s_card_count == 0) { lvgl_unlock(); return; }
+
+    int t = s_target_card + (int)delta;
+    if (t < 0) t = 0;
+    if (t >= (int)s_card_count) t = (int)s_card_count - 1;
+    s_target_card = t;
+    if (!s_cards[t]) { lvgl_unlock(); return; }
+
+    /* Scroll by the exact distance to bring the target card's centre onto the
+     * scroller's centre. Self-correcting against accumulated drift. */
+    lv_area_t sa, ca;
+    lv_obj_get_coords(s_browser_scroller, &sa);
+    lv_obj_get_coords(s_cards[t], &ca);
+    int32_t v = ((sa.x1 + sa.x2) - (ca.x1 + ca.x2)) / 2;
+    if (v != 0) lv_obj_scroll_by(s_browser_scroller, v, 0, LV_ANIM_ON);
+    lvgl_unlock();
 }
 
-void ui_toggle_view() {
-  if (current_view == VIEW_BROWSER) {
-    ui_show_now_playing();
-  } else {
-    ui_show_album_browser();
-  }
+uint32_t ui_get_progress_ms()
+{
+    return s_track.progress_ms;
 }
 
-bool ui_is_now_playing() {
-  return current_view == VIEW_NOW_PLAYING;
+static void vol_hud_hide_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_vol_hud) lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
+    s_vol_hud_timer = NULL;
 }
 
-void ui_play_centered_album() {
-  int ci = constrain((scroll_pos + SCROLL_SCALE / 2) / SCROLL_SCALE, 0, album_count - 1);
-  if (ci < album_count && strlen(album_uris[ci]) > 0) {
-    spotify_play_album(album_uris[ci]);
-    ui_show_now_playing();
-  }
+void ui_show_volume_hud(int pct, bool muted)
+{
+    lvgl_lock();
+    if (!s_vol_hud) { lvgl_unlock(); return; }
+    char buf[20];
+    if (muted) snprintf(buf, sizeof(buf), "MUTED");
+    else       snprintf(buf, sizeof(buf), "VOL %d%%", pct);
+    lv_label_set_text(s_vol_hud, buf);
+    lv_obj_remove_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
+
+    if (s_vol_hud_timer) {
+        lv_timer_reset(s_vol_hud_timer);
+    } else {
+        s_vol_hud_timer = lv_timer_create(vol_hud_hide_cb, 2000, NULL);
+        lv_timer_set_repeat_count(s_vol_hud_timer, 1);
+    }
+    lvgl_unlock();
 }
+
+/* Legacy no-op shims (the old TFT_eSPI Sprite is gone). */
+void ui_suspend_sprite() {}
+void ui_resume_sprite() {}

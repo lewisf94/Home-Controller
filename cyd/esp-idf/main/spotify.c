@@ -357,11 +357,13 @@ bool spotify_refresh_access_token(void)
             token_save_to_nvs();
             ok = true;
         } else {
-            ESP_LOGE(TAG, "token response missing fields: %.200s", buf.data);
+            /* Do NOT log buf.data here: the token-endpoint body can contain the
+             * access_token. Log only non-secret facts. */
+            ESP_LOGE(TAG, "token response missing fields (len=%d)",
+                     buf.data ? (int)strlen(buf.data) : 0);
         }
     } else {
-        ESP_LOGE(TAG, "token request failed (err=%d status=%d body=%.200s)",
-                 (int)err, status, buf.data ? buf.data : "");
+        ESP_LOGE(TAG, "token request failed (err=%d status=%d)", (int)err, status);
     }
 
     esp_http_client_cleanup(client);

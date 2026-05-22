@@ -26,18 +26,11 @@ SpotifyTrackInfo current_track_info = {false, "", "", "", 0, 0, "", -1, false, 5
 bool track_info_updated = false;
 int  current_volume_pct = 50;
 
-// DigiCert Global Root G2 (used by accounts.spotify.com and api.spotify.com)
-static const char* const spotify_ca =
-"-----BEGIN CERTIFICATE-----\n"
-"MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh\n"
-"MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3\n"
-"d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH\n"
-"MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT\n"
-"MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j\n"
-"b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG\n"
-"9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCGHKhHm3bpO3w4BKyA+y+r\n"
-"nSWm2oE8LGBn0R0P1Kk2vQo1E9B1jH+B7bYyZ4R/uB9iP++i8P9N/fT9P9L8bI+M\n"
-"B9o/Q9M=-----END CERTIFICATE-----\n";
+// Verify TLS against the Arduino-ESP32 built-in root CA bundle (the same
+// trusted-roots approach the IDF build uses via esp_crt_bundle). The bundle is
+// embedded by the core; this symbol marks its start. Used by every
+// WiFiClientSecure below via client->setCACertBundle(...).
+extern const uint8_t rootca_crt_bundle_start[] asm("_binary_certs_x509_crt_bundle_start");
 
 static String base64_encode(String text) {
     unsigned char output[256];
@@ -48,11 +41,19 @@ static String base64_encode(String text) {
 }
 
 static void download_album_art(const char* url) {
+    // Stage 1 of the LVGL port: now-playing art is drawn from the embedded
+    // album thumbnail (set by ui on play), so the dynamic SD-cached JPEG path
+    // is disabled. It also shared the VSPI bus with the LVGL display flush
+    // across tasks; dynamic art will return in a later stage that decodes to
+    // an RGB565 RAM buffer (no SD) and publishes via ui_art_refresh().
+    (void)url;
+    return;
+
     if (WiFi.status() != WL_CONNECTED) return;
 
     ui_suspend_sprite();
     WiFiClientSecure *client = new WiFiClientSecure;
-    client->setInsecure();
+    client->setCACertBundle(rootca_crt_bundle_start);
     HTTPClient https;
     https.setTimeout(2000);
     if (https.begin(*client, url)) {
@@ -94,7 +95,7 @@ static void refresh_access_token() {
 
     ui_suspend_sprite();
     WiFiClientSecure *client = new WiFiClientSecure;
-    client->setInsecure();
+    client->setCACertBundle(rootca_crt_bundle_start);
 
     HTTPClient https;
     https.setTimeout(2000);
@@ -114,8 +115,9 @@ static void refresh_access_token() {
             token_expiry = millis() + (doc["expires_in"].as<int>() * 1000) - 60000;
             Serial.println("Spotify token refreshed");
         } else {
+            // Don't print the response body: the token-endpoint reply can
+            // contain credentials. Status code only.
             Serial.printf("Spotify auth failed: %d\n", httpCode);
-            Serial.println(https.getString());
         }
         https.end();
     }
@@ -159,7 +161,7 @@ void spotify_fetch_player_state() {
 
     ui_suspend_sprite();
     WiFiClientSecure *client = new WiFiClientSecure;
-    client->setInsecure();
+    client->setCACertBundle(rootca_crt_bundle_start);
 
     HTTPClient https;
     https.setTimeout(2000);
@@ -230,7 +232,7 @@ static int _spotify_command(const char* method, const char* path,
 
     ui_suspend_sprite();
     WiFiClientSecure *client = new WiFiClientSecure;
-    client->setInsecure();
+    client->setCACertBundle(rootca_crt_bundle_start);
 
     HTTPClient https;
     https.setTimeout(2000);

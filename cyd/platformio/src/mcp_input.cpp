@@ -65,6 +65,11 @@ struct BtnState {
 static BtnState btns[4];  // SW1-SW4
 static BtnState re1_sw;
 
+// Guards the shared input state (re1.count and the *.event_pending latches)
+// between the producer task (mcp_input_update on core 0) and the consumer
+// loop (re1_get_delta / btn_get_event / re1_sw_get_event on core 1).
+static portMUX_TYPE s_input_mux = portMUX_INITIALIZER_UNLOCKED;
+
 // ── Internal helpers ───────────────────────────────────────────────────────
 static void _update_encoder(EncState &enc, uint8_t porta,
                              uint8_t clk_bit, uint8_t dt_bit)
@@ -121,7 +126,11 @@ static void _update_encoder(EncState &enc, uint8_t porta,
 
 static void _update_btn(BtnState &b, bool raw_active)
 {
-    b.event_pending = false;
+    // event_pending is a latch: set on a confirmed press edge and cleared only
+    // when the consumer reads it via btn_get_event(). It is NOT cleared each
+    // tick, because the producer (mcp_input_update) now runs in its own task at
+    // ~2 ms while the consumer (loop) can stall for 0.5-2 s inside a blocking
+    // Spotify call. Clearing per tick would drop presses made during that stall.
     if (raw_active != b.last_raw) {
         b.last_raw = raw_active;
         b.last_change_ms = millis();
@@ -266,8 +275,10 @@ void mcp_input_update()
                       (porta >> 4) & 1, (porta >> 5) & 1, (porta >> 6) & 1);
 #endif
         if (porta != last_porta) last_porta = porta;
+        taskENTER_CRITICAL(&s_input_mux);
         _process_encoders(porta);
         _process_buttons(porta);
+        taskEXIT_CRITICAL(&s_input_mux);
     } else {
         if (porta != last_porta) {
 #ifdef MCP_DEBUG
@@ -277,7 +288,9 @@ void mcp_input_update()
 #endif
             last_porta = porta;
         }
+        taskENTER_CRITICAL(&s_input_mux);
         _process_buttons(porta);
+        taskEXIT_CRITICAL(&s_input_mux);
     }
 
     // Periodic heartbeat every 2 s
@@ -302,8 +315,10 @@ void mcp_input_update()
 
 int32_t re1_get_delta()
 {
+    taskENTER_CRITICAL(&s_input_mux);
     int32_t v = re1.count;
     re1.count = 0;
+    taskEXIT_CRITICAL(&s_input_mux);
     return v;
 }
 
@@ -312,8 +327,10 @@ int32_t re2_get_delta()   { return 0; }  // RE2 not fitted
 bool btn_get_event(uint8_t i)
 {
     if (i >= 4) return false;
+    taskENTER_CRITICAL(&s_input_mux);
     bool e = btns[i].event_pending;
     btns[i].event_pending = false;  // consume on read
+    taskEXIT_CRITICAL(&s_input_mux);
     return e;
 }
 
@@ -325,8 +342,10 @@ bool btn_is_held(uint8_t i)
 
 bool re1_sw_get_event()
 {
+    taskENTER_CRITICAL(&s_input_mux);
     bool e = re1_sw.event_pending;
     re1_sw.event_pending = false;  // consume on read
+    taskEXIT_CRITICAL(&s_input_mux);
     return e;
 }
 bool re2_sw_get_event() { return false; }  // RE2 not fitted

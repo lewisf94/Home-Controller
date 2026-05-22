@@ -93,15 +93,21 @@ are too weak for reliable I2C.
 
 ### Inputs (all on the MCP23017, active LOW with internal pull-ups)
 
-| Input   | MCP pin      | Code constant in `src/mcp_input.cpp` | Function |
-|---|---|---|---|
-| SW1     | GPA0 (pin 0) | `PIN_SW1`     = 0 | Previous track |
-| SW2     | GPA1 (pin 1) | `PIN_SW2`     = 1 | Play / Pause   |
-| SW3     | GPA2 (pin 2) | `PIN_SW3`     = 2 | Next track     |
-| SW4     | GPA3 (pin 3) | `PIN_SW4`     = 3 | Seek (single = +10s, double = -10s, hold + RE1 = manual scrub) |
-| RE1 CLK | GPA4 (pin 4) | `PIN_RE1_CLK` = 4 | Browser scroll encoder A |
-| RE1 DT  | GPA5 (pin 5) | `PIN_RE1_DT`  = 5 | Browser scroll encoder B |
-| RE1 SW  | GPA6 (pin 6) | `PIN_RE1_SW`  = 6 | View toggle (browser ↔ now-playing) |
+Button functions are context-dependent on the active view (handled in the
+`input` dispatcher, identical mapping in both builds):
+
+| Input   | MCP pin      | Code constant      | Browser view            | Now-playing view |
+|---|---|---|---|---|
+| SW1     | GPA0 (pin 0) | `PIN_SW1`     = 0 | Scroll one album left   | Previous track (restart if >5 s in) |
+| SW2     | GPA1 (pin 1) | `PIN_SW2`     = 1 | Select centred album    | Play / Pause |
+| SW3     | GPA2 (pin 2) | `PIN_SW3`     = 2 | Scroll one album right  | Next track |
+| SW4     | GPA3 (pin 3) | `PIN_SW4`     = 3 | Toggle view ↔           | Toggle view ↔ |
+| RE1 CLK | GPA4 (pin 4) | `PIN_RE1_CLK` = 4 | Browser scroll encoder A | (volume A) |
+| RE1 DT  | GPA5 (pin 5) | `PIN_RE1_DT`  = 5 | Browser scroll encoder B | (volume B) |
+| RE1 SW  | GPA6 (pin 6) | `PIN_RE1_SW`  = 6 | Select centred album     | Mute toggle |
+
+RE1 turn scrolls the album carousel in the browser and adjusts volume
+(clockwise = louder) in now-playing.
 
 RE2 (volume encoder + mute switch) is not fitted. `re2_get_delta()` and
 `re2_sw_get_event()` are stub no-ops in `mcp_input.cpp`.
@@ -110,9 +116,12 @@ RE2 (volume encoder + mute switch) is not fitted. `re2_get_delta()` and
 inherently rejects single-pin glitches. RE1 uses bits {4,5} of Port A (GPA4/GPA5).
 See `mcp_input.cpp:_update_encoder()`.
 
-**Button debounce:** 30 ms stable-state per button; `event_pending` fires for
-exactly one `mcp_input_update()` tick on confirmed press edge. `btn_is_held()`
-returns the stable state (used for SW4 hold detection).
+**Button debounce:** 30 ms stable-state per button. `event_pending` is a latch
+set on the confirmed press edge and cleared only when the consumer reads it via
+`btn_get_event()` — it is NOT cleared each tick. This matters because the
+producer (`mcp_input_update`) and consumer run in different contexts: a press
+made while the consumer is stalled in a blocking Spotify call must survive until
+it's read. `btn_is_held()` returns the stable pressed state.
 
 **INTA usage:** all inputs consolidated onto Port A (GPA0–GPA6). INTA → GPIO35,
 push-pull, active-LOW. All seven pins have interrupt-on-CHANGE enabled so any
@@ -165,29 +174,42 @@ Threading rule: LVGL is single-threaded — only the lvgl task and code holding
 `input_task` → `s_cmd_queue` → `spotify_task`. No blocking call runs under the
 LVGL lock.
 
-### CYD — Arduino/PlatformIO build (Phase 1, maintenance) — `cyd/platformio/`
+### CYD — Arduino/PlatformIO build — `cyd/platformio/`
 
-Single-threaded `loop()`: `mcp_input_update()` → `input_update()` →
-`spotify_update()` → `ui_update()`. Simpler, but input is polled only once per
-loop, so a blocking Spotify call or large redraw can starve the encoder (see the
-responsiveness note in "Known bugs / follow-ups").
+> **STATUS: LVGL port (Stage 1) committed but NOT yet hardware-verified.** The
+> build compiles and fits (RAM 15.5%, Flash 55.9%) but has never been flashed.
+> See "Where to look first → Current status" for what to test and what's
+> deferred. The pre-LVGL TFT_eSPI direct-draw renderer was replaced wholesale.
+
+Ported to **LVGL 9.5** so it shares the IDF build's look and behaviour (same
+fonts, 120×120 embedded thumbnails, centre-snap carousel, slide transitions).
+Three contexts mirror the IDF task model:
 
 ```
-main.cpp ── setup wiring, mounts SD, polls touch, runs main loop
+main.cpp ── LVGL glue (TFT_eSPI flush cb + XPT2046 touch cb + lv_tick),
+   │        recursive lvgl mutex (lvgl_lock/unlock), scmd_t command queue,
+   │        ui_request_*() posters
+   │   ├── loop() (core 1) ── lvgl_lock(); lv_timer_handler(); unlock; input_update()
+   │   ├── spotify_task (core 1) ── blocking HTTPS off the render path; drains the
+   │   │                            command queue; publishes track info under the lock
+   │   └── mcp_input_task (core 0) ── mcp_input_update() every ~2 ms
    │
-   ├── mcp_input.cpp ── low-level MCP driver: encoders, buttons, debounce
-   │
-   ├── input.cpp ── high-level dispatcher: encoder/button events → Spotify calls
-   │                + state for mute, SW4 seek, debounced volume
-   │
-   ├── ui.cpp ── all rendering (album browser, now-playing, HUD overlays)
-   │
-   ├── spotify.cpp ── Spotify Web API client (token refresh, GET /me/player,
-   │                  POST /next, /previous; PUT /play, /pause, /volume,
-   │                  /seek, /shuffle)
-   │
-   └── app.cpp ── WiFi setup, top-level wiring
+   ├── ui.cpp ── LVGL UI ported from the IDF ui.c: album carousel, now-playing,
+   │             volume HUD, WiFi-strength bars. All LVGL access under lvgl_lock().
+   ├── input.cpp ── dispatcher: button/encoder events → ui_request_*() (enqueue,
+   │                never blocks) + ui_scroll_browser / ui_play_centered_album
+   ├── mcp_input.cpp ── low-level MCP driver (producer; portMUX-guarded state)
+   ├── albums.cpp / album_thumbs.cpp ── static album list + embedded RGB565
+   │                thumbnails (album_thumbs_data.c, generated from the IDF blob)
+   ├── spotify.cpp ── Web API client (WiFiClientSecure, TLS verified against the
+   │                  embedded CA bundle certs/x509_crt_bundle); same controls
+   └── lv_conf.h (include/) ── LVGL config; found via -DLV_CONF_INCLUDE_SIMPLE + -I include
 ```
+
+Threading rule (same as IDF): LVGL is single-threaded; the loop and the Spotify
+task serialise through `lvgl_lock()`. `mcp_input_task` only touches the MCP
+driver's own statics, never `current_track_info`. SD is no longer used by the UI
+(thumbnails are embedded); dynamic now-playing art is deferred (Stage 2).
 
 **`get_encoder_delta()` in main.cpp** is a thin wrapper around `re1_get_delta()`
 kept so `ui.cpp` can call it without knowing about the MCP driver. This is a
@@ -258,19 +280,13 @@ full analysis and fix options.
    state-corruption bug on consecutive `open()`/`decode()` calls on the
    same instance. Fix: make `jpeg_np` a local variable inside the decode
    block (2-line change).
-2. **Encoder less responsive than the IDF build (Arduino only)** — the original
-   Serial.printf-flood cause is already fixed (all hot-path prints are gated
-   behind `#define MCP_DEBUG`, which is off). The remaining limit is structural:
-   the Arduino build polls input once per single-threaded `loop()`, so a
-   blocking `spotify_update()` (0.5–2 s HTTPS) or a large `ui_update()` redraw
-   starves `mcp_input_update()` and fast spins drop quadrature steps. The IDF
-   build avoids this with a dedicated 2 ms input task. To match it on Arduino,
-   move *only* `mcp_input_update()` (pure I2C read + state machine, touches only
-   its own statics) onto a FreeRTOS task pinned to core 0, leaving
-   `input_update()` / Spotify / UI on the loop — a clean producer/consumer split
-   over the existing `re1.count` / `event_pending` counters. Note the standing
-   caution below about not forking the driver into a task without explicit ask;
-   this is the lower-risk variant if pursued.
+2. **Encoder less responsive than the IDF build (Arduino only)** — RESOLVED in
+   code (pending hardware verification). `mcp_input_update()` now runs in its own
+   `mcp_input_task` pinned to core 0, decoupled from the blocking
+   `loop()` (Spotify HTTPS / redraws on core 1), so fast spins no longer drop
+   quadrature steps. Required two supporting changes: button `event_pending`
+   became a consume-on-read latch (was cleared every tick), and the shared state
+   is guarded by a `portMUX` spinlock. See the Arduino architecture section.
 3. **Volume PUT doesn't change phone volume** — Spotify API limitation on
    Android/iOS. Works on desktop / Spotify Connect speakers. Fix comes in
    Phase 3 (HA integration).
@@ -302,13 +318,21 @@ from Phase 3 carries over untouched.
 - **Magic-number layout values** are gathered at the top of `ui.cpp`; prefer
   reusing existing `#define`s over inlining new ones. New layout values should
   follow the `NP_*` / `BROWSER_*` naming
-- **Spotify API calls are blocking** — every `spotify_*()` is HTTPS via
-  `WiFiClientSecure` and stalls the loop for 0.5–2 s. New calls should be
-  rate-limited or debounced where the user might rapid-fire them
-- **Keep `ui.cpp` direct-draw** — the Sprite was removed for TLS heap headroom.
-  Don't reintroduce it without a hardware-verified plan
-- **Don't fork the MCP driver into a FreeRTOS task** without explicit ask —
-  shared-state hazards with `current_track_info`
+- **Spotify API calls are blocking** — every `spotify_*()` is HTTPS (IDF
+  `esp_http_client`, Arduino `WiFiClientSecure`) and stalls its caller for
+  0.5–2 s. Both builds run them on a dedicated Spotify task fed by a command
+  queue; UI/input post `ui_request_*()` and never block. Keep new playback calls
+  on that task, not on the render path.
+- **Both builds now render with LVGL** (IDF 9.5, Arduino 9.5). The old TFT_eSPI
+  direct-draw renderer (and its Sprite) is gone. Do not reintroduce direct-draw.
+  Touch only LVGL objects under the LVGL lock (`lvgl_port_lock` on IDF,
+  `lvgl_lock()` on Arduino). TLS heap headroom is still tight — keep an eye on it.
+- **MCP polling runs in its own FreeRTOS task on both builds** (IDF: `input_task`;
+  Arduino: `mcp_input_task` on core 0). The split is safe *only* because the task
+  touches just the MCP driver's own statics (spinlock-guarded) and never
+  `current_track_info` — all Spotify/UI mutation stays on the consumer
+  (loop / Spotify task). Keep it that way: don't move `input_update()`,
+  `spotify_*()`, or UI rendering into the polling task.
 
 ---
 
@@ -379,3 +403,27 @@ git log --oneline -10          # recent history
     worse). Accepted as unfixable without hardware TE wiring.
   - **Next:** Phase 3 — Home Assistant integration (see Architecture → "Future:
     Home Assistant integration" and `docs/ROADMAP.md` Phase 3).
+
+- **PlatformIO LVGL port — committed but NOT YET HARDWARE-TESTED (needs Lewis to
+  check on device).** The Arduino build was rewritten from TFT_eSPI direct-draw
+  to LVGL 9.5 so it matches the IDF build (fonts, 120×120 embedded thumbnails,
+  centre-snap carousel, slide transitions, volume HUD, WiFi bars). It compiles
+  and fits (`pio run` green: RAM 15.5%, Flash 55.9%) but has **never been
+  flashed** — display colours/byte-order, touch, runtime heap, the TLS
+  handshake, and rendering are all unverified.
+  - **To verify on hardware:** flash `cyd/platformio`, confirm it boots, the
+    carousel renders + scrolls (touch *and* encoder), buttons work, Spotify
+    connects over verified TLS, track info shows.
+  - **Deferred (Stage 2):** dynamic now-playing album art (currently shows the
+    played album's embedded thumbnail; real art needs a decode-to-RGB565-in-RAM
+    path, no SD). **Orientation:** ships at `DISPLAY_ROTATION 1` (180° from the
+    IDF build); flip to `3` in `main.cpp` to match IDF, then re-check touch.
+  - **Generated build inputs (committed):** `src/album_thumbs_data.c` (from the
+    IDF `album_thumbs.bin`) and `certs/x509_crt_bundle` (from the IDF
+    `cacrt_all.pem` via `gen_crt_bundle.py`).
+- **Security (this session):** PlatformIO TLS now verifies against the embedded
+  CA bundle (was `setInsecure()`); token-endpoint bodies no longer logged on
+  either build; `SPOTIFY_SETUP.md` points at gitignored `secrets.h`; `.cache`
+  gitignored. Verified no credentials were ever committed/pushed. The IDF-side
+  changes (WiFi bars in `ui.c`, log redaction in `spotify.c`, browser button
+  remap in `input.c`) are also **not yet rebuilt/flashed**.
