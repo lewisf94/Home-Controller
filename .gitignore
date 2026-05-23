@@ -26,6 +26,7 @@ cyd/platformio/src/album_art/album_*.h
 # User credentials
 cyd/platformio/include/secrets.h
 cyd/esp-idf/include/secrets.h
+cyd/esp-idf-ha/include/secrets.h
 scripts/album_preview.png
 
 # spotipy token cache written by get_spotify_token.py (contains the refresh token)
@@ -41,3 +42,10 @@ cyd/esp-idf/managed_components/
 cyd/esp-idf/sdkconfig
 cyd/esp-idf/sdkconfig.old
 cyd/esp-idf/dependencies.lock
+
+# IDF (HA build) artefacts
+cyd/esp-idf-ha/build/
+cyd/esp-idf-ha/managed_components/
+cyd/esp-idf-ha/sdkconfig
+cyd/esp-idf-ha/sdkconfig.old
+cyd/esp-idf-ha/dependencies.lock
