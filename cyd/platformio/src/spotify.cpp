@@ -110,10 +110,15 @@ static void refresh_access_token() {
         if (httpCode == HTTP_CODE_OK) {
             String response = https.getString();
             JsonDocument doc;
-            deserializeJson(doc, response);
-            access_token = doc["access_token"].as<String>();
-            token_expiry = millis() + (doc["expires_in"].as<int>() * 1000) - 60000;
-            Serial.println("Spotify token refreshed");
+            DeserializationError jerr = deserializeJson(doc, response);
+            if (!jerr && doc["access_token"].is<const char*>()) {
+                access_token = doc["access_token"].as<String>();
+                token_expiry = millis() + (doc["expires_in"].as<int>() * 1000) - 60000;
+                Serial.println("Spotify token refreshed");
+            } else {
+                // Don't store a null/garbage token; leave the old one and retry.
+                Serial.println("Spotify token parse failed");
+            }
         } else {
             // Don't print the response body: the token-endpoint reply can
             // contain credentials. Status code only.

@@ -115,6 +115,10 @@ static void lvgl_glue_init() {
   lv_tick_set_cb(lv_tick_cb);
 
   s_lvbuf = (uint8_t *)malloc(LVBUF_BYTES);
+  if (!s_lvbuf) {
+    Serial.println("FATAL: LVGL draw buffer alloc failed");
+    while (true) delay(1000);  // can't render without it; halt loudly
+  }
 
   s_disp = lv_display_create(SCREEN_W, SCREEN_H);
   lv_display_set_flush_cb(s_disp, disp_flush);
@@ -225,7 +229,11 @@ void setup() {
   xTaskCreatePinnedToCore(mcp_input_task, "mcp_input", 4096, NULL, 2, NULL, 0);
 
   if (String(WIFI_SSID) != "YOUR_WIFI_SSID") {
-    xTaskCreatePinnedToCore(spotify_task, "spotify", 8192, NULL, 3, NULL, 1);
+    // Core 0 (with WiFi/lwip), NOT core 1: the TLS handshake is CPU-bound and
+    // runs at higher priority than the render loop, so keeping it off core 1
+    // stops it from freezing the UI during connects/reconnects. 16 KB stack --
+    // mbedTLS handshake + ArduinoJson parsing are both stack-hungry.
+    xTaskCreatePinnedToCore(spotify_task, "spotify", 16384, NULL, 3, NULL, 0);
   } else {
     Serial.println("WiFi skipped (placeholder credentials)");
   }
