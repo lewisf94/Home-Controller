@@ -339,6 +339,15 @@ bool spotify_refresh_access_token(void)
     int  body_len = snprintf(body, sizeof(body),
                              "grant_type=refresh_token&refresh_token=%s",
                              s_refresh_token);
+    /* snprintf returns the length it WOULD have written; if that exceeds the
+     * buffer the body was truncated and body_len points past `body`, so
+     * passing it to set_post_field would read out of bounds and leak adjacent
+     * memory over the wire. Bail out instead. */
+    if (body_len < 0 || body_len >= (int)sizeof(body)) {
+        ESP_LOGE(TAG, "refresh token too long for request body");
+        esp_http_client_cleanup(client);
+        return false;
+    }
     esp_http_client_set_post_field(client, body, body_len);
 
     bool ok = false;

@@ -26,7 +26,9 @@ if token_info and 'refresh_token' in token_info:
     print("--------------------------------------------------")
     print(token_info['refresh_token'])
     print("--------------------------------------------------")
-    print("Copy this string and paste it into src/main.cpp")
+    print("Paste it into SPOTIFY_REFRESH_TOKEN in your secrets.h")
+    print("(secrets.h is gitignored - never put credentials in a tracked")
+    print(" file like main.cpp, or they end up published in git history).")
     print("="*50 + "\n")
 else:
     print("\nFailed to get token.")
