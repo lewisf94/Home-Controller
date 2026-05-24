@@ -10,11 +10,12 @@ instead of repeating. Newest entries at the bottom.
 > Those entries are consolidated here. Future runs: read this file on `main`,
 > and **rotate to a new area** rather than repeating one already covered.
 
-**Coverage so far:** Security ×2 (05-22, 05-23). Its actionable findings have
-since been fixed on `main` (TLS verification on both builds, log redaction,
-`.cache` gitignored, setup docs + `get_spotify_token.py` point at the gitignored
-`secrets.h`, IDF token-refresh `snprintf` guard). **Next runs should cover
-Performance or Code quality**, not Security.
+**Coverage so far:** Security ×2 (05-22, 05-23), Performance ×1 (05-24). The
+Security actionable findings have since been fixed on `main` (TLS verification on
+both builds, log redaction, `.cache` gitignored, setup docs +
+`get_spotify_token.py` point at the gitignored `secrets.h`, IDF token-refresh
+`snprintf` guard). **Next runs should cover Code quality, Architecture, Missing
+features, or Testing/reliability** — not Security or Performance.
 
 ---
 
@@ -41,3 +42,19 @@ real `secrets.h` was ever committed. Remaining recommendations: ESP32 flash + NV
 encryption, album-art URL `https://` scheme validation, JSON-body URI validation
 (only matters if album metadata becomes externally sourced again). Suggestions
 made: 5 (2 fixed, 3 left as recommendations).
+
+2026-05-24 - Area covered: Performance. Key findings: Both builds open a brand-new
+TLS connection (full handshake, ~0.5-2 s, ~30-40 KB heap) for *every* Spotify API
+call -- the player poll and each button press -- instead of reusing a kept-alive
+connection or a resumed TLS session, which dominates CPU/heap/latency and adds a
+visible delay before transport buttons act. The Arduino build also parses the
+whole `/me/player` response into an ArduinoJson heap tree when only ~10 fields are
+used (a `Filter` would slash heap + parse time; the IDF streaming scanner already
+avoids this), and album art is written to internal flash then re-read to decode
+(slow + flash wear) when a RAM decode path already exists but is dead code (its
+comment also wrongly says the cap is 16 KB; it is 256 KB). Lower-priority: fixed
+poll cadence never backs off when paused/idle; the IDF JSON scanner re-scans from
+the top per field; `find_centered_card()` is O(n) per scroll event; LVGL progress
++ WiFi timers run on a fixed cadence regardless of which screen is visible.
+Verified prior run's two fixes are in place (`get_spotify_token.py` -> `secrets.h`,
+IDF refresh `snprintf` guard). Suggestions made: 7.
