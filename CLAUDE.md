@@ -18,7 +18,7 @@ build folders: the CYD ESP-IDF direct-Spotify build (`cyd/esp-idf/`, the lead
 build — feature-complete and hardware-verified), its Home Assistant variant
 (`cyd/esp-idf-ha/`, not yet tested), the original Arduino build now ported to
 LVGL (`cyd/platformio/`, needs a hardware pass), and the new Waveshare ESP32-P4
-direct-Spotify build (`waveshare/esp-idf/`, checkpoint 1 verified). He works
+direct-Spotify build (`waveshare/esp-idf/`, checkpoint 2 / WiFi verified). He works
 locally in VS Code with Claude Code and intermittently uses Claude Code on the
 web. This file is the source of truth across sessions.
 
@@ -235,14 +235,17 @@ the other. Secrets are `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` in
 setup. The backend is kept behind the `ui_request_*()` seam — swap the backend,
 don't entangle it with the UI.
 
-### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — checkpoint 1 verified
+### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — checkpoint 2 / WiFi verified
 
 **Board in hand; brought up incrementally.** Waveshare
 ESP32-P4-WIFI6-Touch-LCD-4.3 (ESP32-P4 RISC-V, 4.3" IPS, ST7701 MIPI-DSI, GT911
 capacitive touch, onboard ESP32-C6 WiFi over SDIO, PSRAM, 32 MB flash). Talks
 **directly to the Spotify Web API**; a future `waveshare/esp-idf-ha/` will swap
-to the HA backend. **Checkpoint 1 (display bring-up) is hardware-verified** — a
-label renders at 800×480 landscape on the physical board.
+to the HA backend. **Checkpoints 1 (display) and 2 (WiFi) are hardware-verified**
+— a label renders at 800×480 landscape, and the board associates to WiFi via the
+onboard C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a DHCP lease.
+Memory budget verified on-chip at cp2 (~390 KB internal heap free + 31 MB PSRAM;
+see `docs/PORT-NOTES.md`). cp3 (Spotify) is next.
 
 Key differences from the CYD IDF build:
 - **Toolchain ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0): the vendored BSP needs the
@@ -343,9 +346,9 @@ Full detail in `docs/ROADMAP.md`. Three phases:
    See `docs/ROADMAP.md` Phase 3 for WebSocket handshake and HA setup.
 
 ESP32-P4 migration: ACTIVE — the Waveshare board is in hand and
-`waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5) has checkpoint 1 (display)
-verified on hardware. A future `waveshare/esp-idf-ha/` carries the Phase 3 HA
-client over untouched.
+`waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5) has checkpoints 1 (display)
+and 2 (WiFi) verified on hardware; cp3 (Spotify) is in progress. A future
+`waveshare/esp-idf-ha/` carries the Phase 3 HA client over untouched.
 
 ---
 
@@ -420,7 +423,7 @@ git log --oneline -10          # recent history
 - **Lead build (direct Spotify, verified):** `cyd/esp-idf/`
 - **HA backend variant (untested):** `cyd/esp-idf-ha/`
 - **Arduino build (LVGL port, needs re-verify):** `cyd/platformio/`
-- **Waveshare ESP32-P4 (direct Spotify, checkpoint 1):** `waveshare/esp-idf/`
+- **Waveshare ESP32-P4 (direct Spotify, checkpoint 2 / WiFi verified):** `waveshare/esp-idf/`
 - **Current status: MILESTONE — CYD fully working on ESP-IDF.** The ESP-IDF
   build is now feature-complete for the CYD hardware and verified smooth on
   device: display, LVGL 9.5, XPT2046 touch, WiFi STA, Spotify HTTPS (token
@@ -444,21 +447,29 @@ git log --oneline -10          # recent history
   - **Next:** Phase 3 — Home Assistant integration (see Architecture →
     "CYD — ESP-IDF HA build" and `docs/ROADMAP.md` Phase 3).
 
-- **Waveshare ESP32-P4 — checkpoint 1 (display) HARDWARE-VERIFIED.** The board
-  arrived and `waveshare/esp-idf/` is being brought up incrementally. The cp1
-  skeleton (`main/main.c`: `bsp_display_start_with_config` + a centred label)
-  renders at 800×480 landscape on the physical board, upright and readable.
-  Toolchain is **ESP-IDF 5.5.x** (NOT 5.4/6.0 — see the Architecture section and
+- **Waveshare ESP32-P4 — checkpoints 1 (display) + 2 (WiFi) HARDWARE-VERIFIED.**
+  The board arrived and `waveshare/esp-idf/` is being brought up incrementally.
+  cp1 renders a centred label at 800×480 landscape; cp2 associates to WiFi via
+  the onboard ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a
+  DHCP lease (`wifi_init_sta` ported from `cyd/esp-idf/main.c`). Toolchain is
+  **ESP-IDF 5.5.x** (NOT 5.4/6.0 — see the Architecture section and
   `waveshare/esp-idf/README.md` for why), display/touch via the vendored
-  `esp32_p4_wifi6_touch_lcd_4_3` BSP, LVGL via `esp_lvgl_adapter`. Sources are
-  staged per checkpoint to fit internal SRAM (full stack overflows by ~451 B).
+  `esp32_p4_wifi6_touch_lcd_4_3` BSP, LVGL via `esp_lvgl_adapter`. Sources/deps
+  staged per checkpoint in `main/CMakeLists.txt`.
+  - **cp2 memory budget (measured on-chip):** 768 KB internal SRAM total; after
+    WiFi there's ~390 KB internal heap free + 31 MB PSRAM. The WiFi link
+    overflowed the fixed IRAM segment by ~2 KB — fixed with
+    `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`. Display framebuffers (2.25 MB) live
+    in PSRAM. The 256 KB Spotify response buffer + album art must be allocated
+    from PSRAM at cp3/cp5. Full analysis + PSRAM-first policy in `docs/PORT-NOTES.md`.
   - **To build:** dot-source the IDF 5.5.4 PowerShell profile, then
     `idf.py set-target esp32p4` and `idf.py build flash monitor`. WiFi + Spotify
     creds go in `waveshare/esp-idf/include/secrets.h` (gitignored; template at
     `include/secrets.h.example`). The board enumerates as a CH343 USB-serial
-    device (COM3 on Lewis's machine).
-  - **Next:** checkpoint 2 — WiFi (`esp_wifi_remote` + `esp_hosted`, slave
-    esp32c6; port `wifi_init_sta` from `cyd/esp-idf/main.c`; log the IP).
+    device (COM3/COM4 on Lewis's machine, depending on USB port).
+  - **Next:** checkpoint 3 — Spotify. Port `spotify.c` + `albums.c` and the
+    Spotify task + `scmd_t` command queue from `cyd/esp-idf/main.c`; allocate the
+    response/art buffers from PSRAM (`MALLOC_CAP_SPIRAM`); log the track title.
 
 - **PlatformIO LVGL port — committed but NOT YET HARDWARE-TESTED (needs Lewis to
   check on device).** The Arduino build was rewritten from TFT_eSPI direct-draw

@@ -8,8 +8,8 @@ dependencies:
   lvgl/lvgl: "9.4.*"
   # --- re-add per checkpoint ---
   # WiFi (cp2): ESP32-P4 has no radio; the onboard ESP32-C6 provides it over SDIO.
-  # espressif/esp_wifi_remote: "0.14.*"
-  # espressif/esp_hosted: "1.4.*"
+  espressif/esp_wifi_remote: "0.14.*"
+  espressif/esp_hosted: "1.4.*"
   # Album-art JPEG decode + LittleFS scratch (cp5, reused from the CYD build).
   # bitbank2/jpegdec: "^1.6.2"
   # joltwallet/littlefs: "^1.14.8"

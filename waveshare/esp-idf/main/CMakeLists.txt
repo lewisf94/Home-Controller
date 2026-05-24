@@ -18,7 +18,10 @@ idf_component_register(
         lvgl__lvgl
         esp32_p4_wifi6_touch_lcd_4_3   # vendored BSP (../components/); pulls st7701 + gt911 + esp_lvgl_adapter + lvgl
         # --- re-added per checkpoint ---
-        # esp_wifi_remote   # cp2: WiFi via the onboard C6 over SDIO
-        # esp_http_client esp-tls mbedtls esp_event esp_netif esp_timer  # cp3
+        esp_wifi          # cp2: provides esp_wifi.h; implementation routed to C6 via esp_wifi_remote
+        esp_wifi_remote   # cp2: redirects esp_wifi calls to the onboard C6 over SDIO
+        esp_netif         # cp2
+        esp_event         # cp2
+        # esp_http_client esp-tls mbedtls esp_timer  # cp3
         # vfs joltwallet__littlefs bitbank2__jpegdec                     # cp5
 )

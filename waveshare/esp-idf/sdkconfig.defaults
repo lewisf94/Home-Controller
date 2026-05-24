@@ -20,6 +20,10 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240
 CONFIG_FREERTOS_HZ=1000
 
+# WiFi via the onboard ESP32-C6 slave (esp_wifi_remote + esp_hosted over SDIO).
+# ESP32-P4 has no native radio; this routes esp_wifi_* to the C6.
+CONFIG_ESP_WIFI_REMOTE_ENABLED=y
+
 # TLS for the Spotify Web API (same approach as the CYD IDF build).
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 
@@ -29,7 +33,10 @@ CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_DEF_REFR_PERIOD=15
-CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
+# cp2: WiFi stack pushed internal SRAM ~2 KB over. Don't force LVGL hot
+# functions into IRAM -- frees several KB of IRAM (and silences the
+# .iram1 section-conflict warnings). Negligible render cost for this UI.
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n
 # Fonts (bigger than the CYD's 12/16 for the 800x480 panel).
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y

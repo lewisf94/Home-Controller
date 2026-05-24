@@ -6,9 +6,10 @@ onboard **ESP32-C6** over SDIO, PSRAM, 32 MB flash). Talks **directly to the
 Spotify Web API**. A future `waveshare/esp-idf-ha/` will swap the backend to
 Home Assistant, exactly like the CYD split.
 
-> **STATUS: checkpoint-1 skeleton (display bring-up only). Hardware-verified:
-> "Music Controller P4 / checkpoint 1: display OK" label renders at 800×480
-> landscape on the physical board.** Built incrementally — see the checkpoint
+> **STATUS: checkpoint 2 (WiFi) hardware-verified.** Display (cp1) renders at
+> 800×480 landscape, and the board now associates to WiFi through the onboard
+> ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a DHCP lease —
+> boot log shows `checkpoint 2: WiFi OK`. Built incrementally — see the checkpoint
 > roadmap below. Most app logic (Spotify client, album data, art decode, LittleFS)
 > is copied unchanged from `../../cyd/esp-idf/`; the UI and input come later.
 
@@ -61,14 +62,18 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
   - 5.5.x is the only line that satisfies both. Install via EIM
     (`eim install -i v5.5.4 -t esp32p4 -n true`) or the VS Code extension
     (Configure → Express → v5.5.x). Keep 6.0.x for the CYD builds.
-- **SRAM budget:** the full app stack (display + WiFi + TLS + art) overflows
-  internal SRAM by ~451 B with the naive config. Sources and deps are therefore
-  staged per checkpoint (see `main/CMakeLists.txt` comments); DRAM budgeting
-  happens deliberately at cp2/cp3 with the linker map.
+- **SRAM budget (measured at cp2):** the P4 has 768 KB internal SRAM. Adding the
+  WiFi path overflowed the fixed **IRAM** segment by ~2 KB — fixed by
+  `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n` (keeps LVGL hot functions out of
+  IRAM). It was *not* general SRAM exhaustion: `.text`/`.rodata` XIP from PSRAM,
+  and after cp2 there's ~390 KB internal heap free + 31 MB PSRAM. The real
+  runtime risk is large buffers (256 KB Spotify response, album art) landing in
+  internal heap — they must be allocated from PSRAM at cp3/cp5. Full budget
+  analysis and the PSRAM-first policy live in `docs/PORT-NOTES.md`.
 
 ## Checkpoint roadmap
 1. **Display skeleton** — `bsp_display_start_with_config` + hello label. *(hardware-verified)*
-2. **WiFi** — add `esp_wifi_remote`; port `wifi_init_sta`; log the IP.
+2. **WiFi** — add `esp_wifi_remote`; port `wifi_init_sta`; log the IP. *(hardware-verified)*
 3. **Spotify** — Spotify task + `scmd_t` command queue (port the structure from
    `cyd/esp-idf/main.c`); log the track title.
 4. **UI** — port `cyd/esp-idf/main/ui.c`; `lvgl_port_lock` → `bsp_display_lock`;

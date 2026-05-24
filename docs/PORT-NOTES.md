@@ -64,3 +64,80 @@ Each entry should note which migration step it affected and what the fix was.
 - **TLS uses the IDF cert bundle.** No need to pin DigiCert manually like the Arduino build did. Just set `.crt_bundle_attach = esp_crt_bundle_attach` on the `esp_http_client_config_t` and enable `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` (+ the CMN subset is enough; covers Spotify's DigiCert chain). Boot log will print `esp-x509-crt-bundle: Certificate validated` on each successful TLS handshake.
 - **Secrets layout.** Move WiFi + Spotify credentials into `cyd/esp-idf/include/secrets.h` (gitignored) so the entire `cyd/esp-idf/main/` directory can be copied between machines without touching credentials. `main/CMakeLists.txt` adds `"../include"` to `INCLUDE_DIRS` so the header is reachable. If both `main/secrets.h` and `include/secrets.h` exist (e.g. from a half-finished migration), the `main/` one shadows the new one and you'll get a confusing "WIFI_PASSWORD undeclared, did you mean WIFI_PASS?" -- delete the stale `main/secrets.h`.
 - Verified: Step 5 boot log shows `access token refreshed (expires in 3600 s)` followed by `now playing: <track title>` every 5 s while a song plays on the linked Spotify account.
+
+---
+
+# Waveshare ESP32-P4 port notes
+
+The CYD entries above are ESP-IDF 6.0 on ESP32-WROOM. The Waveshare build is
+ESP-IDF 5.5.4 on ESP32-P4 (RISC-V) with PSRAM and a MIPI-DSI panel — different
+enough that its gotchas get their own section.
+
+**cp2 — WiFi via `esp_wifi_remote` + `esp_hosted` (onboard ESP32-C6 over SDIO)**
+- Symptom A: `fatal error: esp_wifi.h: No such file or directory`, even with
+  `esp_wifi_remote` in `PRIV_REQUIRES` and its include paths present.
+- Root cause A: `esp_wifi_remote` only *redirects the implementation* of the
+  `esp_wifi_*` API to the C6; the **header still comes from the native `esp_wifi`
+  component**. The P4 has no radio but IDF 5.5 still ships `esp_wifi` (header +
+  stubs) for exactly this. You must list **both** `esp_wifi` and
+  `esp_wifi_remote` in `PRIV_REQUIRES`.
+- Fix A: add `esp_wifi esp_wifi_remote esp_netif esp_event` to `PRIV_REQUIRES`;
+  add `espressif/esp_wifi_remote: "0.14.*"` + `espressif/esp_hosted: "1.4.*"` to
+  `main/idf_component.yml`; set `CONFIG_ESP_WIFI_REMOTE_ENABLED=y`.
+- Symptom B: after A, the link fails — `--enable-non-contiguous-regions discards
+  section ...`, `Total discarded sections size is 2095 bytes`,
+  `HINT: binary size has exceeded the limit`.
+- Root cause B: this is an **IRAM** (instruction-RAM segment) overflow, *not*
+  general SRAM exhaustion. `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y` force-places
+  a pile of LVGL hot functions (`lv_color_mix`, `lv_trigo_cos`, …) into IRAM;
+  adding the WiFi path's IRAM code tipped the fixed IRAM segment over by ~2 KB.
+  (The same setting also produced all the `.iram1` section-conflict warnings.)
+- Fix B: `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`. Frees several KB of IRAM,
+  silences the warnings, negligible render-speed cost for this UI. `-Os`
+  (`CONFIG_COMPILER_OPTIMIZATION_SIZE=y`) is the bigger hammer held in reserve if
+  mbedTLS's IRAM tips it over again at cp3.
+- Cache trap (same as CYD Step 4): editing `sdkconfig.defaults` does nothing if a
+  generated `sdkconfig` already exists. Delete `sdkconfig` (it regenerates from
+  defaults) — do **not** confuse it with the hand-authored `sdkconfig.defaults`.
+- Verified: boot log shows ESP-Hosted slave INIT over SDIO (40 MHz, 4-bit), then
+  `wifi connected, IP: <addr>` and `checkpoint 2: WiFi OK`.
+
+**cp2 — On-chip memory budget (measured from the cp2 boot log)**
+
+This is the reference for planning every later checkpoint. Two *independent*
+problems, different fixes:
+
+| | Link-time fit (A) | Runtime heap (B) |
+|---|---|---|
+| Symptom | linker `region overflowed` / `discards section` | boots then `heap_caps_malloc failed` / crash |
+| Cause | IRAM code + static `.data`/`.bss` | big buffers: TLS, album art, WiFi/lwip |
+| Lever | `-Os`, keep code out of IRAM | direct big allocations to PSRAM |
+
+- **Internal SRAM: 768 KB total** (0x4ff00000–0x4ffc0000) — the scarce resource,
+  shared by IRAM + static DRAM + internal heap.
+- **`heap_init` after cp2 (WiFi up):** ~390 KiB internal heap free
+  (256 KiB largest contiguous block + 117 KiB RETENT + 18 KiB) **plus 31 MB of
+  PSRAM in the allocator.** `.text` and `.rodata` XIP from PSRAM, so code/consts
+  cost ~0 internal SRAM — which is why the link overflow was IRAM-specific.
+- **Display framebuffers are NOT the problem:** 3 × 480×800×2 = **2.25 MB lives
+  in PSRAM** (MIPI-DSI DPI driver allocates them there). `num_fbs` default 3
+  (triple-partial tear-avoid).
+- **The one sharp edge for cp3:** the Spotify response buffer is
+  `RESP_MAX_CAP = 262144` (256 KB) — *larger than the biggest contiguous internal
+  block*. If it lands in internal heap it fails or fragments everything. It and
+  the album-art buffer are CYD holdovers allocated PSRAM-agnostically (the CYD had
+  no PSRAM). **Must** become explicit PSRAM allocations on the P4.
+- **PSRAM-first policy (set once, avoids per-checkpoint whack-a-mole):**
+    - `CONFIG_SPIRAM_USE_MALLOC=y`,
+      `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096` (allocs >4 KB prefer PSRAM),
+      `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`.
+    - In ported app code: `spotify.c` response buffer `malloc` →
+      `heap_caps_malloc(cap, MALLOC_CAP_SPIRAM)`; `main.c` art buffer
+      `MALLOC_CAP_DEFAULT` → `MALLOC_CAP_SPIRAM`.
+    - cp3 mbedTLS: `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y`; consider lowering
+      `CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN` from 16384 if Spotify's TLS allows.
+- **Per-checkpoint forecast:** cp3 (Spotify+TLS) is the wall — peaks both A and B
+  at once (mbedTLS code + 256 KB buffer + handshake). cp4 (UI) / cp5 (JPEG+art) /
+  cp6–7 are comparatively easy: mostly LVGL objects + the art buffer, all
+  PSRAM-eligible. Run `idf.py size` / `size-components` after each checkpoint to
+  watch the internal-SRAM trend rather than be surprised at cp7.
