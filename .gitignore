@@ -23,6 +23,15 @@ scripts/input_albums/
 scripts/sd_card_albums/
 cyd/platformio/src/album_art/album_*.h
 
+# Master album list (personal choices). Single source of truth for album
+# metadata; scripts/gen_albums.py regenerates the committed albums.c/.cpp from
+# it. The generated source files ARE committed; this input file is not.
+spotify-albums-list.txt
+
+# Python bytecode cache (scripts/)
+__pycache__/
+*.pyc
+
 # User credentials
 cyd/platformio/include/secrets.h
 cyd/esp-idf/include/secrets.h
