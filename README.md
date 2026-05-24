@@ -1,6 +1,6 @@
 # Music Controller
 
-Handheld Spotify controller built around the **CYD** (Cheap Yellow Display) ESP32 board. Browse album thumbnails on a 2.8" touchscreen, tap to play, and use a custom hardware panel of two rotary encoders and four push buttons (routed through an MCP23017 I2C expander) to drive playback. Backed today by the Spotify Web API; will migrate to Home Assistant (with the Spotify integration) once the ESP-IDF port is feature-complete.
+Handheld Spotify controller built around the **CYD** (Cheap Yellow Display) ESP32 board. Browse album thumbnails on a 2.8" touchscreen, tap to play, and use a custom hardware panel of two rotary encoders and four push buttons (routed through an MCP23017 I2C expander) to drive playback. The lead firmware is now the ESP-IDF build (feature-complete, verified on hardware); it talks to the Spotify Web API directly, with a Home Assistant backend variant in progress and a port to the larger Waveshare ESP32-P4 board underway.
 
 This repo holds the firmware. Album art conversion tools live alongside in [`scripts/`](scripts/). Album metadata and pre-converted RGB565 thumbnails are stored on an SD card on the device.
 
@@ -10,11 +10,12 @@ This repo holds the firmware. Album art conversion tools live alongside in [`scr
 
 | Build | Folder | Framework | Status |
 |---|---|---|---|
-| **CYD Arduino** | [`cyd/platformio/`](cyd/platformio/) | PlatformIO + Arduino | Phase 1 + 1.5 shipped, feature-complete, maintenance only |
-| **CYD ESP-IDF** | [`cyd/esp-idf/`](cyd/esp-idf/) | ESP-IDF 6.0 + LVGL 9 | Phase 2 in progress — Steps 0..3 verified on hardware |
-| **Waveshare ESP32-P4** | [`waveshare/`](waveshare/) | ESP-IDF 6.0 + LVGL 9 | Planned — board not yet acquired |
+| **CYD ESP-IDF** (direct Spotify) | [`cyd/esp-idf/`](cyd/esp-idf/) | ESP-IDF 6.0 + LVGL 9 | **Feature-complete, fully verified on hardware** — the lead build |
+| **CYD ESP-IDF — HA** | [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/) | ESP-IDF 6.0 + LVGL 9 | Home Assistant backend added; not yet hardware-tested |
+| **CYD Arduino** | [`cyd/platformio/`](cyd/platformio/) | PlatformIO + Arduino | Phase 1 + 1.5 shipped; LVGL port committed, not yet re-verified on hardware |
+| **Waveshare ESP32-P4** (direct Spotify) | [`waveshare/esp-idf/`](waveshare/esp-idf/) | ESP-IDF 5.5 + LVGL 9.4 | Board in hand; **checkpoint 1 (display) hardware-verified**, brought up incrementally |
 
-The Arduino build is the working firmware today. The ESP-IDF build is being brought up in parallel as the foundation for Phase 3 (Home Assistant integration) and for the eventual move to the Waveshare ESP32-P4 board.
+The CYD ESP-IDF build is now the lead firmware: feature-complete and verified smooth on device, and the foundation for Phase 3 (Home Assistant integration) and the Waveshare ESP32-P4 port. The Arduino build was the original working product and has since been ported to LVGL to match (that port still needs a hardware pass). The Waveshare ESP32-P4 board has arrived and its own ESP-IDF build is being brought up checkpoint by checkpoint.
 
 ---
 
@@ -51,9 +52,9 @@ Full pin tables, I2C addresses, and architecture details live in [`CLAUDE.md`](C
 Three active phases plus a future board port. Detail in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 1. **Phase 1 — Bug fixes (Arduino):** small known-cause bugs (JPEG re-decode, encoder responsiveness, Spotify poll cadence). Done concurrently with the IDF port.
-2. **Phase 2 — ESP-IDF port (CYD):** rebuild on ESP-IDF 6.x + LVGL 9. Same hardware, same features. Foundation for Phase 3 and for the future P4 board. ← **active**
-3. **Phase 3 — Home Assistant integration:** swap the direct Spotify HTTP calls for a WebSocket client talking to Home Assistant on a Pi 5. Fixes the Android/iOS volume limitation, removes the OAuth refresh dance, and gets real-time push state updates.
-4. **Future — Waveshare ESP32-P4 port:** 480×800 MIPI-DSI, capacitive touch, ESP-Hosted WiFi. The Phase 3 HA client carries over unchanged.
+2. **Phase 2 — ESP-IDF port (CYD):** rebuilt on ESP-IDF 6.x + LVGL 9. Same hardware, same features. ← **done — feature-complete and verified on hardware**
+3. **Phase 3 — Home Assistant integration:** swap the direct Spotify HTTP calls for a WebSocket client talking to Home Assistant on a Pi 5. Fixes the Android/iOS volume limitation, removes the OAuth refresh dance, and gets real-time push state updates. A first HA build lives in [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/) (not yet hardware-tested).
+4. **Waveshare ESP32-P4 port:** 800×480 MIPI-DSI (ST7701), GT911 capacitive touch, ESP-Hosted WiFi via an onboard ESP32-C6. ← **active** — board in hand, [`waveshare/esp-idf/`](waveshare/esp-idf/) checkpoint 1 (display) hardware-verified.
 
 ---
 
@@ -61,15 +62,19 @@ Three active phases plus a future board port. Detail in [`docs/ROADMAP.md`](docs
 
 ```
 cyd/                       CYD board (ESP32-WROOM, 2.8" ILI9341)
-  platformio/              Arduino build via PlatformIO (Phase 1 firmware)
-    include/               TFT_eSPI User_Setup, pin defines
+  platformio/              Arduino build via PlatformIO (LVGL port, needs re-verify)
+    include/               LVGL config, pin defines
     src/                   main.cpp, ui.cpp, input.cpp, spotify.cpp, ...
     platformio.ini         Board / framework / libs
-  esp-idf/                 Native ESP-IDF build (Phase 2 active)
+  esp-idf/                 Native ESP-IDF build, direct Spotify (lead build, verified)
     main/                  app source (main.c, CMakeLists, idf_component.yml)
     sdkconfig.defaults     Project Kconfig defaults (target esp32, LVGL 16bpp, etc.)
     CMakeLists.txt         Top-level project file
-waveshare/                 Waveshare ESP32-P4 build (planned, empty)
+  esp-idf-ha/              ESP-IDF build, Home Assistant backend (Phase 3, untested)
+waveshare/                 Waveshare ESP32-P4 board
+  esp-idf/                 ESP-IDF 5.5 build, direct Spotify (checkpoint 1 verified)
+    components/            vendored board-support package (BSP)
+    main/                  app source; sources copied from cyd/esp-idf/
 docs/
   ROADMAP.md               Three-phase plan + future P4 plan
   TESTING.md               Hardware test checklist
@@ -87,9 +92,10 @@ Each board folder is self-contained — open it directly in your IDE and follow 
 
 Pick the build that matches what you want to do. Each one has its own README with full build / flash / monitor instructions:
 
-- Working firmware right now: [`cyd/platformio/`](cyd/platformio/README.md)
-- Ongoing port: [`cyd/esp-idf/`](cyd/esp-idf/README.md)
-- Future board: [`waveshare/`](waveshare/README.md)
+- Lead build (CYD, direct Spotify, verified): [`cyd/esp-idf/`](cyd/esp-idf/README.md)
+- Home Assistant backend variant (CYD, untested): [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/README.md)
+- Original Arduino build (LVGL port, needs re-verify): [`cyd/platformio/`](cyd/platformio/README.md)
+- Waveshare ESP32-P4 (direct Spotify, checkpoint 1): [`waveshare/esp-idf/`](waveshare/esp-idf/README.md)
 
 If you want to populate the SD card with your own album library, the conversion pipeline is in [`scripts/`](scripts/) — output a `metadata.csv` plus one 12,800-byte RGB565 `.bin` per album cover (80×80 px each).
 

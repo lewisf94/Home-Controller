@@ -1,8 +1,8 @@
-# cyd/esp-idf — ESP-IDF build (Phase 2, active)
+# cyd/esp-idf — ESP-IDF build (direct Spotify, feature-complete)
 
-Native ESP-IDF port of the Music Controller targeting the same CYD hardware as `../platformio/`. The display layer is LVGL 9 via `esp_lvgl_port`; the same UI stack carries over to the future Waveshare ESP32-P4 build, which is the main reason for porting to IDF in the first place. Phase 3 (Home Assistant WebSocket client) will be built on top of this firmware.
+Native ESP-IDF port of the Music Controller targeting the same CYD hardware as `../platformio/`. The display layer is LVGL 9 via `esp_lvgl_port`; the same UI stack carries over to the Waveshare ESP32-P4 build in [`../../waveshare/esp-idf/`](../../waveshare/esp-idf/), which is the main reason for porting to IDF in the first place. The Home Assistant variant in [`../esp-idf-ha/`](../esp-idf-ha/) is a copy of this build with the backend swapped.
 
-This build is **not** a feature port of the Arduino code yet — it's being brought up incrementally per the Phase 2 checkpoint table in [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md). Each checkpoint is a flashable, hardware-verified milestone before moving to the next.
+**This is the lead build.** It is a full feature port of the Arduino code and is **verified smooth on hardware**: display, LVGL 9.5, XPT2046 touch, WiFi STA, Spotify HTTPS (token persisted to NVS), album art, the LVGL album browser + now-playing UI, and the MCP23017 controls (four buttons + RE1 encoder). Input runs in its own 2 ms FreeRTOS task and posts commands to the Spotify task via a queue, so controls stay smooth during blocking HTTPS calls.
 
 ---
 
@@ -14,16 +14,16 @@ This build is **not** a feature port of the Arduino code yet — it's being brou
 | 1 | esp_lcd + ILI9341, full-screen R/G/B colour cycle | verified |
 | 2 | LVGL init + centred "Hello CYD" label | verified |
 | 3 | XPT2046 touch + LVGL input device, draggable square | verified |
-| 4 | WiFi STA, IP logged | not started |
-| 5 | HTTPS to Spotify, token refresh, GET player state | not started |
-| 6 | Download `nowplaying.jpg`, display via `lv_image` | not started |
-| 7 | SD mount, load `metadata.csv` + thumbnails as raw RGB565 | not started |
-| 8 | LVGL scrollable container + snap + tap-to-play | not started |
-| 9 | MCP23017 I2C driver + LVGL encoder input device | not started |
-| 10 | Button dispatch, volume debounce, mute toggle | not started |
-| 11 | Feature parity: WiFi indicator, mute badge, play-pause flash, volume HUD | not started |
+| 4 | WiFi STA, IP logged | verified |
+| 5 | HTTPS to Spotify, token refresh, GET player state | verified |
+| 6 | Now-playing album art via `lv_image` (JPEGDEC → LittleFS) | verified |
+| 7 | Album browser from embedded RGB565 thumbnails | verified |
+| 8 | LVGL carousel + centre-snap + tap/encoder-to-play | verified |
+| 9 | MCP23017 I2C driver + RE1 encoder input | verified |
+| 10 | Button dispatch, volume debounce, mute toggle | verified |
+| 11 | Feature parity: WiFi indicator, mute badge, play-pause flash, volume HUD | verified |
 
-The currently-flashed program is a touch test: a centred red square that follows your finger across the screen, with a "TOP" label and a live `x=N y=N` coord HUD.
+Album art is stored in a 256 KB LittleFS partition on internal flash (avoids SD/SPI/DMA conflicts). **Known hardware limit:** browser scroll tearing — the CYD's ILI9341 TE pin isn't wired, so there's no vsync to sync redraws to; accepted as unfixable without hardware TE wiring. **Next:** Phase 3 (Home Assistant — see [`../esp-idf-ha/`](../esp-idf-ha/)).
 
 ---
 

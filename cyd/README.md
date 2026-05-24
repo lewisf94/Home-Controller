@@ -2,14 +2,15 @@
 
 Music Controller firmware for the **CYD** ("Cheap Yellow Display") — a budget ESP32-WROOM dev board sold under various Sunton / generic SKUs (commonly `ESP32-2432S028R`). It bundles a 2.8" 320×240 ILI9341 SPI TFT and an XPT2046 resistive touch controller into one board. Around it we add an MCP23017 I2C IO expander breakout (CJMCU-2317) carrying four push buttons and a rotary encoder, plus an SD card slot for album thumbnails.
 
-Two builds live here:
+Three builds live here:
 
 | Folder | Framework | LVGL | Status |
 |---|---|---|---|
-| [`platformio/`](platformio/) | PlatformIO + Arduino framework | n/a (TFT_eSPI direct draw) | **Phase 1 + 1.5 shipped, frozen** |
-| [`esp-idf/`](esp-idf/) | ESP-IDF 6.0 native | LVGL 9.x via esp_lvgl_port | **Phase 2 in progress** — Steps 0..3 verified |
+| [`esp-idf/`](esp-idf/) | ESP-IDF 6.0 native, direct Spotify | LVGL 9.x via esp_lvgl_port | **Feature-complete, verified on hardware** — the lead build |
+| [`esp-idf-ha/`](esp-idf-ha/) | ESP-IDF 6.0 native, Home Assistant backend | LVGL 9.x via esp_lvgl_port | Backend swapped from `esp-idf/`; **not yet hardware-tested** |
+| [`platformio/`](platformio/) | PlatformIO + Arduino framework | LVGL 9.5 (ported from TFT_eSPI direct draw) | Phase 1 + 1.5 shipped; LVGL port committed, **needs re-verify on hardware** |
 
-Both target identical hardware and aim for identical features. The Arduino build is the working product today. The ESP-IDF build is being brought up step-by-step so it can be the foundation for Phase 3 (Home Assistant integration) and the eventual ESP32-P4 port in [`../waveshare/`](../waveshare/).
+All three target identical hardware and aim for identical features. The ESP-IDF direct-Spotify build is the lead firmware and is verified smooth on device. The HA variant is a copy of it with the backend swapped to a Home Assistant WebSocket client (Phase 3). The Arduino build was the original working product and has been ported to LVGL to match the IDF look; that port still needs a hardware pass. The IDF UI stack is also the foundation for the ESP32-P4 port in [`../waveshare/`](../waveshare/).
 
 ---
 
@@ -40,11 +41,13 @@ To consolidate wiring, every input (4 push-buttons + RE1's CLK/DT/SW) is wired t
 
 ## Choosing a build
 
-**Use [`platformio/`](platformio/)** if you want the working firmware today: tap-to-play album browser, now-playing screen with cover art, working playback controls, mute / volume / play-pause overlays. Configure WiFi + Spotify credentials, build, flash, done. Code is C++ on top of TFT_eSPI, JPEGDEC, and a Spotify HTTPS client built on `WiFiClientSecure`.
+**Use [`esp-idf/`](esp-idf/)** for the lead firmware: it is a feature-complete, hardware-verified ESP-IDF build with the LVGL album browser, now-playing screen with cover art, MCP23017 buttons + RE1 encoder, and a Spotify HTTPS client (token persisted to NVS). Input runs on its own FreeRTOS task so controls stay smooth during blocking network calls. Configure WiFi + Spotify credentials in `include/secrets.h`, build, flash, done.
 
-**Use [`esp-idf/`](esp-idf/)** if you want to track or contribute to the IDF port. As of the latest commit Steps 0..3 of the Phase 2 plan are verified on hardware (backlight blink, full-screen colour cycle, LVGL "Hello CYD" label, XPT2046 touch driving a draggable square). Steps 4..11 (WiFi, HTTPS, SD, MCP23017, feature parity) are still ahead.
+**Use [`esp-idf-ha/`](esp-idf-ha/)** for the Home Assistant variant — the same UI with the Spotify backend replaced by a WebSocket client to a Music Assistant `media_player` entity. Not yet hardware-tested.
 
-Both builds can coexist — flashing one overwrites the application partition, but switching back is just another flash. There is no shared build state between them, no shared `secrets.h`, and no shared SD card layout assumptions (the SD layout *is* identical, but each firmware mounts it independently).
+**Use [`platformio/`](platformio/)** for the original Arduino build, now ported to LVGL 9.5 to match the IDF look (embedded thumbnails, centre-snap carousel, volume HUD, WiFi bars). It compiles and fits but the LVGL port has not been re-flashed yet — colours/byte-order, touch, heap, and TLS are unverified. Code is C++ on top of TFT_eSPI (as LVGL's flush driver), JPEGDEC, and a Spotify HTTPS client built on `WiFiClientSecure` with verified TLS.
+
+All three builds can coexist — flashing one overwrites the application partition, but switching back is just another flash. There is no shared build state between them and no shared `secrets.h`.
 
 ---
 

@@ -30,9 +30,9 @@ swaps out.
 
 | Platform | Non-HA (direct Spotify Web API) | HA (WebSocket to Home Assistant) |
 |---|---|---|
-| **PlatformIO CYD** (Arduino) | Shipped, live product. Needs polish (Phase 1 bugs). | Not started. |
-| **ESP-IDF CYD** | Active — Phase 2, on hardware. Needs polish. | Not started — Phase 3. |
-| **ESP-IDF P4** (Waveshare) | Future — board not arrived. | Future — board not arrived. |
+| **PlatformIO CYD** (Arduino) | Shipped (Phase 1 + 1.5); now ported to LVGL, needs re-verify on hardware. | Not started. |
+| **ESP-IDF CYD** | **Done — feature-complete and verified on hardware** (lead build). | First build exists (`cyd/esp-idf-ha/`), not yet hardware-tested. |
+| **ESP-IDF P4** (Waveshare) | **Active** — board in hand; checkpoint 1 (display) hardware-verified. | Future — copy of the P4 non-HA build with the backend swapped. |
 
 **Status legend:** "Needs polish" = functional on hardware but has open
 bugs / rough edges to clean up before it's a finished variant.
@@ -56,9 +56,12 @@ function signatures (`*_next_track`, `*_play_album`, etc.) so the UI never
 needs to know which backend is compiled in.
 
 **Polish backlog (pre-existing variants):**
-- PlatformIO CYD non-HA: clear Phase 1 bug list (1A/1E hardware verify, 1D poll).
-- ESP-IDF CYD non-HA: now-playing layout, album browser thumbnails/scroll,
-  async play, NVS token (in progress on hardware).
+- PlatformIO CYD non-HA: LVGL port needs a full hardware pass (colours/byte-order,
+  touch, heap, TLS handshake); then clear the residual Phase 1 bug list.
+- ESP-IDF CYD non-HA: done — feature-complete and verified. Remaining is the
+  accepted browser scroll-tearing limit (no ILI9341 TE pin wired).
+- ESP-IDF CYD HA: bring up `cyd/esp-idf-ha/` on hardware (WebSocket auth,
+  state push, service calls, HA-proxied art).
 
 ---
 
@@ -157,11 +160,18 @@ Recommended: bump poll to 4 s first. If encoder still lags, do FreeRTOS split.
 
 ---
 
-## Phase 2 — ESP-IDF port (same CYD hardware, same feature set)
+## Phase 2 — ESP-IDF port (same CYD hardware, same feature set)  [DONE]
 
-**Goal:** identical product running on ESP-IDF 5.x instead of Arduino, as
-the foundation for Phase 3 (HA integration). Phase 3 will be implemented
-directly in the IDF build.
+**Status: complete and verified on hardware.** All 11 checkpoints below are
+done — `cyd/esp-idf/` is feature-complete (display, LVGL 9.5, XPT2046 touch,
+WiFi, Spotify HTTPS with NVS-persisted token, album art, browser + now-playing,
+MCP23017 buttons + RE1 encoder on their own FreeRTOS input task). The one
+accepted limit is browser scroll tearing (no ILI9341 TE pin wired). This is the
+lead build and the carrier for Phase 3.
+
+**Goal (achieved):** identical product running on ESP-IDF instead of Arduino, as
+the foundation for Phase 3 (HA integration). Phase 3 is implemented directly in
+the IDF build.
 
 **Why IDF now:**
 - ESP-IDF is required for the ESP32-P4 migration later (separate project).
@@ -347,19 +357,33 @@ call the same command functions, just from a different backend.
 
 ---
 
-## Future — ESP32-P4 migration (not started, board not yet arrived)
+## ESP32-P4 migration (active — board in hand)
 
-When the Waveshare ESP32-P4-WIFI6 (4.3" 480×800, capacitive touch) board
-arrives:
+The Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (4.3" IPS, ST7701 MIPI-DSI,
+GT911 capacitive touch, onboard ESP32-C6 WiFi) has arrived. The build lives in
+`waveshare/esp-idf/` (direct Spotify, touch-first). **Checkpoint 1 (display
+bring-up) is hardware-verified** — a label renders at 800×480 landscape on the
+physical board. See `waveshare/esp-idf/README.md` for the full checkpoint
+roadmap (1 display → 2 WiFi → 3 Spotify → 4 UI → 5 assets → 6 controls →
+7 parity).
 
-- New project lives in `waveshare/` alongside `cyd/`
-- Display: MIPI-DSI via `esp_lcd_mipi_dsi` (not SPI)
-- Touch: GT911 capacitive via `esp_lcd_touch_gt911` managed component
-- WiFi: ESP-Hosted via onboard ESP32-C6 (not standard `esp_wifi.h`)
-- LVGL: same library, different resolution (480×800), new layout
-- Backend: Phase 3 HA integration carries over unchanged
-- Hardware: total redesign (no MCP23017 needed — P4 has sufficient GPIO;
-  touch replaces most physical controls)
+Key facts and adaptations:
+- **Toolchain: ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0). The vendored BSP needs the
+  `usb` component (removed in 6.0) and its `esp_lvgl_adapter` needs IDF ≥5.5 —
+  5.5.x is the only line satisfying both. The CYD builds stay on 6.0.
+- Display: MIPI-DSI ST7701 via the vendored `esp32_p4_wifi6_touch_lcd_4_3` BSP
+  (`bsp_display_start_with_config`), native 480×800 rotated to 800×480 landscape.
+- LVGL via `esp_lvgl_adapter` (NOT `esp_lvgl_port`) — lock is
+  `bsp_display_lock()/unlock()`; `ui.c`'s `lvgl_port_lock(0)` maps to that.
+- Touch: GT911 capacitive (I2C), driven through the BSP.
+- WiFi: `esp_wifi_remote` + `esp_hosted` (slave esp32c6, SDIO) — the C6 routes
+  the `esp_wifi_*` API, so `wifi_init_sta` ports nearly unchanged.
+- App logic (`spotify.c`, `albums.c`, `album_art.cpp`, `littlefs.c`,
+  `album_thumbs.c`) copied unchanged from `cyd/esp-idf/`; UI re-laid-out for
+  800×480; input is touch-first with a seam left for optional physical controls.
+- **SRAM budget:** the full stack overflows internal SRAM by ~451 B at once, so
+  sources/deps are staged per checkpoint (display-only at cp1).
+- Backend: a future `waveshare/esp-idf-ha/` will swap to the Phase 3 HA client.
 
 The `ha_client/` component from Phase 3 is the one piece that ports to P4
 with zero changes.

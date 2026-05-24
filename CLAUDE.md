@@ -13,9 +13,14 @@ It shows an album browser loaded from an SD card, drives playback via the
 Spotify Web API, and has a custom hardware control panel with two rotary
 encoders and four push buttons routed through an MCP23017 I2C IO expander.
 
-Lewis builds with PlatformIO (Arduino build) and native ESP-IDF (Phase 2 IDF build).
-He works locally in VS Code with Claude Code and intermittently uses Claude Code on the web.
-This file is the source of truth across sessions.
+Lewis builds with PlatformIO (Arduino) and native ESP-IDF. There are now four
+build folders: the CYD ESP-IDF direct-Spotify build (`cyd/esp-idf/`, the lead
+build — feature-complete and hardware-verified), its Home Assistant variant
+(`cyd/esp-idf-ha/`, not yet tested), the original Arduino build now ported to
+LVGL (`cyd/platformio/`, needs a hardware pass), and the new Waveshare ESP32-P4
+direct-Spotify build (`waveshare/esp-idf/`, checkpoint 1 verified). He works
+locally in VS Code with Claude Code and intermittently uses Claude Code on the
+web. This file is the source of truth across sessions.
 
 ---
 
@@ -132,11 +137,11 @@ interrupt path to keep debounce timers ticking. Port B unused.
 
 ## Architecture
 
-The project targets the same hardware from two codebases, with two future
-targets planned. Each is a self-contained section below so they stay decoupled
-as work moves between them.
+The project spans four self-contained build folders: `cyd/esp-idf/` (lead),
+`cyd/esp-idf-ha/`, `cyd/platformio/`, and `waveshare/esp-idf/`. Each is a
+self-contained section below so they stay decoupled as work moves between them.
 
-### CYD — ESP-IDF build (current, Phase 2) — `cyd/esp-idf/`
+### CYD — ESP-IDF build (lead, feature-complete) — `cyd/esp-idf/`
 
 ESP-IDF 5.x/6.0 + LVGL 9.5. Cooperative multitasking via three FreeRTOS tasks;
 input is fully decoupled from rendering and network I/O, which is why the
@@ -217,21 +222,50 @@ deliberate compatibility shim from the MCP migration.
 
 `ui_fancy_backup.cpp/h` are unused legacy files — safe to ignore.
 
-### Future: Home Assistant integration (Phase 3) — not started
+### CYD — ESP-IDF HA build (Phase 3) — `cyd/esp-idf-ha/` — NOT hardware-tested
 
-**Not in use yet — this is the next stage.** The ESP32 will speak the HA
-WebSocket API instead of calling Spotify directly: HA OS on a Pi 5 owns the
-Spotify integration, eliminating on-device OAuth refresh, fixing phone volume,
-and enabling real-time push state. This will land as its own component on the
-ESP-IDF build (the IDF architecture above is the carrier). See `docs/ROADMAP.md`
-Phase 3 for the handshake and HA setup. Keep this separate from the Spotify
-client — the goal is to swap the backend, not entangle the two.
+**First HA build exists but is unverified.** A self-contained copy of
+`cyd/esp-idf/` with the Spotify Web API backend replaced by a Home Assistant
+WebSocket client (`ha_client.c`) talking to a Music Assistant `media_player`
+entity. HA OS on a Pi 5 owns the Spotify integration, eliminating on-device
+OAuth refresh, fixing phone volume, and enabling real-time push state. The UI /
+input / album code is a copy of `cyd/esp-idf/` — a fix to one must be applied to
+the other. Secrets are `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` in
+`include/secrets.h`. See `docs/ROADMAP.md` Phase 3 for the handshake and HA
+setup. The backend is kept behind the `ui_request_*()` seam — swap the backend,
+don't entangle it with the UI.
 
-### Future: ESP32-P4 board — not started (board not yet arrived)
+### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — checkpoint 1 verified
 
-A later migration to the ESP32-P4. The HA client component from Phase 3 is meant
-to carry over untouched. Tracked as its own target so CYD-specific wiring and
-P4-specific bring-up don't bleed into each other.
+**Board in hand; brought up incrementally.** Waveshare
+ESP32-P4-WIFI6-Touch-LCD-4.3 (ESP32-P4 RISC-V, 4.3" IPS, ST7701 MIPI-DSI, GT911
+capacitive touch, onboard ESP32-C6 WiFi over SDIO, PSRAM, 32 MB flash). Talks
+**directly to the Spotify Web API**; a future `waveshare/esp-idf-ha/` will swap
+to the HA backend. **Checkpoint 1 (display bring-up) is hardware-verified** — a
+label renders at 800×480 landscape on the physical board.
+
+Key differences from the CYD IDF build:
+- **Toolchain ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0): the vendored BSP needs the
+  `usb` component (gone in 6.0) and its `esp_lvgl_adapter` needs IDF ≥5.5.
+- Display/touch via the **vendored BSP** `esp32_p4_wifi6_touch_lcd_4_3`
+  (`components/`, not on the registry): `bsp_display_start_with_config()`,
+  native 480×800 rotated to 800×480 landscape.
+- LVGL via **`esp_lvgl_adapter`** (NOT `esp_lvgl_port`): lock is
+  `bsp_display_lock()/unlock()` — `ui.c`'s `lvgl_port_lock(0)` maps to it.
+- WiFi via `esp_wifi_remote` + `esp_hosted` (slave esp32c6, SDIO).
+- App logic (`spotify.c`, `albums.c`, `album_art.cpp`, `littlefs.c`,
+  `album_thumbs.c`) copied unchanged from `cyd/esp-idf/`; UI re-laid-out for
+  800×480; input is touch-first (no MCP23017), with a seam for optional physical
+  controls.
+- **SRAM budget:** the full stack overflows internal SRAM by ~451 B at once, so
+  sources/deps are staged per checkpoint (`main/CMakeLists.txt` comments).
+  See `waveshare/esp-idf/README.md` for the checkpoint roadmap.
+
+### Future: ESP32-P4 HA variant — not started — `waveshare/esp-idf-ha/`
+
+A copy of `waveshare/esp-idf/` with the backend swapped to the Phase 3
+`ha_client.c`. The HA client carries over untouched from the CYD HA build; do
+not start until the P4 direct-Spotify build is verified on hardware.
 
 ---
 
@@ -298,16 +332,20 @@ full analysis and fix options.
 Full detail in `docs/ROADMAP.md`. Three phases:
 
 1. **Phase 1 — Bug fixes (Arduino/CYD):** JPEG blank, serial flood, poll
-   interval bump. Short items, do before or during IDF port.
-2. **Phase 2 — ESP-IDF port (CYD hardware):** same hardware, same features,
-   ESP-IDF 5.x + LVGL. Runs in `cyd/esp-idf/` subfolder alongside `cyd/platformio/`.
+   interval bump. Done concurrently with the IDF port.
+2. **Phase 2 — ESP-IDF port (CYD hardware):** DONE — same hardware, same
+   features, ESP-IDF 6.0 + LVGL 9.5. `cyd/esp-idf/` is feature-complete and
+   verified on hardware; it's the lead build.
 3. **Phase 3 — Home Assistant integration (on IDF build):** Pi 5 runs HA OS
    with Spotify integration. ESP32 speaks HA WebSocket instead of Spotify API
    directly. Eliminates OAuth refresh, fixes volume, enables real-time push
-   state. See `docs/ROADMAP.md` Phase 3 for WebSocket handshake and HA setup.
+   state. A first build exists in `cyd/esp-idf-ha/` (not yet hardware-tested).
+   See `docs/ROADMAP.md` Phase 3 for WebSocket handshake and HA setup.
 
-Future: ESP32-P4 migration (board not yet arrived). The HA client component
-from Phase 3 carries over untouched.
+ESP32-P4 migration: ACTIVE — the Waveshare board is in hand and
+`waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5) has checkpoint 1 (display)
+verified on hardware. A future `waveshare/esp-idf-ha/` carries the Phase 3 HA
+client over untouched.
 
 ---
 
@@ -379,8 +417,10 @@ git log --oneline -10          # recent history
 - **Plans for next phases:** `docs/ROADMAP.md`
 - **What still needs to be tested on hardware:** `docs/TESTING.md`
 - **IDF port gotchas discovered on hardware:** `docs/PORT-NOTES.md`
-- **Arduino build (Phase 1, maintenance):** `cyd/platformio/`
-- **IDF build (Phase 2, active):** `cyd/esp-idf/`
+- **Lead build (direct Spotify, verified):** `cyd/esp-idf/`
+- **HA backend variant (untested):** `cyd/esp-idf-ha/`
+- **Arduino build (LVGL port, needs re-verify):** `cyd/platformio/`
+- **Waveshare ESP32-P4 (direct Spotify, checkpoint 1):** `waveshare/esp-idf/`
 - **Current status: MILESTONE — CYD fully working on ESP-IDF.** The ESP-IDF
   build is now feature-complete for the CYD hardware and verified smooth on
   device: display, LVGL 9.5, XPT2046 touch, WiFi STA, Spotify HTTPS (token
@@ -401,8 +441,24 @@ git log --oneline -10          # recent history
     isn't wired, so there's no vsync to sync redraws to. Buffer-size and
     SPI-clock tweaks were tried and reverted (both degraded TLS heap / made it
     worse). Accepted as unfixable without hardware TE wiring.
-  - **Next:** Phase 3 — Home Assistant integration (see Architecture → "Future:
-    Home Assistant integration" and `docs/ROADMAP.md` Phase 3).
+  - **Next:** Phase 3 — Home Assistant integration (see Architecture →
+    "CYD — ESP-IDF HA build" and `docs/ROADMAP.md` Phase 3).
+
+- **Waveshare ESP32-P4 — checkpoint 1 (display) HARDWARE-VERIFIED.** The board
+  arrived and `waveshare/esp-idf/` is being brought up incrementally. The cp1
+  skeleton (`main/main.c`: `bsp_display_start_with_config` + a centred label)
+  renders at 800×480 landscape on the physical board, upright and readable.
+  Toolchain is **ESP-IDF 5.5.x** (NOT 5.4/6.0 — see the Architecture section and
+  `waveshare/esp-idf/README.md` for why), display/touch via the vendored
+  `esp32_p4_wifi6_touch_lcd_4_3` BSP, LVGL via `esp_lvgl_adapter`. Sources are
+  staged per checkpoint to fit internal SRAM (full stack overflows by ~451 B).
+  - **To build:** dot-source the IDF 5.5.4 PowerShell profile, then
+    `idf.py set-target esp32p4` and `idf.py build flash monitor`. WiFi + Spotify
+    creds go in `waveshare/esp-idf/include/secrets.h` (gitignored; template at
+    `include/secrets.h.example`). The board enumerates as a CH343 USB-serial
+    device (COM3 on Lewis's machine).
+  - **Next:** checkpoint 2 — WiFi (`esp_wifi_remote` + `esp_hosted`, slave
+    esp32c6; port `wifi_init_sta` from `cyd/esp-idf/main.c`; log the IP).
 
 - **PlatformIO LVGL port — committed but NOT YET HARDWARE-TESTED (needs Lewis to
   check on device).** The Arduino build was rewritten from TFT_eSPI direct-draw
