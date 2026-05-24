@@ -18,7 +18,7 @@ build folders: the CYD ESP-IDF direct-Spotify build (`cyd/esp-idf/`, the lead
 build — feature-complete and hardware-verified), its Home Assistant variant
 (`cyd/esp-idf-ha/`, not yet tested), the original Arduino build now ported to
 LVGL (`cyd/platformio/`, needs a hardware pass), and the new Waveshare ESP32-P4
-direct-Spotify build (`waveshare/esp-idf/`, checkpoint 2 / WiFi verified). He works
+direct-Spotify build (`waveshare/esp-idf/`, checkpoint 3 / Spotify verified). He works
 locally in VS Code with Claude Code and intermittently uses Claude Code on the
 web. This file is the source of truth across sessions.
 
@@ -235,17 +235,24 @@ the other. Secrets are `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` in
 setup. The backend is kept behind the `ui_request_*()` seam — swap the backend,
 don't entangle it with the UI.
 
-### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — checkpoint 2 / WiFi verified
+### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — checkpoint 3 / Spotify verified
 
 **Board in hand; brought up incrementally.** Waveshare
 ESP32-P4-WIFI6-Touch-LCD-4.3 (ESP32-P4 RISC-V, 4.3" IPS, ST7701 MIPI-DSI, GT911
 capacitive touch, onboard ESP32-C6 WiFi over SDIO, PSRAM, 32 MB flash). Talks
 **directly to the Spotify Web API**; a future `waveshare/esp-idf-ha/` will swap
-to the HA backend. **Checkpoints 1 (display) and 2 (WiFi) are hardware-verified**
-— a label renders at 800×480 landscape, and the board associates to WiFi via the
-onboard C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a DHCP lease.
-Memory budget verified on-chip at cp2 (~390 KB internal heap free + 31 MB PSRAM;
-see `docs/PORT-NOTES.md`). cp3 (Spotify) is next.
+to the HA backend. **Checkpoints 1 (display), 2 (WiFi) and 3 (Spotify) are
+hardware-verified** — a label renders at 800×480 landscape, the board associates
+to WiFi via the onboard C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls
+a DHCP lease, and the Spotify task refreshes the OAuth token (cached in NVS),
+validates the TLS cert bundle, and polls `/me/player` every 5 s (track logged to
+serial). Memory budget verified on-chip at cp2 (~390 KB internal heap free +
+31 MB PSRAM; see `docs/PORT-NOTES.md`). cp4 (UI port) is next.
+- **Known cp3 inefficiency (not yet fixed):** `spotify.c` does
+  `esp_http_client_init`/`perform`/`cleanup` per call, so every 5 s poll runs a
+  full TLS handshake + cert-bundle validation (`Certificate validated` each
+  poll). Reuse the client handle / enable keep-alive to persist the TLS session;
+  watch TLS heap (CLAUDE flags it tight). Same pattern in the CYD build.
 
 Key differences from the CYD IDF build:
 - **Toolchain ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0): the vendored BSP needs the
@@ -374,6 +381,21 @@ and 2 (WiFi) verified on hardware; cp3 (Spotify) is in progress. A future
   `current_track_info` — all Spotify/UI mutation stays on the consumer
   (loop / Spotify task). Keep it that way: don't move `input_update()`,
   `spotify_*()`, or UI rendering into the polling task.
+- **Album list is generated — never hand-edit `albums.c`/`albums.cpp`.** The
+  single source of truth is `spotify-albums-list.txt` (repo root, gitignored —
+  personal choices). `python scripts/gen_albums.py` regenerates all four album
+  source files (3× `albums.c`, 1× `albums.cpp`), sorted by artist then title
+  (leading "The"/"A"/"An" ignored). Each file carries a "GENERATED — do not edit"
+  header. To change the list, edit the txt and rerun the script.
+- **Browser thumbnails stay aligned via the same source.** `album_thumbs.bin` is
+  indexed *positionally* by album order, so it must match `albums.c`.
+  `scripts/embed_albums_idf.py` imports the sorted list from `gen_albums.py` and
+  bakes the 120×120 RGB565 thumbs in that exact order, matching each album to a
+  cover in `scripts/input_albums/` by Spotify id (`<id>.jpg`/`.png`; legacy
+  descriptive filenames still accepted). Albums with no cover get a neutral
+  placeholder tile so the blob never desyncs (the UI shows a coloured letter
+  card). The `.bin` is gitignored (copyright art) — regenerate it locally after
+  changing the list or adding a cover.
 
 ---
 
@@ -423,7 +445,7 @@ git log --oneline -10          # recent history
 - **Lead build (direct Spotify, verified):** `cyd/esp-idf/`
 - **HA backend variant (untested):** `cyd/esp-idf-ha/`
 - **Arduino build (LVGL port, needs re-verify):** `cyd/platformio/`
-- **Waveshare ESP32-P4 (direct Spotify, checkpoint 2 / WiFi verified):** `waveshare/esp-idf/`
+- **Waveshare ESP32-P4 (direct Spotify, checkpoint 3 / Spotify verified):** `waveshare/esp-idf/`
 - **Current status: MILESTONE — CYD fully working on ESP-IDF.** The ESP-IDF
   build is now feature-complete for the CYD hardware and verified smooth on
   device: display, LVGL 9.5, XPT2046 touch, WiFi STA, Spotify HTTPS (token
@@ -447,11 +469,14 @@ git log --oneline -10          # recent history
   - **Next:** Phase 3 — Home Assistant integration (see Architecture →
     "CYD — ESP-IDF HA build" and `docs/ROADMAP.md` Phase 3).
 
-- **Waveshare ESP32-P4 — checkpoints 1 (display) + 2 (WiFi) HARDWARE-VERIFIED.**
+- **Waveshare ESP32-P4 — checkpoints 1 (display) + 2 (WiFi) + 3 (Spotify) HARDWARE-VERIFIED.**
   The board arrived and `waveshare/esp-idf/` is being brought up incrementally.
   cp1 renders a centred label at 800×480 landscape; cp2 associates to WiFi via
   the onboard ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a
-  DHCP lease (`wifi_init_sta` ported from `cyd/esp-idf/main.c`). Toolchain is
+  DHCP lease (`wifi_init_sta` ported from `cyd/esp-idf/main.c`); cp3 runs the
+  Spotify task — OAuth token cached in NVS, TLS cert bundle validated, `/me/player`
+  polled every 5 s with the track logged to serial (`scmd_t` command queue in
+  place for cp4+ controls, nothing posts to it yet). Toolchain is
   **ESP-IDF 5.5.x** (NOT 5.4/6.0 — see the Architecture section and
   `waveshare/esp-idf/README.md` for why), display/touch via the vendored
   `esp32_p4_wifi6_touch_lcd_4_3` BSP, LVGL via `esp_lvgl_adapter`. Sources/deps
@@ -467,9 +492,14 @@ git log --oneline -10          # recent history
     creds go in `waveshare/esp-idf/include/secrets.h` (gitignored; template at
     `include/secrets.h.example`). The board enumerates as a CH343 USB-serial
     device (COM3/COM4 on Lewis's machine, depending on USB port).
-  - **Next:** checkpoint 3 — Spotify. Port `spotify.c` + `albums.c` and the
-    Spotify task + `scmd_t` command queue from `cyd/esp-idf/main.c`; allocate the
-    response/art buffers from PSRAM (`MALLOC_CAP_SPIRAM`); log the track title.
+  - **cp3 verified (Spotify):** boot log shows the OAuth token loaded from NVS,
+    `esp-x509-crt-bundle: Certificate validated`, and `now playing: <artist> --
+    <title> [.../... ms, playing]` every 5 s. SSID/IP are no longer logged (so
+    serial output is shareable without redaction). Known inefficiency: a full TLS
+    handshake per poll — see the Architecture section's keep-alive note.
+  - **Next:** checkpoint 4 — UI. Port `cyd/esp-idf/main/ui.c`; map
+    `lvgl_port_lock(0)` → `bsp_display_lock(0)`; re-lay-out constants for 800×480;
+    wire the browser carousel + now-playing to the existing `ui_request_*()` seam.
 
 - **PlatformIO LVGL port — committed but NOT YET HARDWARE-TESTED (needs Lewis to
   check on device).** The Arduino build was rewritten from TFT_eSPI direct-draw

@@ -6,12 +6,15 @@ onboard **ESP32-C6** over SDIO, PSRAM, 32 MB flash). Talks **directly to the
 Spotify Web API**. A future `waveshare/esp-idf-ha/` will swap the backend to
 Home Assistant, exactly like the CYD split.
 
-> **STATUS: checkpoint 2 (WiFi) hardware-verified.** Display (cp1) renders at
-> 800×480 landscape, and the board now associates to WiFi through the onboard
-> ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a DHCP lease —
-> boot log shows `checkpoint 2: WiFi OK`. Built incrementally — see the checkpoint
-> roadmap below. Most app logic (Spotify client, album data, art decode, LittleFS)
-> is copied unchanged from `../../cyd/esp-idf/`; the UI and input come later.
+> **STATUS: checkpoint 3 (Spotify) hardware-verified.** Display (cp1) renders at
+> 800×480 landscape, the board associates to WiFi through the onboard ESP32-C6
+> (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a DHCP lease (cp2), and
+> the Spotify task now refreshes the OAuth token (cached in NVS), validates the
+> TLS cert bundle, and polls `/me/player` every 5 s — boot log shows
+> `now playing: <artist> -- <title> [.../... ms, playing]`. Built incrementally —
+> see the checkpoint roadmap below. Most app logic (Spotify client, album data,
+> art decode, LittleFS) is copied unchanged from `../../cyd/esp-idf/`; the UI and
+> input come later.
 
 ## Reference
 Waveshare official component + demos:
@@ -75,7 +78,7 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
 1. **Display skeleton** — `bsp_display_start_with_config` + hello label. *(hardware-verified)*
 2. **WiFi** — add `esp_wifi_remote`; port `wifi_init_sta`; log the IP. *(hardware-verified)*
 3. **Spotify** — Spotify task + `scmd_t` command queue (port the structure from
-   `cyd/esp-idf/main.c`); log the track title.
+   `cyd/esp-idf/main.c`); log the track title. *(hardware-verified)*
 4. **UI** — port `cyd/esp-idf/main/ui.c`; `lvgl_port_lock` → `bsp_display_lock`;
    re-lay-out constants for 800×480; touch scroll + tap-to-play.
 5. **Assets** — regen `album_thumbs.bin` larger via `scripts/embed_albums_idf.py`;

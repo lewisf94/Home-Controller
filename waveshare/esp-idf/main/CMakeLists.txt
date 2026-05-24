@@ -4,9 +4,9 @@
 idf_component_register(
     SRCS
         "main.c"
+        "spotify.c"       # cp3: Spotify Web API client (+ esp_http_client/esp-tls/mbedtls)
+        "albums.c"        # cp3: album list / metadata
         # --- added in later checkpoints (see README.md roadmap) ---
-        # "spotify.c"       # cp3: Spotify Web API client (+ esp_http_client/esp-tls/mbedtls)
-        # "albums.c"        # cp3
         # "album_art.cpp"   # cp5: JPEGDEC now-playing art (+ bitbank2__jpegdec, vfs)
         # "littlefs.c"      # cp5: album-art scratch (+ joltwallet__littlefs)
         # "album_thumbs.c"  # cp5: embedded thumbnails (+ EMBED_FILES album_thumbs.bin)
@@ -22,6 +22,9 @@ idf_component_register(
         esp_wifi_remote   # cp2: redirects esp_wifi calls to the onboard C6 over SDIO
         esp_netif         # cp2
         esp_event         # cp2
-        # esp_http_client esp-tls mbedtls esp_timer  # cp3
+        esp_http_client   # cp3: Spotify Web API HTTPS
+        esp-tls           # cp3: TLS + cert bundle
+        mbedtls           # cp3: base64 (token auth), TLS
+        esp_timer         # cp3: token-expiry timing
         # vfs joltwallet__littlefs bitbank2__jpegdec                     # cp5
 )

@@ -26,6 +26,17 @@ CONFIG_ESP_WIFI_REMOTE_ENABLED=y
 
 # TLS for the Spotify Web API (same approach as the CYD IDF build).
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# cp3: free the mbedTLS handshake buffers after each connect (TLS to Spotify).
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# cp3: PSRAM-first heap policy (see docs/PORT-NOTES.md). Allocations >4 KB --
+# the Spotify response/JPEG buffers -- spill to PSRAM instead of the scarce
+# 768 KB internal SRAM; WiFi/lwip buffers also move to PSRAM. PSRAM is already
+# in the heap allocator (boot log), so this just tightens the threshold and
+# relieves internal SRAM as TLS lands.
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # LVGL 9.4 (Kconfig-driven; the board uses esp_lvgl_adapter, not lv_conf.h).
 CONFIG_LV_OS_FREERTOS=y

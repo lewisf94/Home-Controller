@@ -32,7 +32,7 @@ swaps out.
 |---|---|---|
 | **PlatformIO CYD** (Arduino) | Shipped (Phase 1 + 1.5); now ported to LVGL, needs re-verify on hardware. | Not started. |
 | **ESP-IDF CYD** | **Done — feature-complete and verified on hardware** (lead build). | First build exists (`cyd/esp-idf-ha/`), not yet hardware-tested. |
-| **ESP-IDF P4** (Waveshare) | **Active** — board in hand; checkpoints 1 (display) + 2 (WiFi) hardware-verified; cp3 (Spotify) in progress. | Future — copy of the P4 non-HA build with the backend swapped. |
+| **ESP-IDF P4** (Waveshare) | **Active** — board in hand; checkpoints 1 (display) + 2 (WiFi) + 3 (Spotify) hardware-verified; cp4 (UI) next. | Future — copy of the P4 non-HA build with the backend swapped. |
 
 **Status legend:** "Needs polish" = functional on hardware but has open
 bugs / rough edges to clean up before it's a finished variant.
@@ -361,10 +361,12 @@ call the same command functions, just from a different backend.
 
 The Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (4.3" IPS, ST7701 MIPI-DSI,
 GT911 capacitive touch, onboard ESP32-C6 WiFi) has arrived. The build lives in
-`waveshare/esp-idf/` (direct Spotify, touch-first). **Checkpoints 1 (display)
-and 2 (WiFi) are hardware-verified** — a label renders at 800×480 landscape and
-the board associates to WiFi via the onboard C6 (`esp_wifi_remote` + `esp_hosted`
-over SDIO) and pulls a DHCP lease. cp3 (Spotify) is in progress. On-chip memory
+`waveshare/esp-idf/` (direct Spotify, touch-first). **Checkpoints 1 (display),
+2 (WiFi) and 3 (Spotify) are hardware-verified** — a label renders at 800×480
+landscape, the board associates to WiFi via the onboard C6 (`esp_wifi_remote` +
+`esp_hosted` over SDIO) and pulls a DHCP lease, and the Spotify task refreshes
+the OAuth token (cached in NVS), validates the TLS cert bundle, and polls
+`/me/player` every 5 s (track logged to serial). cp4 (UI) is next. On-chip memory
 budget measured at cp2 (~390 KB internal heap free + 31 MB PSRAM; see
 `docs/PORT-NOTES.md`). See `waveshare/esp-idf/README.md` for the full checkpoint
 roadmap (1 display → 2 WiFi → 3 Spotify → 4 UI → 5 assets → 6 controls →
