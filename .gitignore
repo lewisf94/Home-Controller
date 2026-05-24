@@ -27,6 +27,7 @@ cyd/platformio/src/album_art/album_*.h
 cyd/platformio/include/secrets.h
 cyd/esp-idf/include/secrets.h
 cyd/esp-idf-ha/include/secrets.h
+waveshare/esp-idf/include/secrets.h
 scripts/album_preview.png
 
 # spotipy token cache written by get_spotify_token.py (contains the refresh token)
@@ -49,3 +50,17 @@ cyd/esp-idf-ha/managed_components/
 cyd/esp-idf-ha/sdkconfig
 cyd/esp-idf-ha/sdkconfig.old
 cyd/esp-idf-ha/dependencies.lock
+
+# Waveshare ESP32-P4 (non-HA) build artefacts. NOTE: components/ is vendored
+# source (the board BSP) and IS committed; only managed_components/ is ignored.
+waveshare/esp-idf/build/
+waveshare/esp-idf/managed_components/
+waveshare/esp-idf/sdkconfig
+waveshare/esp-idf/sdkconfig.old
+waveshare/esp-idf/dependencies.lock
+
+# EIM (ESP-IDF Installation Manager) machine-local config
+eim_config.toml
+
+# Waveshare demo repo clone used for Step-0 board validation (not part of the project)
+waveshare-test/
