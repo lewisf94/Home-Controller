@@ -388,6 +388,42 @@ static bool ensure_token(void)
     return true;
 }
 
+/* Persistent keep-alive client for the /v1/me/player poll. The player is
+ * polled every few seconds, so giving that hot path a reused connection means
+ * the TLS session is negotiated once instead of re-handshaking (and
+ * re-validating the cert bundle) on every poll. Commands and the token refresh
+ * stay one-shot -- they're infrequent. Single-threaded: only spotify_task
+ * touches this. */
+static esp_http_client_handle_t s_poll_client = NULL;
+
+static void poll_client_close(void)
+{
+    if (s_poll_client) {
+        esp_http_client_cleanup(s_poll_client);
+        s_poll_client = NULL;
+    }
+}
+
+static esp_http_client_handle_t poll_client_get(resp_buf_t *buf)
+{
+    if (s_poll_client) {
+        /* Point the shared event handler at this call's response buffer. */
+        esp_http_client_set_user_data(s_poll_client, buf);
+        return s_poll_client;
+    }
+    esp_http_client_config_t cfg = {
+        .url               = "https://api.spotify.com/v1/me/player",
+        .method            = HTTP_METHOD_GET,
+        .event_handler     = http_event_handler,
+        .user_data         = buf,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 5000,
+        .keep_alive_enable = true,
+    };
+    s_poll_client = esp_http_client_init(&cfg);
+    return s_poll_client;
+}
+
 bool spotify_fetch_player(spotify_track_t *info)
 {
     if (!info) return false;
@@ -397,15 +433,7 @@ bool spotify_fetch_player(spotify_track_t *info)
 
     resp_buf_t buf = {0};
 
-    esp_http_client_config_t cfg = {
-        .url               = "https://api.spotify.com/v1/me/player",
-        .method            = HTTP_METHOD_GET,
-        .event_handler     = http_event_handler,
-        .user_data         = &buf,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms        = 5000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_handle_t client = poll_client_get(&buf);
     if (!client) return false;
 
     char bearer[320];
@@ -486,7 +514,10 @@ bool spotify_fetch_player(spotify_track_t *info)
         ESP_LOGE(TAG, "/me/player failed (err=%d status=%d)", (int)err, status);
     }
 
-    esp_http_client_cleanup(client);
+    /* Keep the connection open for the next poll -- no cleanup. A status of 0
+     * means the transport itself failed (not just an HTTP error such as 401),
+     * so drop the client and reconnect fresh on the next poll. */
+    if (status == 0) poll_client_close();
     free(buf.data);
     return ok;
 }
