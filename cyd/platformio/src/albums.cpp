@@ -22,7 +22,7 @@ static const album_entry_t s_albums[] = {
     { "Chaos for the Fly",                             "Grian Chatten",     "spotify:album:7IO2RSWhcIt8Tliya8fCZL" },
     { "To Pimp a Butterfly",                           "Kendrick Lamar",    "spotify:album:7ycBtnsMtyVbbwTfJwRjSP" },
     { "Aha Shake Heartbreak",                          "Kings of Leon",     "spotify:album:3cqdpAqjVjv5IB8HTruJkj" },
-    { "Hugo",                                          "Loyle Carner",      "spotify:album:3McfY0EGNjsrVdYa9ZnoSH" },
+    { "hugo",                                          "Loyle Carner",      "spotify:album:3McfY0EGNjsrVdYa9ZnoSH" },
     { "Imaginal Disk",                                 "Magdalena Bay",     "spotify:album:2Htq1sHgmdGffojIBM6Q1s" },
     { "The Best of Sade",                              "Sade",              "spotify:album:3uSWaQxJAdm5MWKQkQJNoK" },
     { "Is This It",                                    "The Strokes",       "spotify:album:2yNaksHgeMQM9Quse463b5" },

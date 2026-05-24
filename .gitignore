@@ -25,8 +25,9 @@ cyd/platformio/src/album_art/album_*.h
 
 # Master album list (personal choices). Single source of truth for album
 # metadata; scripts/gen_albums.py regenerates the committed albums.c/.cpp from
-# it. The generated source files ARE committed; this input file is not.
-spotify-albums-list.txt
+# it. The generated source files ARE committed; this input file (and any
+# backups of it) are not.
+spotify-albums-list*.txt
 
 # Python bytecode cache (scripts/)
 __pycache__/

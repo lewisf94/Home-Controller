@@ -386,7 +386,13 @@ and 2 (WiFi) verified on hardware; cp3 (Spotify) is in progress. A future
   personal choices). `python scripts/gen_albums.py` regenerates all four album
   source files (3× `albums.c`, 1× `albums.cpp`), sorted by artist then title
   (leading "The"/"A"/"An" ignored). Each file carries a "GENERATED — do not edit"
-  header. To change the list, edit the txt and rerun the script.
+  header. To change the list, edit the txt and rerun the script. To add an
+  album with minimal typing, paste its Spotify share link / URI into the txt and
+  run `python scripts/add_albums.py`: it resolves title + primary artist via the
+  Spotify Web API (Client-Credentials flow; creds from `SPOTIPY_CLIENT_ID` /
+  `SPOTIPY_CLIENT_SECRET` env vars or an interactive prompt), normalises casing
+  (lowercasing stray title-cased articles), downloads each cover into
+  `input_albums/<id>.jpg`, and runs gen_albums.
 - **Browser thumbnails stay aligned via the same source.** `album_thumbs.bin` is
   indexed *positionally* by album order, so it must match `albums.c`.
   `scripts/embed_albums_idf.py` imports the sorted list from `gen_albums.py` and
