@@ -103,6 +103,11 @@ static lv_image_dsc_t *s_art_dsc = NULL;
  * animated style (loaded from NVS at boot); NONE stays the safe default. */
 static ui_transition_t s_transition = UI_TRANSITION_NONE;
 
+/* lv_tick at which the in-flight transition animation finishes. While a screen
+ * load animation is running, a second lv_screen_load_anim can stall the render
+ * task, so load_screen ignores new animated requests until this passes. */
+static uint32_t s_anim_block_until = 0;
+
 /* Settings screen + its transition-style option rows. */
 static lv_obj_t *s_screen_settings = NULL;
 static lv_obj_t *s_opt_btns[UI_TRANSITION_COUNT]   = {0};
@@ -499,6 +504,13 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
 static void load_screen(lv_obj_t *target, bool to_np)
 {
     if (!target || target == lv_screen_active()) return;
+
+    if (s_transition != UI_TRANSITION_NONE) {
+        uint32_t now = lv_tick_get();
+        if (now < s_anim_block_until) return;   /* a transition is still animating */
+        s_anim_block_until = now + 250 + 80;    /* anim duration + margin; self-heals */
+    }
+
     switch (s_transition) {
     case UI_TRANSITION_OVER:
         lv_screen_load_anim(target,

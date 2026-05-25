@@ -3,29 +3,21 @@
 Running list of what's planned for `waveshare/esp-idf/` after cp5 (now-playing
 art). Ordered by priority. Update as items land.
 
-## 0. Animated-transition reliability (ACTIVE)
-- Freeze RESOLVED for normal use: the UI hung whenever an *animated*
-  `lv_screen_load_anim` ran (a swipe / tap-to-play transition). The render task
-  stalled inside the DSI flush holding the LVGL lock, so the Spotify poll task
-  then blocked on `ui_set_track_info`'s lock too — both stopped, no LVGL assert,
-  internal heap flat (heap theory disproved by the per-poll log, since removed).
-- Fix shipped: every browser<->now-playing switch routes through one helper
-  (`load_screen` in `ui.c`) honouring a transition style; **default is NONE
-  (instant)**, which skips the animated composite. Confirmed freeze-free over
-  multiple multi-minute runs.
-- OPEN: make the animated styles (Over/Move/Fade) reliable, not just instant.
-  - New evidence muddies the root cause: in one run the user switched through
-    all four styles and played albums with Over/Fade active (animated) for
-    ~4.5 min with no freeze. The one *confirmed* hard freeze was on a **swipe**
-    (`on_gesture`), not a tap (`on_card_clicked`). Suspect overlapping/`reentrant`
-    `lv_screen_load_anim` calls from rapid touch during the 250 ms animation.
-  - Lever A (low risk): guard against starting a new animated transition while
-    one is still running (time-window or screen-loaded flag in `load_screen`).
-  - Lever B (root cause, higher risk): the adapter's `tear_avoid_mode` is
-    `ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_PARTIAL` (`main.c`). A lighter mode
-    may stop the flush stalling under animation, but risks reintroducing
-    carousel-scroll tearing. Try only if Lever A + a focused swipe stress-test
-    still reproduces.
+## 0. Animated-transition reliability — RESOLVED
+- The UI hung whenever an *animated* `lv_screen_load_anim` ran — worst on a
+  swipe out of now-playing, where the 320x320 art slides too. Root cause: the
+  partial-refresh DSI flush (`TRIPLE_PARTIAL`) couldn't keep up with a full-panel
+  redraw every frame and stalled the render task; the Spotify poll task then
+  blocked on the LVGL lock too (both stopped, no assert, internal heap flat).
+- Fixed by switching the flush to full-frame triple buffering
+  (`ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_FULL` in `main.c`): full-frame suits a
+  full-screen transition, `ROTATE_90` needs 3 buffers either way, still
+  tear-avoided, same memory. Plus a `load_screen` guard so a second transition
+  animation can't start while one is running. All four styles verified reliable
+  on hardware under rapid swipes + album switches with art loaded.
+- Every browser<->now-playing switch routes through one helper (`load_screen`
+  in `ui.c`); transition style is user-selectable in Settings (persisted NVS),
+  default NONE.
 
 ## 1. Settings menu — DONE (transition style)
 - Gear button (top-right of the browser) opens a Settings screen with a Back

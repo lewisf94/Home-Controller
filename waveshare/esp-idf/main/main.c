@@ -283,7 +283,12 @@ void app_main(void)
     bsp_display_cfg_t cfg = {
         .lv_adapter_cfg  = ESP_LV_ADAPTER_DEFAULT_CONFIG(),
         .rotation        = ESP_LV_ADAPTER_ROTATE_90,
-        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_PARTIAL,
+        /* Full-frame triple buffering (not TRIPLE_PARTIAL): an animated screen
+         * transition redraws the whole panel every frame, and partial-refresh
+         * stalled the flush there -- the UI froze on a swipe out of now-playing
+         * (heavy because the 320x320 art slides too). ROTATE_90 needs 3 buffers
+         * either way, so this keeps tear-avoidance at the same memory cost. */
+        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_FULL,
         /* Touch is NOT auto-rotated by the adapter -- these flags must match the
          * ROTATE_90 display. GT911 reports native 480x800 portrait; swap_xy=1 is
          * required (without it a horizontal swipe reads as vertical and taps/
