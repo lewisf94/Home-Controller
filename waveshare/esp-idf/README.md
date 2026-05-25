@@ -6,15 +6,18 @@ onboard **ESP32-C6** over SDIO, PSRAM, 32 MB flash). Talks **directly to the
 Spotify Web API**. A future `waveshare/esp-idf-ha/` will swap the backend to
 Home Assistant, exactly like the CYD split.
 
-> **STATUS: checkpoint 3 (Spotify) hardware-verified.** Display (cp1) renders at
-> 800×480 landscape, the board associates to WiFi through the onboard ESP32-C6
-> (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a DHCP lease (cp2), and
-> the Spotify task now refreshes the OAuth token (cached in NVS), validates the
-> TLS cert bundle, and polls `/me/player` every 5 s — boot log shows
-> `now playing: <artist> -- <title> [.../... ms, playing]`. Built incrementally —
-> see the checkpoint roadmap below. Most app logic (Spotify client, album data,
-> art decode, LittleFS) is copied unchanged from `../../cyd/esp-idf/`; the UI and
-> input come later.
+> **STATUS: cp1–3 hardware-verified; UI (cp4+) committed, needs hardware verify.**
+> Display (cp1) renders at 800×480 landscape, the board associates to WiFi through
+> the onboard ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a
+> DHCP lease (cp2), and the Spotify task refreshes the OAuth token (cached in NVS),
+> validates the TLS cert bundle, and polls `/me/player` every 5 s over a persistent
+> keep-alive connection — boot log shows `now playing: <artist> -- <title>`. The
+> UI (`ui.c`) is committed: full LVGL browser + now-playing, three browser styles
+> (Carousel / Focus / Cover Flow), a Settings screen (Menu Transition / Mode /
+> Colour accent / Browser Style, all NVS-persisted), charcoal palette, flat
+> buttons, and the tiny_ttf kerning crash fix. **That UI code still needs a
+> hardware verification pass.** Most app logic (Spotify client, album data, art
+> decode, LittleFS) is copied unchanged from `../../cyd/esp-idf/`.
 
 ## Reference
 Waveshare official component + demos:
@@ -78,14 +81,20 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
 1. **Display skeleton** — `bsp_display_start_with_config` + hello label. *(hardware-verified)*
 2. **WiFi** — add `esp_wifi_remote`; port `wifi_init_sta`; log the IP. *(hardware-verified)*
 3. **Spotify** — Spotify task + `scmd_t` command queue (port the structure from
-   `cyd/esp-idf/main.c`); log the track title. *(hardware-verified)*
-4. **UI** — port `cyd/esp-idf/main/ui.c`; `lvgl_port_lock` → `bsp_display_lock`;
-   re-lay-out constants for 800×480; touch scroll + tap-to-play.
-5. **Assets** — regen `album_thumbs.bin` larger via `scripts/embed_albums_idf.py`;
-   bigger now-playing art (album_art.cpp) + fonts.
-6. **Touch controls** — on-screen prev/play-pause/next + volume slider → `ui_request_*()`.
-7. **Parity** — WiFi indicator, volume HUD, progress bar, view toggle; leave an
-   `input.c` seam for optional physical buttons/encoder later.
+   `cyd/esp-idf/main.c`); log the track title; persistent keep-alive poll. *(hardware-verified)*
+4. **UI** — ported `cyd/esp-idf/main/ui.c`; `lvgl_port_lock` → `bsp_display_lock`;
+   constants re-laid-out for 800×480; touch scroll + tap-to-play; on-screen
+   playback controls; Settings screen. *(committed — needs hardware verify)*
+5. **Assets** — `album_thumbs.bin`, now-playing art (album_art.cpp), runtime
+   tiny_ttf fonts (Montserrat + DejaVu fallback). *(committed — needs hardware verify)*
+6. **Touch controls** — on-screen prev/play-pause/next + volume → `ui_request_*()`.
+   *(committed — needs hardware verify; `input.c` seam left for physical controls)*
+7. **Parity** — WiFi indicator, volume HUD, progress bar, view toggle, three
+   browser styles, colour accents. *(committed — needs hardware verify)*
+
+After cp4–7 are confirmed on hardware: PPA hardware acceleration (isolated
+change), then RAM art decode (PSRAM), then adaptive poll backoff. See
+`docs/ROADMAP.md` and `docs/P4-TODO.md`.
 
 ## Already in this folder
 - Copied board-agnostic, unchanged: `spotify.c/.h`, `albums.c/.h`,

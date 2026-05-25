@@ -3,6 +3,12 @@
 Running list of what's planned for `waveshare/esp-idf/` after cp5 (now-playing
 art). Ordered by priority. Update as items land.
 
+> **NOTE:** the items below marked DONE are committed but the latest UI code
+> (Cover Flow, colour accents, kerning crash fix) **still needs a hardware
+> verification pass.** See `CLAUDE.md` / `docs/ROADMAP.md` for the current
+> waveshare status and the post-stability work order (PPA → RAM art → poll
+> backoff).
+
 ## 0. Animated-transition reliability — RESOLVED
 - The UI hung whenever an *animated* `lv_screen_load_anim` ran — worst on a
   swipe out of now-playing, where the 320x320 art slides too. Root cause: the
@@ -45,25 +51,38 @@ art). Ordered by priority. Update as items land.
   `err!=ESP_OK` so the broken keep-alive handle is dropped on conn-reset /
   timeout and the next poll opens a fresh TLS session.
 
-## 3. Fonts — accented names (lv_tiny_ttf)
-- Built-in montserrat is ASCII-only, so "Ö", Irish á/í, etc. render as boxes.
-- Plan: enable `LV_USE_TINY_TTF`, embed Montserrat (primary, keeps the look) +
-  DejaVu Sans (fallback for Cyrillic/Greek/…); build the 24/28px fonts at
-  runtime and point the title/artist labels at them. Hints keep the built-in
-  font (they hold the LVGL arrow symbols). Future-proof: no per-character
-  maintenance. Hard ceiling: CJK/emoji fonts are multi-MB and won't fit the 8MB
-  app partition.
+## 3. Fonts — accented names (lv_tiny_ttf) — DONE
+- `LV_USE_TINY_TTF` on; Montserrat (primary, keeps the look) + DejaVu Sans
+  (fallback for accented/non-Latin glyphs) embedded via `EMBED_FILES`; 24/28px
+  faces built at runtime and pointed at the title/artist labels.
+- **Crash fix baked in:** all faces are created with
+  `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, 128)`. The LVGL 9.4
+  kerning cache (upstream #6304) corrupts the heap under sustained scrolling;
+  KERNING_NONE bypasses the cache. **Never use plain `lv_tiny_ttf_create_data`.**
+- Hard ceiling unchanged: CJK/emoji fonts are multi-MB and won't fit the app
+  partition.
 
-## 4. Cover Flow carousel (toggleable browser style)
-- iPod/iTunes Cover Flow look: centre cover face-on + large, side covers
-  receding. LVGL has no true 3D perspective, so approximate with per-card
-  horizontal squash (`scale_x`) + shrink + dim, recomputed during scroll; PPA
-  can accelerate the scaling.
-- Expose as a setting: classic grid ↔ cover flow. Build last (most
-  experimental); pull proper reference clips when implementing.
+## 4. Cover Flow carousel (toggleable browser style) — DONE
+- Three browser styles selectable in Settings (Carousel / Focus / Cover Flow),
+  NVS-persisted. Cover Flow approximates the iPod look with per-card horizontal
+  squash (`lv_image_set_scale_x/y`) + dim, recomputed during scroll.
+- **Critical:** the transform is applied to the child `lv_image`, NOT the card
+  `lv_obj`. Object-level `transform_scale`/`opa` forces a layer snapshot that the
+  DIRECT-mode rotated DSI flush mis-composites → progressive card blackout.
+  Image-direct transforms create no layer. `LV_USE_MATRIX` crashes (negative X in
+  the SW blender). See `CLAUDE.md` CRITICAL constraints.
+- `find_centered_card()` / `ui_scroll_browser()` use `scroll_x / step` math, not
+  `lv_obj_get_coords()`, so the transformed visual bounds don't desync art/title.
+
+## 5. Colour accent system — DONE
+- Settings "Colour" section: Orange / Red / Green / Purple, NVS-persisted
+  (`settings` / `accent`). Separate from the Dark/Light neutral palette so every
+  accent works in both modes. Drives selection highlights and the progress bar.
 
 ## Later (existing roadmap)
 - cp6: physical-control seam (encoder/buttons) via `input.c`.
-- cp7: WiFi-strength indicator, volume HUD wiring, progress/parity polish.
+- WiFi-strength indicator + volume HUD are in `ui.c`; confirm wiring on hardware.
 - Spotify play returns 404 when there is no active device — handle gracefully
   (show a "no active device" hint) instead of a silent FAILED log.
+- Performance (after stability): PPA hardware acceleration, RAM art decode
+  (PSRAM), adaptive poll backoff. TLS poll keep-alive is already done (#2.6).

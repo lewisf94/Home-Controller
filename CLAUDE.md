@@ -18,7 +18,8 @@ build folders: the CYD ESP-IDF direct-Spotify build (`cyd/esp-idf/`, the lead
 build — feature-complete and hardware-verified), its Home Assistant variant
 (`cyd/esp-idf-ha/`, not yet tested), the original Arduino build now ported to
 LVGL (`cyd/platformio/`, needs a hardware pass), and the new Waveshare ESP32-P4
-direct-Spotify build (`waveshare/esp-idf/`, checkpoint 3 / Spotify verified). He works
+direct-Spotify build (`waveshare/esp-idf/`, cp1–3 verified; UI committed, needs
+hardware verify). He works
 locally in VS Code with Claude Code and intermittently uses Claude Code on the
 web. This file is the source of truth across sessions.
 
@@ -278,19 +279,18 @@ Deferred work (do after hardware is confirmed stable):
 - **PPA hardware acceleration:** `enable_ppa_accel = true` in `bsp_display_cfg_t`.
   The P4 PPA can do the 90° rotation/blit in hardware (currently software every
   frame). Off until stability is confirmed — would muddy crash bisection.
-- **TLS keep-alive (highest perf priority):** `spotify.c` does
-  `esp_http_client_init`/`perform`/`cleanup` per call — full TLS handshake every
-  5 s poll. Reuse the client handle; add reconnect-and-retry fallback.
 - **RAM art decode:** waveshare has PSRAM — switch album art to decode in RAM
   rather than the LittleFS round-trip (`spotify_download_bytes` + `album_art_decode`
   RAM path already exists but is unused).
 - **Adaptive poll backoff:** poll fast while playing, back off to 15–30 s when
   paused/204.
 
-Known inefficiency (not yet fixed):
-- `spotify.c` does `esp_http_client_init`/`perform`/`cleanup` per call, so every
-  5 s poll runs a full TLS handshake + cert-bundle validation (`Certificate
-  validated` each poll). Same pattern in the CYD build.
+TLS keep-alive — DONE (do not re-list as a TODO): the `/me/player` poll uses a
+persistent `s_poll_client` with `.keep_alive_enable = true`, so the TLS session
++ cert bundle are negotiated once and reused; `poll_client_close()` drops the
+handle on transport error so the next poll reconnects. Token refresh and the
+playback commands stay one-shot by design — they're infrequent. Same pattern now
+in `cyd/esp-idf/`.
 
 Key differences from the CYD IDF build:
 - **Toolchain ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0): the vendored BSP needs the
@@ -539,8 +539,8 @@ git log --oneline -10          # recent history
     in PSRAM. The 256 KB Spotify response buffer + album art must be allocated
     from PSRAM at cp3/cp5. Full analysis + PSRAM-first policy in `docs/PORT-NOTES.md`.
   - **After hardware verify:** enable PPA hardware acceleration (single isolated
-    change: `enable_ppa_accel = true`), then tackle TLS keep-alive (biggest perf
-    win), then RAM art decode (waveshare has PSRAM), then adaptive poll backoff.
+    change: `enable_ppa_accel = true`), then RAM art decode (waveshare has PSRAM),
+    then adaptive poll backoff. (TLS poll keep-alive is already done.)
   - **CRITICAL constraints (do not regress):** no object-level transform_scale/opa
     on cards; no LV_USE_MATRIX; always use lv_tiny_ttf_create_data_ex with
     LV_FONT_KERNING_NONE. See the Architecture section for full rationale.

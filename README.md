@@ -13,7 +13,7 @@ This repo holds the firmware. Album art conversion tools live alongside in [`scr
 | **CYD ESP-IDF** (direct Spotify) | [`cyd/esp-idf/`](cyd/esp-idf/) | ESP-IDF 6.0 + LVGL 9 | **Feature-complete, fully verified on hardware** — the lead build |
 | **CYD ESP-IDF — HA** | [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/) | ESP-IDF 6.0 + LVGL 9 | Home Assistant backend added; not yet hardware-tested |
 | **CYD Arduino** | [`cyd/platformio/`](cyd/platformio/) | PlatformIO + Arduino | Phase 1 + 1.5 shipped; LVGL port committed, not yet re-verified on hardware |
-| **Waveshare ESP32-P4** (direct Spotify) | [`waveshare/esp-idf/`](waveshare/esp-idf/) | ESP-IDF 5.5 + LVGL 9.4 | Board in hand; **checkpoint 1 (display) hardware-verified**, brought up incrementally |
+| **Waveshare ESP32-P4** (direct Spotify) | [`waveshare/esp-idf/`](waveshare/esp-idf/) | ESP-IDF 5.5 + LVGL 9.4 | **Checkpoints 1–3 (display/WiFi/Spotify) hardware-verified**; UI (browser, now-playing, settings, Cover Flow, colour themes) committed — needs hardware verify |
 
 The CYD ESP-IDF build is now the lead firmware: feature-complete and verified smooth on device, and the foundation for Phase 3 (Home Assistant integration) and the Waveshare ESP32-P4 port. The Arduino build was the original working product and has since been ported to LVGL to match (that port still needs a hardware pass). The Waveshare ESP32-P4 board has arrived and its own ESP-IDF build is being brought up checkpoint by checkpoint.
 
@@ -54,7 +54,7 @@ Three active phases plus a future board port. Detail in [`docs/ROADMAP.md`](docs
 1. **Phase 1 — Bug fixes (Arduino):** small known-cause bugs (JPEG re-decode, encoder responsiveness, Spotify poll cadence). Done concurrently with the IDF port.
 2. **Phase 2 — ESP-IDF port (CYD):** rebuilt on ESP-IDF 6.x + LVGL 9. Same hardware, same features. ← **done — feature-complete and verified on hardware**
 3. **Phase 3 — Home Assistant integration:** swap the direct Spotify HTTP calls for a WebSocket client talking to Home Assistant on a Pi 5. Fixes the Android/iOS volume limitation, removes the OAuth refresh dance, and gets real-time push state updates. A first HA build lives in [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/) (not yet hardware-tested).
-4. **Waveshare ESP32-P4 port:** 800×480 MIPI-DSI (ST7701), GT911 capacitive touch, ESP-Hosted WiFi via an onboard ESP32-C6. ← **active** — board in hand, [`waveshare/esp-idf/`](waveshare/esp-idf/) checkpoint 1 (display) hardware-verified.
+4. **Waveshare ESP32-P4 port:** 800×480 MIPI-DSI (ST7701), GT911 capacitive touch, ESP-Hosted WiFi via an onboard ESP32-C6. ← **active** — [`waveshare/esp-idf/`](waveshare/esp-idf/) has checkpoints 1–3 (display / WiFi / Spotify) hardware-verified; the full UI (browser, now-playing, settings, three browser styles, colour accents) is committed and awaiting a hardware verification pass.
 
 ---
 
@@ -72,7 +72,7 @@ cyd/                       CYD board (ESP32-WROOM, 2.8" ILI9341)
     CMakeLists.txt         Top-level project file
   esp-idf-ha/              ESP-IDF build, Home Assistant backend (Phase 3, untested)
 waveshare/                 Waveshare ESP32-P4 board
-  esp-idf/                 ESP-IDF 5.5 build, direct Spotify (checkpoint 1 verified)
+  esp-idf/                 ESP-IDF 5.5 build, direct Spotify (cp1-3 verified; UI committed, needs verify)
     components/            vendored board-support package (BSP)
     main/                  app source; sources copied from cyd/esp-idf/
 docs/
@@ -95,7 +95,7 @@ Pick the build that matches what you want to do. Each one has its own README wit
 - Lead build (CYD, direct Spotify, verified): [`cyd/esp-idf/`](cyd/esp-idf/README.md)
 - Home Assistant backend variant (CYD, untested): [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/README.md)
 - Original Arduino build (LVGL port, needs re-verify): [`cyd/platformio/`](cyd/platformio/README.md)
-- Waveshare ESP32-P4 (direct Spotify, checkpoint 1): [`waveshare/esp-idf/`](waveshare/esp-idf/README.md)
+- Waveshare ESP32-P4 (direct Spotify, cp1-3 verified; UI committed, needs verify): [`waveshare/esp-idf/`](waveshare/esp-idf/README.md)
 
 If you want to populate the SD card with your own album library, the conversion pipeline is in [`scripts/`](scripts/) — output a `metadata.csv` plus one 12,800-byte RGB565 `.bin` per album cover (80×80 px each).
 

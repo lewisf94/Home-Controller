@@ -394,18 +394,23 @@ checkpoint roadmap (1 display → 2 WiFi → 3 Spotify → 4 UI → 5 assets →
 - JPEGDEC third-party warnings silenced via `CMakeLists.txt`
   `target_compile_options(${jpegdec_lib} PRIVATE -w)`.
 
+### Already done (do not re-list as TODO)
+
+- **TLS keep-alive on the poll:** the `/me/player` poll reuses a persistent
+  `s_poll_client` (`.keep_alive_enable = true`), so the TLS session + cert bundle
+  are negotiated once instead of re-handshaking every 5 s; `poll_client_close()`
+  drops the handle on transport error so the next poll reconnects. Token refresh
+  and playback commands stay one-shot by design (infrequent). Same in `cyd/esp-idf/`.
+
 ### Deferred — after hardware is confirmed stable
 
 1. **PPA hardware acceleration (isolated change):** `enable_ppa_accel = true` in
    `bsp_display_cfg_t`. The P4 PPA does the 90° rotation/blit in hardware
    (currently software every frame). One config line; verify nothing regresses.
-2. **TLS keep-alive (highest perf priority):** `spotify.c` opens/closes a fresh
-   TLS connection per call — full handshake every 5 s poll (~0.5–2 s, ~30–40 KB
-   heap). Reuse the client handle with reconnect-and-retry fallback.
-3. **RAM art decode:** waveshare has PSRAM — switch album art from the LittleFS
+2. **RAM art decode:** waveshare has PSRAM — switch album art from the LittleFS
    round-trip to the existing `spotify_download_bytes` + `album_art_decode` RAM
    path, bypassing LittleFS entirely.
-4. **Adaptive poll backoff:** fast poll while playing, back off to 15–30 s when
+3. **Adaptive poll backoff:** fast poll while playing, back off to 15–30 s when
    paused / 204 response.
 
 Key facts and adaptations:
