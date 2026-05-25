@@ -20,11 +20,12 @@
  *     bottom      : "^ now playing" hint
  *
  *   Now-playing screen
- *     y=  6       : "v albums" hint
+ *     y=  6       : "v albums" hint (swipe down = back, left = next, right = prev)
  *     y= 32..352  : 320x320 album art (Spotify 640px JPEG decoded /2), centred
- *     y=358       : track title (montserrat 28, white)
- *     y=400       : artist (montserrat 24, light grey)
- *     y=448       : 520x10 progress bar, white indicator on dark grey track
+ *                   tap anywhere on screen = play/pause
+ *     y=366       : track title (montserrat 28)
+ *     y=414       : artist (montserrat 24, dimmer)
+ *     y=456       : 520x12 progress bar
  *
  * Local progress simulation: an LVGL timer ticks every 200 ms and adds
  * 200 ms to the cached progress_ms when is_playing is true, so the bar
@@ -59,36 +60,25 @@ static const char *TAG = "ui";
 #define ART_Y          32
 
 #define PROG_W        520
-#define PROG_H         10
+#define PROG_H         12
 #define PROG_X         ((SCREEN_W - PROG_W) / 2)
-#define PROG_Y        448
+#define PROG_Y        456
 
-#define NP_TITLE_Y    358
-#define NP_ARTIST_Y   400
+#define NP_TITLE_Y    366
+#define NP_ARTIST_Y   414
 
 #define BR_TITLE_Y    298
 #define BR_ARTIST_Y   340
 
-/* Now-playing playback controls -- right column beside the album art.
- * Art occupies x=240..560; controls sit at x=600..760 (160 px wide).
- * Three buttons stacked with a gap; all centred vertically in the art height. */
-#define NP_CTRL_X     600
-#define NP_CTRL_W     160
-#define NP_CTRL_H      64
-#define NP_CTRL_GAP    24
-#define NP_CTRL_Y1     72
-#define NP_CTRL_Y2    (NP_CTRL_Y1 + NP_CTRL_H + NP_CTRL_GAP)
-#define NP_CTRL_Y3    (NP_CTRL_Y2 + NP_CTRL_H + NP_CTRL_GAP)
 
 static lv_obj_t *s_screen_np      = NULL;
 static lv_obj_t *s_screen_browser = NULL;
 
-static lv_obj_t *s_np_art           = NULL;
-static lv_obj_t *s_np_title         = NULL;
-static lv_obj_t *s_np_artist        = NULL;
-static lv_obj_t *s_np_progress      = NULL;
-static lv_obj_t *s_np_playpause_lbl = NULL;
-static lv_obj_t *s_vol_hud          = NULL;
+static lv_obj_t *s_np_art      = NULL;
+static lv_obj_t *s_np_title    = NULL;
+static lv_obj_t *s_np_artist   = NULL;
+static lv_obj_t *s_np_progress = NULL;
+static lv_obj_t *s_vol_hud     = NULL;
 
 static lv_timer_t *s_vol_hud_timer = NULL;
 
@@ -173,9 +163,7 @@ static void on_open_settings(lv_event_t *e);
 static void on_settings_back(lv_event_t *e);
 static void on_transition_option(lv_event_t *e);
 static void on_theme_option(lv_event_t *e);
-static void on_np_prev(lv_event_t *e);
-static void on_np_playpause(lv_event_t *e);
-static void on_np_next(lv_event_t *e);
+static void on_np_tap(lv_event_t *e);
 static void refresh_settings_selection(void);
 static void refresh_theme_selection(void);
 static void apply_theme_cb(void *unused);
@@ -345,9 +333,14 @@ static void build_np_screen(void)
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
     lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 6);
 
+    /* Tap anywhere on the screen to play/pause. The art widget would intercept
+     * taps before they reach the screen, so mark it non-clickable. */
+    lv_obj_add_event_cb(s_screen_np, on_np_tap, LV_EVENT_CLICKED, NULL);
+
     s_np_art = lv_image_create(s_screen_np);
     lv_obj_set_size(s_np_art, ART_W, ART_H);
     lv_obj_set_pos(s_np_art, ART_X, ART_Y);
+    lv_obj_remove_flag(s_np_art, LV_OBJ_FLAG_CLICKABLE);
     if (s_art_dsc && s_art_dsc->data) {
         lv_image_set_src(s_np_art, s_art_dsc);
     }
@@ -377,44 +370,6 @@ static void build_np_screen(void)
     lv_obj_set_style_text_font(s_vol_hud, &lv_font_montserrat_24, 0);
     lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -8, 6);
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
-
-    /* Playback controls: prev / play-pause / next in the right column. */
-    lv_obj_t *btn_prev = lv_button_create(s_screen_np);
-    lv_obj_set_size(btn_prev, NP_CTRL_W, NP_CTRL_H);
-    lv_obj_set_pos(btn_prev, NP_CTRL_X, NP_CTRL_Y1);
-    lv_obj_set_style_bg_color(btn_prev, lv_color_hex(s_th->surface), 0);
-    lv_obj_set_style_radius(btn_prev, 10, 0);
-    lv_obj_add_event_cb(btn_prev, on_np_prev, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lbl_prev = lv_label_create(btn_prev);
-    lv_label_set_text(lbl_prev, LV_SYMBOL_PREV);
-    lv_obj_set_style_text_font(lbl_prev, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(lbl_prev, lv_color_hex(s_th->text), 0);
-    lv_obj_center(lbl_prev);
-
-    lv_obj_t *btn_pp = lv_button_create(s_screen_np);
-    lv_obj_set_size(btn_pp, NP_CTRL_W, NP_CTRL_H);
-    lv_obj_set_pos(btn_pp, NP_CTRL_X, NP_CTRL_Y2);
-    lv_obj_set_style_bg_color(btn_pp, lv_color_hex(s_th->surface), 0);
-    lv_obj_set_style_radius(btn_pp, 10, 0);
-    lv_obj_add_event_cb(btn_pp, on_np_playpause, LV_EVENT_CLICKED, NULL);
-    s_np_playpause_lbl = lv_label_create(btn_pp);
-    lv_label_set_text(s_np_playpause_lbl,
-                      s_track.is_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
-    lv_obj_set_style_text_font(s_np_playpause_lbl, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(s_np_playpause_lbl, lv_color_hex(s_th->text), 0);
-    lv_obj_center(s_np_playpause_lbl);
-
-    lv_obj_t *btn_next = lv_button_create(s_screen_np);
-    lv_obj_set_size(btn_next, NP_CTRL_W, NP_CTRL_H);
-    lv_obj_set_pos(btn_next, NP_CTRL_X, NP_CTRL_Y3);
-    lv_obj_set_style_bg_color(btn_next, lv_color_hex(s_th->surface), 0);
-    lv_obj_set_style_radius(btn_next, 10, 0);
-    lv_obj_add_event_cb(btn_next, on_np_next, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lbl_next = lv_label_create(btn_next);
-    lv_label_set_text(lbl_next, LV_SYMBOL_NEXT);
-    lv_obj_set_style_text_font(lbl_next, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(lbl_next, lv_color_hex(s_th->text), 0);
-    lv_obj_center(lbl_next);
 }
 
 /* Highlight the active transition row (accent fill + check) and reset the rest. */
@@ -599,12 +554,9 @@ static void apply_theme_cb(void *unused)
         }
     }
 
-    /* Restore now-playing labels and controls from cached track state. */
+    /* Restore now-playing labels from cached track state. */
     if (s_track.title[0]  && s_np_title)  lv_label_set_text(s_np_title,  s_track.title);
     if (s_track.artist[0] && s_np_artist) lv_label_set_text(s_np_artist, s_track.artist);
-    if (s_np_playpause_lbl)
-        lv_label_set_text(s_np_playpause_lbl,
-                          s_track.is_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     update_progress_bar();
 
     /* Activate the equivalent new screen first -- the active screen can't be
@@ -682,9 +634,6 @@ void ui_set_track_info(const spotify_track_t *info)
         if (s_np_title)  lv_label_set_text(s_np_title, info->title);
         if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
     }
-    if (s_np_playpause_lbl)
-        lv_label_set_text(s_np_playpause_lbl,
-                          s_track.is_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     update_progress_bar();
     bsp_display_unlock();
 }
@@ -749,9 +698,7 @@ ui_transition_t ui_get_transition_style(void)
     return s_transition;
 }
 
-static void on_np_prev(lv_event_t *e)      { (void)e; ui_request_prev(); }
-static void on_np_playpause(lv_event_t *e) { (void)e; ui_request_toggle_play(); }
-static void on_np_next(lv_event_t *e)      { (void)e; ui_request_next(); }
+static void on_np_tap(lv_event_t *e) { (void)e; ui_request_toggle_play(); }
 
 static void on_gesture(lv_event_t *e)
 {
@@ -766,6 +713,12 @@ static void on_gesture(lv_event_t *e)
     } else if (dir == LV_DIR_BOTTOM && active == s_screen_np) {
         lv_indev_wait_release(indev);
         load_screen(s_screen_browser, false);
+    } else if (dir == LV_DIR_LEFT && active == s_screen_np) {
+        lv_indev_wait_release(indev);
+        ui_request_next();
+    } else if (dir == LV_DIR_RIGHT && active == s_screen_np) {
+        lv_indev_wait_release(indev);
+        ui_request_prev();
     }
     (void)e;
 }
