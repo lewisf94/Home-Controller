@@ -514,10 +514,10 @@ bool spotify_fetch_player(spotify_track_t *info)
         ESP_LOGE(TAG, "/me/player failed (err=%d status=%d)", (int)err, status);
     }
 
-    /* Keep the connection open for the next poll -- no cleanup. A status of 0
-     * means the transport itself failed (not just an HTTP error such as 401),
-     * so drop the client and reconnect fresh on the next poll. */
-    if (status == 0) poll_client_close();
+    /* Keep the connection alive for the next poll on HTTP-layer errors (401,
+     * 204, etc.). On transport failure (err != ESP_OK) the TLS session is
+     * broken -- drop the client so the next poll opens a fresh connection. */
+    if (err != ESP_OK) poll_client_close();
     free(buf.data);
     return ok;
 }

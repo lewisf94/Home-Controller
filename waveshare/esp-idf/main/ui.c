@@ -69,14 +69,26 @@ static const char *TAG = "ui";
 #define BR_TITLE_Y    298
 #define BR_ARTIST_Y   340
 
+/* Now-playing playback controls -- right column beside the album art.
+ * Art occupies x=240..560; controls sit at x=600..760 (160 px wide).
+ * Three buttons stacked with a gap; all centred vertically in the art height. */
+#define NP_CTRL_X     600
+#define NP_CTRL_W     160
+#define NP_CTRL_H      64
+#define NP_CTRL_GAP    24
+#define NP_CTRL_Y1     72
+#define NP_CTRL_Y2    (NP_CTRL_Y1 + NP_CTRL_H + NP_CTRL_GAP)
+#define NP_CTRL_Y3    (NP_CTRL_Y2 + NP_CTRL_H + NP_CTRL_GAP)
+
 static lv_obj_t *s_screen_np      = NULL;
 static lv_obj_t *s_screen_browser = NULL;
 
-static lv_obj_t *s_np_art      = NULL;
-static lv_obj_t *s_np_title    = NULL;
-static lv_obj_t *s_np_artist   = NULL;
-static lv_obj_t *s_np_progress = NULL;
-static lv_obj_t *s_vol_hud     = NULL;
+static lv_obj_t *s_np_art           = NULL;
+static lv_obj_t *s_np_title         = NULL;
+static lv_obj_t *s_np_artist        = NULL;
+static lv_obj_t *s_np_progress      = NULL;
+static lv_obj_t *s_np_playpause_lbl = NULL;
+static lv_obj_t *s_vol_hud          = NULL;
 
 static lv_timer_t *s_vol_hud_timer = NULL;
 
@@ -108,17 +120,44 @@ static ui_transition_t s_transition = UI_TRANSITION_NONE;
  * task, so load_screen ignores new animated requests until this passes. */
 static uint32_t s_anim_block_until = 0;
 
-/* Settings screen + its transition-style option rows. */
+/* Theme palette. Stored as 0xRRGGBB so the table is a constant initializer
+ * (lv_color_hex() is not a constant expression). s_th points at the active
+ * palette; build_*_screen reads it, so switching themes is a pointer swap +
+ * rebuild. THEME_ACCENT (selection highlight) and the volume-HUD red stay
+ * constant -- they read fine on either background. */
+typedef struct {
+    uint32_t bg;       /* screen background */
+    uint32_t surface;  /* cards / buttons / scroller fill */
+    uint32_t text;     /* primary text (titles, progress indicator) */
+    uint32_t text2;    /* secondary text (artist, section + button labels) */
+    uint32_t dim;      /* hints */
+    uint32_t track;    /* progress-bar track */
+} theme_t;
+
+static const theme_t THEME_DARK  = { 0x000000, 0x202020, 0xFFFFFF, 0xA0A0A0, 0x606060, 0x303030 };
+static const theme_t THEME_LIGHT = { 0xF2F2F2, 0xD8D8D8, 0x101010, 0x505050, 0x808080, 0xBEBEBE };
+static const theme_t *s_th = &THEME_DARK;
+
+#define THEME_ACCENT  0x0A84FF   /* selection highlight, both themes */
+
+enum { THEME_DARK_IDX = 0, THEME_LIGHT_IDX = 1, THEME_COUNT = 2 };
+static uint8_t s_theme = THEME_DARK_IDX;
+
+/* Settings screen + its option rows (transition style + theme). */
 static lv_obj_t *s_screen_settings = NULL;
 static lv_obj_t *s_opt_btns[UI_TRANSITION_COUNT]   = {0};
 static lv_obj_t *s_opt_labels[UI_TRANSITION_COUNT] = {0};
+static lv_obj_t *s_theme_btns[THEME_COUNT]   = {0};
+static lv_obj_t *s_theme_labels[THEME_COUNT] = {0};
 
 #define NVS_SETTINGS_NS     "settings"
 #define NVS_KEY_TRANSITION  "transition"
+#define NVS_KEY_THEME       "theme"
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "Over (slide)", "Move (push)", "Fade", "None (instant)",
 };
+static const char *const k_theme_names[THEME_COUNT] = { "Dark", "Light" };
 
 /* Cached track state. The LVGL progress timer reads progress_ms /
  * duration_ms / is_playing from here and ticks the bar between
@@ -133,9 +172,16 @@ static void update_progress_bar(void);
 static void on_open_settings(lv_event_t *e);
 static void on_settings_back(lv_event_t *e);
 static void on_transition_option(lv_event_t *e);
+static void on_theme_option(lv_event_t *e);
+static void on_np_prev(lv_event_t *e);
+static void on_np_playpause(lv_event_t *e);
+static void on_np_next(lv_event_t *e);
 static void refresh_settings_selection(void);
+static void refresh_theme_selection(void);
+static void apply_theme_cb(void *unused);
 static void load_settings(void);
 static void save_transition(ui_transition_t style);
+static void save_theme(uint8_t idx);
 
 static lv_color_t card_color(size_t i)
 {
@@ -172,7 +218,7 @@ static void style_label(lv_obj_t *label, const lv_font_t *font,
 static void build_browser_screen(void)
 {
     s_screen_browser = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_screen_browser, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(s_screen_browser, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_browser, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_screen_browser, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_browser, on_gesture, LV_EVENT_GESTURE, NULL);
@@ -180,7 +226,7 @@ static void build_browser_screen(void)
     s_browser_scroller = lv_obj_create(s_screen_browser);
     lv_obj_set_size(s_browser_scroller, SCREEN_W, SCROLLER_H);
     lv_obj_set_pos(s_browser_scroller, 0, SCROLLER_Y);
-    lv_obj_set_style_bg_color(s_browser_scroller, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(s_browser_scroller, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_browser_scroller, 0, 0);
     lv_obj_set_style_pad_top(s_browser_scroller, 0, 0);
@@ -223,7 +269,7 @@ static void build_browser_screen(void)
             s_card_dscs[i].header.h   = ALBUM_THUMB_H;
             s_card_dscs[i].data       = (const uint8_t *)thumb;
             s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
-            lv_obj_set_style_bg_color(card, lv_color_black(), 0);
+            lv_obj_set_style_bg_color(card, lv_color_hex(s_th->bg), 0);
             lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
             lv_obj_set_style_bg_image_src(card, &s_card_dscs[i], 0);
             lv_obj_set_style_bg_image_opa(card, LV_OPA_COVER, 0);
@@ -245,11 +291,11 @@ static void build_browser_screen(void)
     }
 
     s_browser_title = lv_label_create(s_screen_browser);
-    style_label(s_browser_title, &lv_font_montserrat_28, lv_color_white(), BR_TITLE_Y);
+    style_label(s_browser_title, &lv_font_montserrat_28, lv_color_hex(s_th->text), BR_TITLE_Y);
 
     s_browser_artist = lv_label_create(s_screen_browser);
     style_label(s_browser_artist, &lv_font_montserrat_24,
-                lv_color_hex(0xA0A0A0), BR_ARTIST_Y);
+                lv_color_hex(s_th->text2), BR_ARTIST_Y);
 
     if (s_card_count > 0) {
         const album_entry_t *a = albums_get(0);
@@ -264,7 +310,7 @@ static void build_browser_screen(void)
     /* "^ now playing" hint at the bottom edge. */
     lv_obj_t *hint = lv_label_create(s_screen_browser);
     lv_label_set_text(hint, LV_SYMBOL_UP " now playing");
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x606060), 0);
+    lv_obj_set_style_text_color(hint, lv_color_hex(s_th->dim), 0);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -6);
 
@@ -273,13 +319,13 @@ static void build_browser_screen(void)
     lv_obj_t *gear = lv_button_create(s_screen_browser);
     lv_obj_set_size(gear, 44, 36);
     lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -6, 4);
-    lv_obj_set_style_bg_color(gear, lv_color_hex(0x202020), 0);
+    lv_obj_set_style_bg_color(gear, lv_color_hex(s_th->surface), 0);
     lv_obj_set_style_bg_opa(gear, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(gear, 6, 0);
     lv_obj_add_event_cb(gear, on_open_settings, LV_EVENT_CLICKED, NULL);
     lv_obj_t *gear_lbl = lv_label_create(gear);
     lv_label_set_text(gear_lbl, LV_SYMBOL_SETTINGS);
-    lv_obj_set_style_text_color(gear_lbl, lv_color_hex(0xC0C0C0), 0);
+    lv_obj_set_style_text_color(gear_lbl, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(gear_lbl, &lv_font_montserrat_20, 0);
     lv_obj_center(gear_lbl);
 }
@@ -287,7 +333,7 @@ static void build_browser_screen(void)
 static void build_np_screen(void)
 {
     s_screen_np = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_screen_np, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(s_screen_np, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_np, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_screen_np, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_np, on_gesture, LV_EVENT_GESTURE, NULL);
@@ -295,7 +341,7 @@ static void build_np_screen(void)
     /* "v albums" hint at the top so the user knows the swipe-down gesture. */
     lv_obj_t *hint = lv_label_create(s_screen_np);
     lv_label_set_text(hint, LV_SYMBOL_DOWN " albums");
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x606060), 0);
+    lv_obj_set_style_text_color(hint, lv_color_hex(s_th->dim), 0);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
     lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 6);
 
@@ -307,20 +353,20 @@ static void build_np_screen(void)
     }
 
     s_np_title = lv_label_create(s_screen_np);
-    style_label(s_np_title, &lv_font_montserrat_28, lv_color_white(), NP_TITLE_Y);
+    style_label(s_np_title, &lv_font_montserrat_28, lv_color_hex(s_th->text), NP_TITLE_Y);
 
     s_np_artist = lv_label_create(s_screen_np);
     style_label(s_np_artist, &lv_font_montserrat_24,
-                lv_color_hex(0xA0A0A0), NP_ARTIST_Y);
+                lv_color_hex(s_th->text2), NP_ARTIST_Y);
 
     s_np_progress = lv_bar_create(s_screen_np);
     lv_obj_set_size(s_np_progress, PROG_W, PROG_H);
     lv_obj_set_pos(s_np_progress, PROG_X, PROG_Y);
     lv_bar_set_range(s_np_progress, 0, 1000);
     lv_bar_set_value(s_np_progress, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(0x303030), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(s_th->track), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_np_progress, lv_color_white(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(s_th->text), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(s_np_progress, 2, LV_PART_MAIN);
     lv_obj_set_style_radius(s_np_progress, 2, LV_PART_INDICATOR);
@@ -331,18 +377,56 @@ static void build_np_screen(void)
     lv_obj_set_style_text_font(s_vol_hud, &lv_font_montserrat_24, 0);
     lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -8, 6);
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
+
+    /* Playback controls: prev / play-pause / next in the right column. */
+    lv_obj_t *btn_prev = lv_button_create(s_screen_np);
+    lv_obj_set_size(btn_prev, NP_CTRL_W, NP_CTRL_H);
+    lv_obj_set_pos(btn_prev, NP_CTRL_X, NP_CTRL_Y1);
+    lv_obj_set_style_bg_color(btn_prev, lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_radius(btn_prev, 10, 0);
+    lv_obj_add_event_cb(btn_prev, on_np_prev, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_prev = lv_label_create(btn_prev);
+    lv_label_set_text(lbl_prev, LV_SYMBOL_PREV);
+    lv_obj_set_style_text_font(lbl_prev, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(lbl_prev, lv_color_hex(s_th->text), 0);
+    lv_obj_center(lbl_prev);
+
+    lv_obj_t *btn_pp = lv_button_create(s_screen_np);
+    lv_obj_set_size(btn_pp, NP_CTRL_W, NP_CTRL_H);
+    lv_obj_set_pos(btn_pp, NP_CTRL_X, NP_CTRL_Y2);
+    lv_obj_set_style_bg_color(btn_pp, lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_radius(btn_pp, 10, 0);
+    lv_obj_add_event_cb(btn_pp, on_np_playpause, LV_EVENT_CLICKED, NULL);
+    s_np_playpause_lbl = lv_label_create(btn_pp);
+    lv_label_set_text(s_np_playpause_lbl,
+                      s_track.is_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    lv_obj_set_style_text_font(s_np_playpause_lbl, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_np_playpause_lbl, lv_color_hex(s_th->text), 0);
+    lv_obj_center(s_np_playpause_lbl);
+
+    lv_obj_t *btn_next = lv_button_create(s_screen_np);
+    lv_obj_set_size(btn_next, NP_CTRL_W, NP_CTRL_H);
+    lv_obj_set_pos(btn_next, NP_CTRL_X, NP_CTRL_Y3);
+    lv_obj_set_style_bg_color(btn_next, lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_radius(btn_next, 10, 0);
+    lv_obj_add_event_cb(btn_next, on_np_next, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_next = lv_label_create(btn_next);
+    lv_label_set_text(lbl_next, LV_SYMBOL_NEXT);
+    lv_obj_set_style_text_font(lbl_next, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(lbl_next, lv_color_hex(s_th->text), 0);
+    lv_obj_center(lbl_next);
 }
 
-/* Highlight the active transition row (blue fill + check) and reset the rest. */
+/* Highlight the active transition row (accent fill + check) and reset the rest. */
 static void refresh_settings_selection(void)
 {
     for (int i = 0; i < UI_TRANSITION_COUNT; i++) {
         if (!s_opt_btns[i] || !s_opt_labels[i]) continue;
         bool sel = (i == (int)s_transition);
         lv_obj_set_style_bg_color(s_opt_btns[i],
-            sel ? lv_color_hex(0x0A84FF) : lv_color_hex(0x202020), 0);
+            sel ? lv_color_hex(THEME_ACCENT) : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_opt_labels[i],
-            sel ? lv_color_white() : lv_color_hex(0xC0C0C0), 0);
+            sel ? lv_color_white() : lv_color_hex(s_th->text2), 0);
         if (sel) {
             char buf[32];
             snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", k_transition_names[i]);
@@ -353,41 +437,61 @@ static void refresh_settings_selection(void)
     }
 }
 
+/* Same, for the Dark/Light theme row. */
+static void refresh_theme_selection(void)
+{
+    for (int i = 0; i < THEME_COUNT; i++) {
+        if (!s_theme_btns[i] || !s_theme_labels[i]) continue;
+        bool sel = (i == (int)s_theme);
+        lv_obj_set_style_bg_color(s_theme_btns[i],
+            sel ? lv_color_hex(THEME_ACCENT) : lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_text_color(s_theme_labels[i],
+            sel ? lv_color_white() : lv_color_hex(s_th->text2), 0);
+        if (sel) {
+            char buf[24];
+            snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", k_theme_names[i]);
+            lv_label_set_text(s_theme_labels[i], buf);
+        } else {
+            lv_label_set_text(s_theme_labels[i], k_theme_names[i]);
+        }
+    }
+}
+
 static void build_settings_screen(void)
 {
     s_screen_settings = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_screen_settings, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(s_screen_settings, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_settings, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_screen_settings, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *back = lv_button_create(s_screen_settings);
     lv_obj_set_size(back, 120, 44);
     lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
-    lv_obj_set_style_bg_color(back, lv_color_hex(0x202020), 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
     lv_obj_set_style_radius(back, 6, 0);
     lv_obj_add_event_cb(back, on_settings_back, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " Back");
-    lv_obj_set_style_text_color(back_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(s_th->text), 0);
     lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
     lv_obj_center(back_lbl);
 
     lv_obj_t *title = lv_label_create(s_screen_settings);
     lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 14);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
     lv_obj_t *section = lv_label_create(s_screen_settings);
     lv_label_set_text(section, "Menu transition");
-    lv_obj_set_style_text_color(section, lv_color_hex(0xA0A0A0), 0);
+    lv_obj_set_style_text_color(section, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(section, &lv_font_montserrat_24, 0);
-    lv_obj_align(section, LV_ALIGN_TOP_LEFT, 24, 78);
+    lv_obj_align(section, LV_ALIGN_TOP_LEFT, 24, 66);
 
     for (int i = 0; i < UI_TRANSITION_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(s_screen_settings);
-        lv_obj_set_size(btn, 520, 56);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 120 + i * 66);
+        lv_obj_set_size(btn, 520, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 102 + i * 54);
         lv_obj_set_style_radius(btn, 8, 0);
         lv_obj_add_event_cb(btn, on_transition_option, LV_EVENT_CLICKED,
                             (void *)(uintptr_t)i);
@@ -399,7 +503,32 @@ static void build_settings_screen(void)
         s_opt_btns[i]   = btn;
         s_opt_labels[i] = lbl;
     }
+
+    lv_obj_t *th_section = lv_label_create(s_screen_settings);
+    lv_label_set_text(th_section, "Theme");
+    lv_obj_set_style_text_color(th_section, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(th_section, &lv_font_montserrat_24, 0);
+    lv_obj_align(th_section, LV_ALIGN_TOP_LEFT, 24, 324);
+
+    /* Dark | Light side by side (a binary choice reads as a segmented pair). */
+    for (int i = 0; i < THEME_COUNT; i++) {
+        lv_obj_t *btn = lv_button_create(s_screen_settings);
+        lv_obj_set_size(btn, 250, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -134 : 134, 360);
+        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_add_event_cb(btn, on_theme_option, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_center(lbl);
+
+        s_theme_btns[i]   = btn;
+        s_theme_labels[i] = lbl;
+    }
+
     refresh_settings_selection();
+    refresh_theme_selection();
 }
 
 static void on_open_settings(lv_event_t *e)
@@ -425,13 +554,79 @@ static void on_transition_option(lv_event_t *e)
     ESP_LOGI(TAG, "transition style -> %s", k_transition_names[s_transition]);
 }
 
+static void on_theme_option(lv_event_t *e)
+{
+    uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx >= THEME_COUNT || idx == s_theme) return;
+    s_theme = idx;
+    s_th    = (idx == THEME_LIGHT_IDX) ? &THEME_LIGHT : &THEME_DARK;
+    save_theme(idx);
+    ESP_LOGI(TAG, "theme -> %s", k_theme_names[idx]);
+    /* Re-skin by rebuilding all three screens, but defer it: deleting the
+     * active settings screen from inside its own button handler is unsafe. */
+    lv_async_call(apply_theme_cb, NULL);
+}
+
+static void apply_theme_cb(void *unused)
+{
+    (void)unused;
+    lv_obj_t *active      = lv_screen_active();
+    bool      was_np      = (active == s_screen_np);
+    bool      was_setting = (active == s_screen_settings);
+    int       saved_card  = s_centered_card;   /* preserve carousel position */
+
+    lv_obj_t *old_browser  = s_screen_browser;
+    lv_obj_t *old_np       = s_screen_np;
+    lv_obj_t *old_settings = s_screen_settings;
+
+    build_browser_screen();
+    build_np_screen();
+    build_settings_screen();
+
+    /* Restore carousel position -- build always starts at card 0. Force the
+     * layout so scroll bounds are computed before we set the offset. */
+    if (saved_card > 0 && s_browser_scroller) {
+        lv_obj_update_layout(s_browser_scroller);
+        lv_obj_scroll_to_x(s_browser_scroller,
+                           (int32_t)saved_card * (CARD_SIZE + CARD_GAP),
+                           LV_ANIM_OFF);
+        s_centered_card = saved_card;
+        s_target_card   = saved_card;
+        const album_entry_t *a = albums_get((size_t)saved_card);
+        if (a && s_browser_title && s_browser_artist) {
+            lv_label_set_text(s_browser_title,  a->title);
+            lv_label_set_text(s_browser_artist, a->artist);
+        }
+    }
+
+    /* Restore now-playing labels and controls from cached track state. */
+    if (s_track.title[0]  && s_np_title)  lv_label_set_text(s_np_title,  s_track.title);
+    if (s_track.artist[0] && s_np_artist) lv_label_set_text(s_np_artist, s_track.artist);
+    if (s_np_playpause_lbl)
+        lv_label_set_text(s_np_playpause_lbl,
+                          s_track.is_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    update_progress_bar();
+
+    /* Activate the equivalent new screen first -- the active screen can't be
+     * deleted -- then drop the old ones. */
+    lv_screen_load(was_np ? s_screen_np : was_setting ? s_screen_settings : s_screen_browser);
+    lv_obj_delete(old_browser);
+    lv_obj_delete(old_np);
+    lv_obj_delete(old_settings);
+}
+
 static void load_settings(void)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READONLY, &h) != ESP_OK) return;  /* unset -> NONE */
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READONLY, &h) != ESP_OK) return;  /* unset -> defaults */
     uint8_t v = UI_TRANSITION_NONE;
     if (nvs_get_u8(h, NVS_KEY_TRANSITION, &v) == ESP_OK && v < UI_TRANSITION_COUNT) {
         s_transition = (ui_transition_t)v;
+    }
+    uint8_t t = THEME_DARK_IDX;
+    if (nvs_get_u8(h, NVS_KEY_THEME, &t) == ESP_OK && t < THEME_COUNT) {
+        s_theme = t;
+        s_th    = (t == THEME_LIGHT_IDX) ? &THEME_LIGHT : &THEME_DARK;
     }
     nvs_close(h);
 }
@@ -441,6 +636,15 @@ static void save_transition(ui_transition_t style)
     nvs_handle_t h;
     if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_u8(h, NVS_KEY_TRANSITION, (uint8_t)style);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void save_theme(uint8_t idx)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_THEME, idx);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -478,6 +682,9 @@ void ui_set_track_info(const spotify_track_t *info)
         if (s_np_title)  lv_label_set_text(s_np_title, info->title);
         if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
     }
+    if (s_np_playpause_lbl)
+        lv_label_set_text(s_np_playpause_lbl,
+                          s_track.is_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     update_progress_bar();
     bsp_display_unlock();
 }
@@ -541,6 +748,10 @@ ui_transition_t ui_get_transition_style(void)
 {
     return s_transition;
 }
+
+static void on_np_prev(lv_event_t *e)      { (void)e; ui_request_prev(); }
+static void on_np_playpause(lv_event_t *e) { (void)e; ui_request_toggle_play(); }
+static void on_np_next(lv_event_t *e)      { (void)e; ui_request_next(); }
 
 static void on_gesture(lv_event_t *e)
 {
