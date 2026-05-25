@@ -55,7 +55,13 @@ CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_LOG_PRINTF=y
 # Fonts (bigger than the CYD's 12/16 for the 800x480 panel).
+# Built-in bitmap fonts for hints + symbols (LVGL arrow/gear glyphs live here).
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
+# lv_tiny_ttf: runtime TTF rendering for title/artist labels so accented
+# characters (e.g. Sigur Ros with accent, Cyrillic, Irish) render correctly.
+# Montserrat-Medium.ttf is primary; DejaVuSans.ttf is the fallback.
+# Both are embedded as flash blobs (see CMakeLists.txt EMBED_FILES).
+CONFIG_LV_USE_TINY_TTF=y

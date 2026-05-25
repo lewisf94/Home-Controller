@@ -78,6 +78,12 @@ static const char *TAG = "ui";
 #define BR_ARTIST_Y   340
 
 
+/* Runtime TTF fonts -- created once from embedded flash blobs, shared across
+ * all screen builds (title/artist labels; hints keep the built-in bitmap font
+ * because it carries the LVGL symbol glyphs). */
+static lv_font_t *s_font_28 = NULL;   /* Montserrat 28 + DejaVu fallback */
+static lv_font_t *s_font_24 = NULL;   /* Montserrat 24 + DejaVu fallback */
+
 static lv_obj_t *s_screen_np      = NULL;
 static lv_obj_t *s_screen_browser = NULL;
 
@@ -291,10 +297,13 @@ static void build_browser_screen(void)
     }
 
     s_browser_title = lv_label_create(s_screen_browser);
-    style_label(s_browser_title, &lv_font_montserrat_28, lv_color_hex(s_th->text), BR_TITLE_Y);
+    style_label(s_browser_title,
+                s_font_28 ? s_font_28 : &lv_font_montserrat_28,
+                lv_color_hex(s_th->text), BR_TITLE_Y);
 
     s_browser_artist = lv_label_create(s_screen_browser);
-    style_label(s_browser_artist, &lv_font_montserrat_24,
+    style_label(s_browser_artist,
+                s_font_24 ? s_font_24 : &lv_font_montserrat_24,
                 lv_color_hex(s_th->text2), BR_ARTIST_Y);
 
     if (s_card_count > 0) {
@@ -358,10 +367,13 @@ static void build_np_screen(void)
     }
 
     s_np_title = lv_label_create(s_screen_np);
-    style_label(s_np_title, &lv_font_montserrat_28, lv_color_hex(s_th->text), NP_TITLE_Y);
+    style_label(s_np_title,
+                s_font_28 ? s_font_28 : &lv_font_montserrat_28,
+                lv_color_hex(s_th->text), NP_TITLE_Y);
 
     s_np_artist = lv_label_create(s_screen_np);
-    style_label(s_np_artist, &lv_font_montserrat_24,
+    style_label(s_np_artist,
+                s_font_24 ? s_font_24 : &lv_font_montserrat_24,
                 lv_color_hex(s_th->text2), NP_ARTIST_Y);
 
     s_np_progress = lv_bar_create(s_screen_np);
@@ -635,6 +647,25 @@ static void save_theme(uint8_t idx)
 void ui_init(lv_image_dsc_t *art_dsc)
 {
     s_art_dsc = art_dsc;
+
+    /* Build runtime TTF fonts from the embedded flash blobs.  The data pointers
+     * stay valid forever (read-only flash segment), so lv_tiny_ttf can reference
+     * them without copying.  DejaVu covers accented Latin, Cyrillic, Greek, etc.;
+     * it is chained as a fallback so Montserrat handles ASCII and DejaVu fills in
+     * any glyph Montserrat lacks. */
+    extern const uint8_t mont_start[] asm("_binary_Montserrat_Medium_ttf_start");
+    extern const uint8_t mont_end[]   asm("_binary_Montserrat_Medium_ttf_end");
+    extern const uint8_t deja_start[] asm("_binary_DejaVuSans_ttf_start");
+    extern const uint8_t deja_end[]   asm("_binary_DejaVuSans_ttf_end");
+
+    s_font_28 = lv_tiny_ttf_create_data(mont_start, (size_t)(mont_end - mont_start), 28);
+    s_font_24 = lv_tiny_ttf_create_data(mont_start, (size_t)(mont_end - mont_start), 24);
+
+    lv_font_t *deja_28 = lv_tiny_ttf_create_data(deja_start, (size_t)(deja_end - deja_start), 28);
+    lv_font_t *deja_24 = lv_tiny_ttf_create_data(deja_start, (size_t)(deja_end - deja_start), 24);
+
+    if (s_font_28 && deja_28) s_font_28->fallback = deja_28;
+    if (s_font_24 && deja_24) s_font_24->fallback = deja_24;
 
     bsp_display_lock(-1);
 

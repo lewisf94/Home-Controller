@@ -14,7 +14,9 @@ idf_component_register(
         # "input.c"         # cp6: touch dispatch
     INCLUDE_DIRS "." "../include"
     EMBED_FILES
-        "album_thumbs.bin"   # cp4: browser thumbnail blob (gitignored; baked in private)
+        "album_thumbs.bin"          # cp4: browser thumbnail blob (gitignored; baked in private)
+        "Montserrat-Medium.ttf"     # runtime TTF for title/artist labels (primary)
+        "DejaVuSans.ttf"            # runtime TTF fallback for accented/non-Latin glyphs
     PRIV_REQUIRES
         nvs_flash
         lvgl__lvgl
