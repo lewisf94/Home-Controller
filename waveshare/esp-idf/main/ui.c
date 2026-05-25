@@ -39,6 +39,7 @@
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 #include "spotify.h"
+#include "nvs.h"
 
 #include <string.h>
 
@@ -95,6 +96,25 @@ static int             s_target_card         = 0;
 
 static lv_image_dsc_t *s_art_dsc = NULL;
 
+/* Default to instant: the animated full-screen composite (lv_screen_load_anim)
+ * is the heaviest draw the UI does and stalls under the DSI triple-partial
+ * flush -- the freeze always struck on a swipe transition, never in steady
+ * state. NONE skips the composite. The settings screen lets the user pick an
+ * animated style (loaded from NVS at boot); NONE stays the safe default. */
+static ui_transition_t s_transition = UI_TRANSITION_NONE;
+
+/* Settings screen + its transition-style option rows. */
+static lv_obj_t *s_screen_settings = NULL;
+static lv_obj_t *s_opt_btns[UI_TRANSITION_COUNT]   = {0};
+static lv_obj_t *s_opt_labels[UI_TRANSITION_COUNT] = {0};
+
+#define NVS_SETTINGS_NS     "settings"
+#define NVS_KEY_TRANSITION  "transition"
+
+static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
+    "Over (slide)", "Move (push)", "Fade", "None (instant)",
+};
+
 /* Cached track state. The LVGL progress timer reads progress_ms /
  * duration_ms / is_playing from here and ticks the bar between
  * Spotify polls so the bar moves at ~5 Hz instead of 0.2 Hz. */
@@ -105,6 +125,12 @@ static void on_card_clicked(lv_event_t *e);
 static void on_browser_scroll(lv_event_t *e);
 static void progress_timer_cb(lv_timer_t *t);
 static void update_progress_bar(void);
+static void on_open_settings(lv_event_t *e);
+static void on_settings_back(lv_event_t *e);
+static void on_transition_option(lv_event_t *e);
+static void refresh_settings_selection(void);
+static void load_settings(void);
+static void save_transition(ui_transition_t style);
 
 static lv_color_t card_color(size_t i)
 {
@@ -236,6 +262,21 @@ static void build_browser_screen(void)
     lv_obj_set_style_text_color(hint, lv_color_hex(0x606060), 0);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -6);
+
+    /* Gear button (top-right) -> settings. Sits in the empty strip above the
+     * carousel so it never overlaps a card. */
+    lv_obj_t *gear = lv_button_create(s_screen_browser);
+    lv_obj_set_size(gear, 44, 36);
+    lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -6, 4);
+    lv_obj_set_style_bg_color(gear, lv_color_hex(0x202020), 0);
+    lv_obj_set_style_bg_opa(gear, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(gear, 6, 0);
+    lv_obj_add_event_cb(gear, on_open_settings, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *gear_lbl = lv_label_create(gear);
+    lv_label_set_text(gear_lbl, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_color(gear_lbl, lv_color_hex(0xC0C0C0), 0);
+    lv_obj_set_style_text_font(gear_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(gear_lbl);
 }
 
 static void build_np_screen(void)
@@ -287,14 +328,128 @@ static void build_np_screen(void)
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* Highlight the active transition row (blue fill + check) and reset the rest. */
+static void refresh_settings_selection(void)
+{
+    for (int i = 0; i < UI_TRANSITION_COUNT; i++) {
+        if (!s_opt_btns[i] || !s_opt_labels[i]) continue;
+        bool sel = (i == (int)s_transition);
+        lv_obj_set_style_bg_color(s_opt_btns[i],
+            sel ? lv_color_hex(0x0A84FF) : lv_color_hex(0x202020), 0);
+        lv_obj_set_style_text_color(s_opt_labels[i],
+            sel ? lv_color_white() : lv_color_hex(0xC0C0C0), 0);
+        if (sel) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", k_transition_names[i]);
+            lv_label_set_text(s_opt_labels[i], buf);
+        } else {
+            lv_label_set_text(s_opt_labels[i], k_transition_names[i]);
+        }
+    }
+}
+
+static void build_settings_screen(void)
+{
+    s_screen_settings = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_settings, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_screen_settings, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_settings, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_button_create(s_screen_settings);
+    lv_obj_set_size(back, 120, 44);
+    lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
+    lv_obj_set_style_bg_color(back, lv_color_hex(0x202020), 0);
+    lv_obj_set_style_radius(back, 6, 0);
+    lv_obj_add_event_cb(back, on_settings_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " Back");
+    lv_obj_set_style_text_color(back_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(back_lbl);
+
+    lv_obj_t *title = lv_label_create(s_screen_settings);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 14);
+
+    lv_obj_t *section = lv_label_create(s_screen_settings);
+    lv_label_set_text(section, "Menu transition");
+    lv_obj_set_style_text_color(section, lv_color_hex(0xA0A0A0), 0);
+    lv_obj_set_style_text_font(section, &lv_font_montserrat_24, 0);
+    lv_obj_align(section, LV_ALIGN_TOP_LEFT, 24, 78);
+
+    for (int i = 0; i < UI_TRANSITION_COUNT; i++) {
+        lv_obj_t *btn = lv_button_create(s_screen_settings);
+        lv_obj_set_size(btn, 520, 56);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 120 + i * 66);
+        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_add_event_cb(btn, on_transition_option, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_center(lbl);
+
+        s_opt_btns[i]   = btn;
+        s_opt_labels[i] = lbl;
+    }
+    refresh_settings_selection();
+}
+
+static void on_open_settings(lv_event_t *e)
+{
+    (void)e;
+    /* Settings enter/exit are always instant -- a utility screen, and it keeps
+     * the (animated) transition styles off the entry path entirely. */
+    if (s_screen_settings) lv_screen_load(s_screen_settings);
+}
+
+static void on_settings_back(lv_event_t *e)
+{
+    (void)e;
+    if (s_screen_browser) lv_screen_load(s_screen_browser);
+}
+
+static void on_transition_option(lv_event_t *e)
+{
+    ui_transition_t style = (ui_transition_t)(uintptr_t)lv_event_get_user_data(e);
+    ui_set_transition_style(style);
+    save_transition(s_transition);
+    refresh_settings_selection();
+    ESP_LOGI(TAG, "transition style -> %s", k_transition_names[s_transition]);
+}
+
+static void load_settings(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READONLY, &h) != ESP_OK) return;  /* unset -> NONE */
+    uint8_t v = UI_TRANSITION_NONE;
+    if (nvs_get_u8(h, NVS_KEY_TRANSITION, &v) == ESP_OK && v < UI_TRANSITION_COUNT) {
+        s_transition = (ui_transition_t)v;
+    }
+    nvs_close(h);
+}
+
+static void save_transition(ui_transition_t style)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_TRANSITION, (uint8_t)style);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 void ui_init(lv_image_dsc_t *art_dsc)
 {
     s_art_dsc = art_dsc;
 
     bsp_display_lock(-1);
 
+    load_settings();   /* restore saved transition style (default NONE if unset) */
     build_browser_screen();
     build_np_screen();
+    build_settings_screen();
     lv_screen_load(s_screen_browser);
 
     /* Local-progress simulation -- ticks 200 ms of progress every 200 ms
@@ -338,6 +493,43 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
     bsp_display_unlock();
 }
 
+/* Single source of truth for every browser <-> now-playing switch. `to_np`
+ * picks the slide direction for the animated styles (up to now-playing, down
+ * to the browser). Must be called under the LVGL lock. */
+static void load_screen(lv_obj_t *target, bool to_np)
+{
+    if (!target || target == lv_screen_active()) return;
+    switch (s_transition) {
+    case UI_TRANSITION_OVER:
+        lv_screen_load_anim(target,
+            to_np ? LV_SCR_LOAD_ANIM_OVER_TOP : LV_SCR_LOAD_ANIM_OVER_BOTTOM,
+            250, 0, false);
+        break;
+    case UI_TRANSITION_MOVE:
+        lv_screen_load_anim(target,
+            to_np ? LV_SCR_LOAD_ANIM_MOVE_TOP : LV_SCR_LOAD_ANIM_MOVE_BOTTOM,
+            250, 0, false);
+        break;
+    case UI_TRANSITION_FADE:
+        lv_screen_load_anim(target, LV_SCR_LOAD_ANIM_FADE_IN, 250, 0, false);
+        break;
+    case UI_TRANSITION_NONE:
+    default:
+        lv_screen_load(target);
+        break;
+    }
+}
+
+void ui_set_transition_style(ui_transition_t style)
+{
+    if (style >= 0 && style < UI_TRANSITION_COUNT) s_transition = style;
+}
+
+ui_transition_t ui_get_transition_style(void)
+{
+    return s_transition;
+}
+
 static void on_gesture(lv_event_t *e)
 {
     lv_indev_t *indev = lv_indev_active();
@@ -347,12 +539,10 @@ static void on_gesture(lv_event_t *e)
 
     if (dir == LV_DIR_TOP && active == s_screen_browser) {
         lv_indev_wait_release(indev);
-        lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP,
-                            250, 0, false);
+        load_screen(s_screen_np, true);
     } else if (dir == LV_DIR_BOTTOM && active == s_screen_np) {
         lv_indev_wait_release(indev);
-        lv_screen_load_anim(s_screen_browser, LV_SCR_LOAD_ANIM_OVER_BOTTOM,
-                            250, 0, false);
+        load_screen(s_screen_browser, false);
     }
     (void)e;
 }
@@ -367,8 +557,7 @@ static void on_card_clicked(lv_event_t *e)
      * block (HTTPS PUT runs on the other task). The screen transition
      * happens immediately and the play completes asynchronously. */
     ui_request_play(a->uri);
-    lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP,
-                        250, 0, false);
+    load_screen(s_screen_np, true);
 }
 
 static int find_centered_card(void)
@@ -450,9 +639,9 @@ void ui_toggle_view(void)
 {
     lv_obj_t *active = lv_screen_active();
     if (active == s_screen_browser) {
-        lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP, 250, 0, false);
+        load_screen(s_screen_np, true);
     } else {
-        lv_screen_load_anim(s_screen_browser, LV_SCR_LOAD_ANIM_OVER_BOTTOM, 250, 0, false);
+        load_screen(s_screen_browser, false);
     }
 }
 
@@ -464,7 +653,7 @@ void ui_play_centered_album(void)
     if (!a) return;
     ESP_LOGI(TAG, "play album (encoder): %s -- %s", a->artist, a->title);
     ui_request_play(a->uri);
-    lv_screen_load_anim(s_screen_np, LV_SCR_LOAD_ANIM_OVER_TOP, 250, 0, false);
+    load_screen(s_screen_np, true);
 }
 
 void ui_scroll_browser(int32_t delta)

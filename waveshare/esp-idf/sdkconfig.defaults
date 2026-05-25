@@ -48,6 +48,12 @@ CONFIG_LV_DEF_REFR_PERIOD=15
 # functions into IRAM -- frees several KB of IRAM (and silences the
 # .iram1 section-conflict warnings). Negligible render cost for this UI.
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n
+# Freeze diagnosis: turn LVGL's own logging on so an out-of-memory / draw
+# assert PRINTS (via printf) instead of silently spinning the render task.
+# WARN level stays quiet in normal operation.
+CONFIG_LV_USE_LOG=y
+CONFIG_LV_LOG_LEVEL_WARN=y
+CONFIG_LV_LOG_PRINTF=y
 # Fonts (bigger than the CYD's 12/16 for the 800x480 panel).
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y

@@ -84,10 +84,13 @@ typedef struct {
 
 static QueueHandle_t s_cmd_queue = NULL;
 
-/* Now-playing art handed to the UI. s_art_rgb is the decoded RGB565 buffer
- * (PSRAM); s_art_dsc points lv_image at it; s_art_url_loaded de-dupes downloads
- * so we only fetch when the track's art URL actually changes. */
-static uint8_t        *s_art_rgb = NULL;
+/* Now-playing art handed to the UI. Double-buffered in PSRAM: the Spotify task
+ * decodes into the idle buffer, then ui_art_refresh swaps lv_image to it under
+ * the LVGL lock -- so the decode never writes the pixels the render task is
+ * reading (that cross-core race on one buffer could corrupt LVGL state).
+ * s_art_url_loaded de-dupes downloads so we only fetch on a real art change. */
+static uint8_t        *s_art_rgb[2] = { NULL, NULL };
+static int             s_art_buf    = 0;
 static lv_image_dsc_t  s_art_dsc = {0};
 static char            s_art_url_loaded[256] = {0};
 
@@ -168,17 +171,22 @@ static esp_err_t wifi_init_sta(void)
  * buffer to ui.c, which republishes it under the LVGL lock. */
 static bool decode_and_publish_art(void)
 {
-    if (!s_art_rgb) return false;
+    /* Decode into the idle buffer, then swap; never touch the buffer the
+     * render task is currently displaying. */
+    int next = s_art_buf ^ 1;
+    uint8_t *buf = s_art_rgb[next];
+    if (!buf) return false;
 
     uint16_t w = 0, h = 0;
     if (!album_art_decode_file(ART_JPEG_PATH,
-                               (uint16_t *)s_art_rgb, ART_W * ART_H, &w, &h)) {
+                               (uint16_t *)buf, ART_W * ART_H, &w, &h)) {
         ESP_LOGW(TAG, "jpeg decode failed");
         return false;
     }
     ESP_LOGI(TAG, "decoded %ux%u album art (%u bytes)",
              (unsigned)w, (unsigned)h, (unsigned)(w * h * 2));
-    ui_art_refresh(s_art_rgb, w, h);
+    ui_art_refresh(buf, w, h);
+    s_art_buf = next;
     return true;
 }
 
@@ -265,8 +273,10 @@ void app_main(void)
 
     /* Now-playing art buffer (PSRAM -- internal SRAM is scarce) + LittleFS
      * scratch for the downloaded JPEG. Both ready before spotify_task decodes. */
-    s_art_rgb = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
-    if (!s_art_rgb) ESP_LOGE(TAG, "failed to allocate %d-byte art buffer", ART_RGB_BYTES);
+    s_art_rgb[0] = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
+    s_art_rgb[1] = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
+    if (!s_art_rgb[0] || !s_art_rgb[1])
+        ESP_LOGE(TAG, "failed to allocate %d-byte art buffers", ART_RGB_BYTES);
     if (!littlefs_mount()) ESP_LOGW(TAG, "littlefs mount failed -- album art disabled");
 
     /* Display first so we see something while WiFi connects. */

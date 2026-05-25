@@ -63,3 +63,19 @@ void     ui_play_centered_album(void);
 void     ui_scroll_browser(int32_t delta);
 uint32_t ui_get_progress_ms(void);
 void     ui_show_volume_hud(int pct, bool muted);
+
+/* Browser <-> now-playing transition style. Every screen switch (swipe,
+ * tap-to-play, encoder) routes through one helper that honours this, so the
+ * choice is a single source of truth (a future settings screen flips it).
+ * NONE is instant: it skips the animated full-screen composite that hammers
+ * the DSI triple-buffer flush and could stall the render task. */
+typedef enum {
+    UI_TRANSITION_OVER = 0,  /* new screen slides over the old (the original) */
+    UI_TRANSITION_MOVE,      /* both screens slide together (push) */
+    UI_TRANSITION_FADE,      /* cross-fade */
+    UI_TRANSITION_NONE,      /* instant, no animation */
+    UI_TRANSITION_COUNT,
+} ui_transition_t;
+
+void            ui_set_transition_style(ui_transition_t style);
+ui_transition_t ui_get_transition_style(void);
