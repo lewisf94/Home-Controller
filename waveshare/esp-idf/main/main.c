@@ -2,11 +2,14 @@
  * Music Controller -- ESP32-P4 (Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3),
  * DIRECT SPOTIFY backend (no Home Assistant).
  *
- * STATUS: checkpoint-3 -- Spotify. Connects to WiFi via the onboard ESP32-C6,
- * then runs a Spotify task that refreshes the OAuth token and polls
- * /me/player every 5 s, logging the current track. A typed scmd_t command
- * queue is in place for playback controls (drained by the Spotify task);
- * nothing posts to it yet -- the UI (cp4) and touch input (cp6) come later.
+ * STATUS: checkpoint-5 -- album art. WiFi via the onboard ESP32-C6; a Spotify
+ * task refreshes the OAuth token, polls /me/player every 5 s, and drives the
+ * LVGL UI (ui.c): an album-browser carousel + a now-playing screen (320x320
+ * art / title / artist / progress) laid out for 800x480. On a track change the
+ * 640px cover is downloaded to LittleFS, JPEG-decoded /2 to 320x320 (PSRAM) and
+ * shown. Tapping a card posts SCMD_PLAY_ALBUM to the scmd_t queue, drained by
+ * the Spotify task off the render path. Physical controls (cp6) come later;
+ * touch (GT911) is the only input so far.
  *
  * Memory: large HTTPS/JPEG buffers spill to PSRAM via the threshold policy in
  * sdkconfig.defaults (see docs/PORT-NOTES.md), so the 256 KB response buffer
@@ -15,9 +18,9 @@
  * Checkpoint roadmap (see README.md):
  *  1  Display skeleton (hardware-verified)
  *  2  WiFi (hardware-verified)
- *  3  Spotify -- this file                                <-- HERE
- *  4  UI: port cyd ui.c (lvgl_port_lock -> bsp_display_lock); 800x480 layout
- *  5  Assets: album_art.cpp + littlefs + bigger thumbs/art (album-art download)
+ *  3  Spotify (hardware-verified)
+ *  4  UI: port cyd ui.c (lvgl_port_lock -> bsp_display_lock); 800x480 layout (hardware-verified)
+ *  5  Assets: album_art.cpp + littlefs + bigger thumbs/art (album-art download)  <-- HERE
  *  6  Touch controls: prev/play-pause/next + volume -> ui_request_*()
  *  7  Parity: WiFi-strength indicator, volume HUD, progress bar, view toggle
  */
@@ -31,15 +34,30 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "secrets.h"
 #include "spotify.h"
+#include "ui.h"
+#include "album_art.h"
+#include "littlefs.h"
+
+#include <string.h>
+#include <stdlib.h>
 
 #define WIFI_MAX_RETRY     5
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
+
+/* Now-playing album art. Spotify serves 640x640; album_art.cpp decodes /2 to
+ * 320x320 RGB565. The 200 KB buffer lives in PSRAM (internal SRAM is scarce).
+ * The JPEG is staged in a LittleFS scratch file between download and decode. */
+#define ART_W          320
+#define ART_H          320
+#define ART_RGB_BYTES  (ART_W * ART_H * 2)
+#define ART_JPEG_PATH  "/littlefs/nowplaying.jpg"
 
 static const char *TAG = "main";
 static EventGroupHandle_t s_wifi_event_group;
@@ -65,6 +83,13 @@ typedef struct {
 } scmd_t;
 
 static QueueHandle_t s_cmd_queue = NULL;
+
+/* Now-playing art handed to the UI. s_art_rgb is the decoded RGB565 buffer
+ * (PSRAM); s_art_dsc points lv_image at it; s_art_url_loaded de-dupes downloads
+ * so we only fetch when the track's art URL actually changes. */
+static uint8_t        *s_art_rgb = NULL;
+static lv_image_dsc_t  s_art_dsc = {0};
+static char            s_art_url_loaded[256] = {0};
 
 static void _post_cmd(scmd_type_t type, uint32_t param, const char *uri)
 {
@@ -139,10 +164,28 @@ static esp_err_t wifi_init_sta(void)
     return (bits & WIFI_CONNECTED_BIT) ? ESP_OK : ESP_FAIL;
 }
 
-/* Drains s_cmd_queue and runs the blocking Spotify HTTPS calls off any
- * future render/input path. Also polls /me/player every 5 s and logs the
- * current track. cp3 only logs; cp4 will push state into ui.c and cp5 will
- * download + decode album art. */
+/* Decode the JPEG staged at ART_JPEG_PATH into s_art_rgb (PSRAM) and hand the
+ * buffer to ui.c, which republishes it under the LVGL lock. */
+static bool decode_and_publish_art(void)
+{
+    if (!s_art_rgb) return false;
+
+    uint16_t w = 0, h = 0;
+    if (!album_art_decode_file(ART_JPEG_PATH,
+                               (uint16_t *)s_art_rgb, ART_W * ART_H, &w, &h)) {
+        ESP_LOGW(TAG, "jpeg decode failed");
+        return false;
+    }
+    ESP_LOGI(TAG, "decoded %ux%u album art (%u bytes)",
+             (unsigned)w, (unsigned)h, (unsigned)(w * h * 2));
+    ui_art_refresh(s_art_rgb, w, h);
+    return true;
+}
+
+/* Drains s_cmd_queue and runs the blocking Spotify HTTPS calls off the
+ * render/input path. Also polls /me/player every 5 s: pushes track state into
+ * ui.c and, when the track's art URL changes, downloads the 640px cover to
+ * LittleFS, decodes it to 320x320 and publishes it to the now-playing screen. */
 static void spotify_task(void *arg)
 {
     (void)arg;
@@ -156,8 +199,25 @@ static void spotify_task(void *arg)
                      (unsigned long)info.progress_ms,
                      (unsigned long)info.duration_ms,
                      info.is_playing ? "playing" : "paused");
+            ui_set_track_info(&info);
+
+            if (info.album_art_url[0] &&
+                strcmp(info.album_art_url, s_art_url_loaded) != 0 &&
+                littlefs_is_mounted()) {
+                size_t bytes = 0;
+                if (spotify_download_to_file(info.album_art_url, ART_JPEG_PATH, &bytes)) {
+                    ESP_LOGI(TAG, "downloaded %u bytes -> %s",
+                             (unsigned)bytes, ART_JPEG_PATH);
+                    if (decode_and_publish_art()) {
+                        strncpy(s_art_url_loaded, info.album_art_url,
+                                sizeof(s_art_url_loaded) - 1);
+                        s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
+                    }
+                }
+            }
         } else {
             ESP_LOGI(TAG, "no active playback (or fetch failed)");
+            ui_set_track_info(NULL);
         }
 
         /* Poll every 5 s, but wake early to service any queued command. */
@@ -189,7 +249,7 @@ static void spotify_task(void *arg)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Music Controller P4 (direct Spotify) -- checkpoint 3: Spotify");
+    ESP_LOGI(TAG, "Music Controller P4 (direct Spotify) -- checkpoint 5: album art");
 
     /* esp_netif logs the assigned IP/mask/gw at INFO; silence it so the serial
      * log stays shareable without redacting. Our own handler logs only that a
@@ -203,19 +263,32 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    /* Now-playing art buffer (PSRAM -- internal SRAM is scarce) + LittleFS
+     * scratch for the downloaded JPEG. Both ready before spotify_task decodes. */
+    s_art_rgb = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
+    if (!s_art_rgb) ESP_LOGE(TAG, "failed to allocate %d-byte art buffer", ART_RGB_BYTES);
+    if (!littlefs_mount()) ESP_LOGW(TAG, "littlefs mount failed -- album art disabled");
+
     /* Display first so we see something while WiFi connects. */
     bsp_display_cfg_t cfg = {
         .lv_adapter_cfg  = ESP_LV_ADAPTER_DEFAULT_CONFIG(),
         .rotation        = ESP_LV_ADAPTER_ROTATE_90,
         .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_PARTIAL,
-        .touch_flags     = { .swap_xy = 0, .mirror_x = 0, .mirror_y = 0 },
+        /* Touch is NOT auto-rotated by the adapter -- these flags must match the
+         * ROTATE_90 display. GT911 reports native 480x800 portrait; swap_xy=1 is
+         * required (without it a horizontal swipe reads as vertical and taps/
+         * scroll miss). A 90deg rotation is swap + exactly one mirror; the two
+         * choices differ by 180deg. swap_xy=1,mirror_x=0,mirror_y=1 came out
+         * fully inverted on hardware, so the correct handedness is the other:
+         * mirror_x=1, mirror_y=0 (hardware-confirmed). */
+        .touch_flags     = { .swap_xy = 1, .mirror_x = 1, .mirror_y = 0 },
     };
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
 
     bsp_display_lock(-1);
     lv_obj_t *status_label = lv_label_create(lv_screen_active());
-    lv_label_set_text(status_label, "Music Controller P4\ncheckpoint 3: WiFi connecting...");
+    lv_label_set_text(status_label, "Music Controller P4\ncheckpoint 5: WiFi connecting...");
     lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(status_label);
     bsp_display_unlock();
@@ -226,14 +299,15 @@ void app_main(void)
     if (wifi_init_sta() != ESP_OK) {
         ESP_LOGE(TAG, "wifi did not connect -- cannot reach Spotify");
         bsp_display_lock(-1);
-        lv_label_set_text(status_label, "Music Controller P4\ncheckpoint 3: WiFi FAILED\ncheck secrets.h SSID/password");
+        lv_label_set_text(status_label, "Music Controller P4\ncheckpoint 5: WiFi FAILED\ncheck secrets.h SSID/password");
         bsp_display_unlock();
         return;
     }
 
-    bsp_display_lock(-1);
-    lv_label_set_text(status_label, "Music Controller P4\ncheckpoint 3: Spotify\n(see serial monitor)");
-    bsp_display_unlock();
+    /* Build the LVGL UI (browser + now-playing) and load the browser. This
+     * replaces the startup status_label screen. ui_init locks internally, so
+     * it must run with the display lock released. */
+    ui_init(&s_art_dsc);
 
     s_cmd_queue = xQueueCreate(8, sizeof(scmd_t));
     if (!s_cmd_queue) {
@@ -244,5 +318,5 @@ void app_main(void)
      * esp_hosted transport is stack-hungry. CYD used 8 KB on native WiFi. */
     xTaskCreate(spotify_task, "spotify", 10240, NULL, 5, NULL);
 
-    ESP_LOGI(TAG, "checkpoint 3: Spotify task started");
+    ESP_LOGI(TAG, "checkpoint 5: UI + art, Spotify task started");
 }

@@ -24,8 +24,8 @@ extern "C" {
 
 /* Decodes the JPEG bytes at `jpeg` into RGB565 pixels written to
  * `out_rgb`. The decoder auto-picks a downscale factor (1, 1/2, or
- * 1/4) so the output fits in `out_max_pixels` and is closest to
- * 160x160 -- our target on-screen size.
+ * 1/4, 1/8) so the output fits in `out_max_pixels` and is closest to
+ * 320x320 -- our now-playing art size on the 800x480 panel.
  *
  * On success, returns true and writes the decoded dimensions to
  * *out_w / *out_h. The buffer is in native byte order (matches

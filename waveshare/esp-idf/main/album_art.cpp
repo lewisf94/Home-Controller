@@ -10,10 +10,10 @@
  * The callback context carries the buffer pointer and the post-scale
  * destination dimensions.
  *
- * Scale selection rule: pick the largest scale (1, /2, or /4) that keeps
- * the decoded image inside out_max_pixels and reasonably close to 160x160.
- * For a 640x640 source that's /4; for 300x300 it's /2; smaller sources
- * get full size.
+ * Scale selection rule: pick the largest scale (1, /2, /4, /8) that keeps
+ * the decoded image inside out_max_pixels and reasonably close to 320x320
+ * (the now-playing art size on the 800x480 panel). A 640x640 Spotify source
+ * decodes /2 -> 320x320; smaller sources get full size.
  *
  * JPEGIMAGE is a large struct (internal MCU/Huffman buffers), so we
  * heap-allocate it rather than putting it on the FreeRTOS task stack.
@@ -90,10 +90,13 @@ bool decode_opened(JPEGIMAGE *pJPEG,
     const int src_h = JPEG_getHeight(pJPEG);
     int scale_flag  = 0;
     int divisor     = 1;
-    if (src_w > 320 || src_h > 320) {
+    if (src_w > 1280 || src_h > 1280) {
+        scale_flag = JPEG_SCALE_EIGHTH;
+        divisor    = 8;
+    } else if (src_w > 680 || src_h > 680) {
         scale_flag = JPEG_SCALE_QUARTER;
         divisor    = 4;
-    } else if (src_w > 200 || src_h > 200) {
+    } else if (src_w > 360 || src_h > 360) {
         scale_flag = JPEG_SCALE_HALF;
         divisor    = 2;
     }

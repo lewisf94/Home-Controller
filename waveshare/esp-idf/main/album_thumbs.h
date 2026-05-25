@@ -1,7 +1,8 @@
 /*
  * Album-thumbnail blob accessor.
  *
- * The browser carousel needs a 120x120 RGB565 image per album. We pre-
+ * The browser carousel needs a 220x220 RGB565 image per album (the P4 panel is
+ * 800x480; the CYD build uses 120x120). We pre-
  * convert the source artwork on the dev machine (see
  * scripts/embed_albums_idf.py), concatenate all 14 thumbs into
  * album_thumbs.bin, and pull that into firmware via `EMBED_FILES` in
@@ -15,8 +16,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ALBUM_THUMB_W      120
-#define ALBUM_THUMB_H      120
+#define ALBUM_THUMB_W      220
+#define ALBUM_THUMB_H      220
 #define ALBUM_THUMB_BYTES  (ALBUM_THUMB_W * ALBUM_THUMB_H * 2)
 
 /* Pointer to album `index`'s RGB565 pixels, or NULL if out of range. */

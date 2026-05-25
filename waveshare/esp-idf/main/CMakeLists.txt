@@ -6,13 +6,15 @@ idf_component_register(
         "main.c"
         "spotify.c"       # cp3: Spotify Web API client (+ esp_http_client/esp-tls/mbedtls)
         "albums.c"        # cp3: album list / metadata
+        "ui.c"            # cp4: ported from cyd, re-laid-out 800x480
+        "album_thumbs.c"  # cp4: embedded browser thumbnails (+ EMBED_FILES album_thumbs.bin)
+        "album_art.cpp"   # cp5: JPEGDEC now-playing art (+ bitbank2__jpegdec, vfs)
+        "littlefs.c"      # cp5: album-art scratch (+ joltwallet__littlefs)
         # --- added in later checkpoints (see README.md roadmap) ---
-        # "album_art.cpp"   # cp5: JPEGDEC now-playing art (+ bitbank2__jpegdec, vfs)
-        # "littlefs.c"      # cp5: album-art scratch (+ joltwallet__littlefs)
-        # "album_thumbs.c"  # cp5: embedded thumbnails (+ EMBED_FILES album_thumbs.bin)
-        # "ui.c"            # cp4: ported from cyd, re-laid-out 800x480
         # "input.c"         # cp6: touch dispatch
     INCLUDE_DIRS "." "../include"
+    EMBED_FILES
+        "album_thumbs.bin"   # cp4: browser thumbnail blob (gitignored; baked in private)
     PRIV_REQUIRES
         nvs_flash
         lvgl__lvgl
@@ -26,5 +28,7 @@ idf_component_register(
         esp-tls           # cp3: TLS + cert bundle
         mbedtls           # cp3: base64 (token auth), TLS
         esp_timer         # cp3: token-expiry timing
-        # vfs joltwallet__littlefs bitbank2__jpegdec                     # cp5
+        vfs                   # cp5: POSIX fopen/fread for album_art_decode_file
+        joltwallet__littlefs  # cp5: album-art JPEG scratch (storage partition)
+        bitbank2__jpegdec     # cp5: now-playing art JPEG decode
 )
