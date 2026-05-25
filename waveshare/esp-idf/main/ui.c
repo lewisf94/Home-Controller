@@ -52,8 +52,6 @@ static const char *TAG = "ui";
 
 #define CARD_SIZE     220
 #define CARD_GAP       28
-#define CARD_SIZE_CF  300   /* cover flow: larger card so the centre dominates */
-#define CARD_GAP_CF    28
 #define SCROLLER_Y     40
 #define SCROLLER_H    244
 
@@ -86,6 +84,7 @@ static const char *TAG = "ui";
  * because it carries the LVGL symbol glyphs). */
 static lv_font_t *s_font_28 = NULL;   /* Montserrat 28 + DejaVu fallback */
 static lv_font_t *s_font_24 = NULL;   /* Montserrat 24 + DejaVu fallback */
+#define TTF_GLYPH_CACHE_CNT 128        /* matches LVGL's tiny_ttf default */
 
 static lv_obj_t *s_screen_np      = NULL;
 static lv_obj_t *s_screen_browser = NULL;
@@ -104,8 +103,9 @@ static lv_obj_t *s_browser_title    = NULL;
 static lv_obj_t *s_browser_artist   = NULL;
 static lv_obj_t *s_wifi_bars[4]     = {0};
 
-#define MAX_CARDS 32
+#define MAX_CARDS 64
 static lv_obj_t       *s_cards[MAX_CARDS]    = {0};
+static lv_obj_t       *s_card_imgs[MAX_CARDS] = {0};  /* child lv_image per card */
 static lv_image_dsc_t  s_card_dscs[MAX_CARDS] = {0};
 static size_t          s_card_count          = 0;
 static int             s_centered_card       = -1;
@@ -128,11 +128,11 @@ static ui_transition_t s_transition = UI_TRANSITION_NONE;
  * task, so load_screen ignores new animated requests until this passes. */
 static uint32_t s_anim_block_until = 0;
 
-/* Theme palette. Stored as 0xRRGGBB so the table is a constant initializer
- * (lv_color_hex() is not a constant expression). s_th points at the active
- * palette; build_*_screen reads it, so switching themes is a pointer swap +
- * rebuild. THEME_ACCENT (selection highlight) and the volume-HUD red stay
- * constant -- they read fine on either background. */
+/* Mode palette (neutrals only). Stored as 0xRRGGBB so the table is a constant
+ * initializer (lv_color_hex() is not a constant expression). s_th points at the
+ * active palette; build_*_screen reads it, so switching mode is a pointer swap +
+ * rebuild. The accent (selection highlight + progress) is a separate setting --
+ * see k_accents / accent_color(). */
 typedef struct {
     uint32_t bg;       /* screen background */
     uint32_t surface;  /* cards / buttons / scroller fill */
@@ -142,37 +142,65 @@ typedef struct {
     uint32_t track;    /* progress-bar track */
 } theme_t;
 
-static const theme_t THEME_DARK  = { 0x000000, 0x202020, 0xFFFFFF, 0xA0A0A0, 0x606060, 0x303030 };
-static const theme_t THEME_LIGHT = { 0xF2F2F2, 0xD8D8D8, 0x101010, 0x505050, 0x808080, 0xBEBEBE };
+/* Charcoal palette: dark grey (not pure black) + off-white text + neutral
+ * greys, with a saturated orange primary accent and a red secondary accent.
+ * Light theme is a warm off-white variant sharing the same accents.
+ * { bg, surface, text, text2, dim, track }. */
+static const theme_t THEME_DARK  = { 0x121212, 0x1E1E1E, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x2C2C2C };
+static const theme_t THEME_LIGHT = { 0xECEAE6, 0xDAD6CF, 0x1A1A1A, 0x57534C, 0x8C877E, 0xC6C1B8 };
 static const theme_t *s_th = &THEME_DARK;
 
-#define THEME_ACCENT  0x0A84FF   /* selection highlight, both themes */
-
+/* Light/Dark MODE (neutrals) is one setting; COLOUR THEME (accent) is a
+ * separate setting that overlays a single accent on either mode. Accents are
+ * mid-tone saturated hues chosen to read on both the charcoal and cream
+ * backgrounds (no pale/yellow). One accent drives selection highlights AND the
+ * live elements (progress bar). */
 enum { THEME_DARK_IDX = 0, THEME_LIGHT_IDX = 1, THEME_COUNT = 2 };
-static uint8_t s_theme = THEME_DARK_IDX;
+static uint8_t s_theme = THEME_DARK_IDX;   /* light/dark mode */
 
-enum { BROWSER_CAROUSEL = 0, BROWSER_COVERFLOW = 1, BROWSER_STYLE_COUNT = 2 };
+enum { ACCENT_ORANGE = 0, ACCENT_RED, ACCENT_GREEN, ACCENT_PURPLE, ACCENT_COUNT };
+static uint8_t s_accent = ACCENT_ORANGE;
+static const uint32_t k_accents[ACCENT_COUNT] = { 0xFF5A00, 0xE0301E, 0x2FB344, 0x8B5CF6 };
+static const char *const k_accent_names[ACCENT_COUNT] = { "ORANGE", "RED", "GREEN", "PURPLE" };
+static uint32_t accent_color(void) { return k_accents[s_accent]; }
+
+/* Browser styles (all use uniform scale + opacity -- see apply_card_transforms
+ * for why skew/matrix transforms were reverted):
+ *  - CAROUSEL: flat row, all cards same size (the original).
+ *  - FOCUS:    centre card full size, side cards scale down + dim gently.
+ *  - COVERFLOW: side covers shrink harder + dim more, so they recede strongly
+ *               from the centre (depth via scale, not a true 3D tilt).
+ * NVS persists the index; the old build's "Cover Flow" (index 1) is now FOCUS,
+ * which is the correct migration -- index 1 was always the scale+dim mode. */
+enum { BROWSER_CAROUSEL = 0, BROWSER_FOCUS = 1, BROWSER_COVERFLOW = 2,
+       BROWSER_STYLE_COUNT = 3 };
 static uint8_t s_browser_style = BROWSER_CAROUSEL;
 
-/* Settings screen + its option rows (transition style + theme + browser style). */
+/* True for any style that transforms cards per scroll position (Focus + CF). */
+#define BROWSER_STYLE_TRANSFORMS(s) ((s) == BROWSER_FOCUS || (s) == BROWSER_COVERFLOW)
+
+/* Settings screen + its option rows (transition + mode + colour + browser). */
 static lv_obj_t *s_screen_settings = NULL;
 static lv_obj_t *s_opt_btns[UI_TRANSITION_COUNT]          = {0};
 static lv_obj_t *s_opt_labels[UI_TRANSITION_COUNT]        = {0};
 static lv_obj_t *s_theme_btns[THEME_COUNT]                = {0};
 static lv_obj_t *s_theme_labels[THEME_COUNT]              = {0};
+static lv_obj_t *s_accent_btns[ACCENT_COUNT]             = {0};
+static lv_obj_t *s_accent_labels[ACCENT_COUNT]           = {0};
 static lv_obj_t *s_brstyle_btns[BROWSER_STYLE_COUNT]      = {0};
 static lv_obj_t *s_brstyle_labels[BROWSER_STYLE_COUNT]    = {0};
 
 #define NVS_SETTINGS_NS       "settings"
 #define NVS_KEY_TRANSITION    "transition"
 #define NVS_KEY_THEME         "theme"
+#define NVS_KEY_ACCENT        "accent"
 #define NVS_KEY_BROWSER_STYLE "browser_style"
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
-    "Over (slide)", "Move (push)", "Fade", "None (instant)",
+    "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
 };
-static const char *const k_theme_names[THEME_COUNT] = { "Dark", "Light" };
-static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "Carousel", "Cover Flow" };
+static const char *const k_theme_names[THEME_COUNT] = { "DARK", "LIGHT" };
+static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSEL", "FOCUS", "COVER FLOW" };
 
 /* Cached track state. The LVGL progress timer reads progress_ms /
  * duration_ms / is_playing from here and ticks the bar between
@@ -188,6 +216,7 @@ static void on_open_settings(lv_event_t *e);
 static void on_settings_back(lv_event_t *e);
 static void on_transition_option(lv_event_t *e);
 static void on_theme_option(lv_event_t *e);
+static void on_accent_option(lv_event_t *e);
 static void on_np_tap(lv_event_t *e);
 static void on_seek_start(lv_event_t *e);
 static void on_seek_pressing(lv_event_t *e);
@@ -196,13 +225,15 @@ static void on_seek_click_absorb(lv_event_t *e);
 static void wifi_timer_cb(lv_timer_t *t);
 static void refresh_settings_selection(void);
 static void refresh_theme_selection(void);
+static void refresh_accent_selection(void);
 static void refresh_browser_style_selection(void);
 static void apply_theme_cb(void *unused);
 static void rebuild_browser_cb(void *unused);
-static void apply_coverflow_scales(void);
+static void apply_card_transforms(void);
 static void load_settings(void);
 static void save_transition(ui_transition_t style);
 static void save_theme(uint8_t idx);
+static void save_accent(uint8_t idx);
 static void save_browser_style(uint8_t idx);
 static void on_browser_style_option(lv_event_t *e);
 
@@ -223,9 +254,11 @@ static lv_color_t card_color(size_t i)
     return lv_palette_darken(palettes[i % n], 1);
 }
 
-/* Active card and gap size: differs between carousel and cover flow. */
-static int cs(void) { return s_browser_style == BROWSER_COVERFLOW ? CARD_SIZE_CF : CARD_SIZE; }
-static int cg(void) { return s_browser_style == BROWSER_COVERFLOW ? CARD_GAP_CF  : CARD_GAP; }
+/* All browser styles use the same card slot size + gap; Focus and Cover Flow
+ * differ only by the per-card transform applied at scroll time, not the layout
+ * footprint (so the 220px card always fits the 244px scroller -- no clipping). */
+static int cs(void) { return CARD_SIZE; }
+static int cg(void) { return CARD_GAP; }
 
 static void style_label(lv_obj_t *label, const lv_font_t *font,
                         lv_color_t color, int16_t y)
@@ -273,44 +306,58 @@ static void build_browser_screen(void)
     s_card_count = albums_count();
     if (s_card_count > MAX_CARDS) s_card_count = MAX_CARDS;
 
+    /* Debug: print thumbnail / album counts and a few thumb pointers to help
+     * diagnose missing/corrupt embedded blobs when Cover Flow shows blank cards. */
+    ESP_LOGI(TAG, "albums_count=%zu s_card_count=%zu album_thumb_count=%zu ALBUM_THUMB=%dx%d browser_style=%s",
+             albums_count(), s_card_count, album_thumb_count(), (int)ALBUM_THUMB_W, (int)ALBUM_THUMB_H,
+             k_browser_style_names[s_browser_style]);
+    for (size_t __j = 0; __j < (s_card_count < 4 ? s_card_count : 4); __j++) {
+        const uint16_t *__t = album_thumb_data(__j);
+        ESP_LOGI(TAG, "thumb[%zu]=%p", __j, (const void *)__t);
+    }
+
     for (size_t i = 0; i < s_card_count; i++) {
         const album_entry_t *a    = albums_get(i);
         const uint16_t      *thumb = album_thumb_data(i);
 
         lv_obj_t *card = lv_obj_create(s_browser_scroller);
         lv_obj_set_size(card, cs(), cs());
-        /* Cover flow: set scale pivot to card centre so side cards shrink inward. */
-        if (s_browser_style == BROWSER_COVERFLOW) {
-            lv_obj_set_style_transform_pivot_x(card, cs() / 2, 0);
-            lv_obj_set_style_transform_pivot_y(card, cs() / 2, 0);
-        }
         lv_obj_set_style_radius(card, 0, 0);
         lv_obj_set_style_border_width(card, 0, 0);
         lv_obj_set_style_pad_all(card, 0, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(s_th->bg), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(card, on_card_clicked, LV_EVENT_CLICKED,
                             (void *)(uintptr_t)i);
 
         if (thumb) {
-            /* Real artwork: use the embedded 120x120 RGB565 thumb as
-             * the card's background image. Rounded corners are masked
-             * by the card's radius + CLIP_CORNER flag. */
+            /* Artwork as a child lv_image. Focus/Cover Flow scale + dim the
+             * IMAGE directly (lv_image_set_scale + image_recolor) rather than
+             * transforming the card object. Per LVGL docs, image transforms
+             * draw without an intermediate layer snapshot -- whereas setting
+             * transform_scale/opa on an lv_obj forces a per-frame layer that
+             * this board's DIRECT-mode rotated DSI flush mis-composited,
+             * blacking out the off-centre cards. The card object carries no
+             * transform, so no layer is ever created. */
             s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
             s_card_dscs[i].header.w   = ALBUM_THUMB_W;
             s_card_dscs[i].header.h   = ALBUM_THUMB_H;
             s_card_dscs[i].data       = (const uint8_t *)thumb;
             s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
-            lv_obj_set_style_bg_color(card, lv_color_hex(s_th->bg), 0);
-            lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-            lv_obj_set_style_bg_image_src(card, &s_card_dscs[i], 0);
-            lv_obj_set_style_bg_image_opa(card, LV_OPA_COVER, 0);
+            lv_obj_t *img = lv_image_create(card);
+            lv_image_set_src(img, &s_card_dscs[i]);
+            lv_obj_center(img);
+            /* Scale about the image centre so side covers shrink inward. */
+            lv_image_set_pivot(img, ALBUM_THUMB_W / 2, ALBUM_THUMB_H / 2);
+            lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
+            s_card_imgs[i] = img;
         } else {
             /* No embedded thumb (shouldn't happen with the generated
              * blob, but fall back gracefully): coloured square with
              * first-letter initial. */
             lv_obj_set_style_bg_color(card, card_color(i), 0);
-            lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
             lv_obj_t *letter = lv_label_create(card);
             char ini[2] = { a->title[0] ? a->title[0] : '?', '\0' };
             lv_label_set_text(letter, ini);
@@ -340,7 +387,7 @@ static void build_browser_screen(void)
     }
 
     /* Apply initial cover flow scales (index-based, scroll_x=0 = card 0 centred). */
-    apply_coverflow_scales();
+    apply_card_transforms();
 
     /* WiFi-strength indicator: four rising bars at top-left. */
     for (int i = 0; i < 4; i++) {
@@ -424,7 +471,7 @@ static void build_np_screen(void)
     lv_bar_set_value(s_np_progress, 0, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(s_th->track), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(s_th->text), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(accent_color()), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(s_np_progress, 2, LV_PART_MAIN);
     lv_obj_set_style_radius(s_np_progress, 2, LV_PART_INDICATOR);
@@ -456,42 +503,52 @@ static void build_np_screen(void)
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* Highlight the active transition row (accent fill + check) and reset the rest. */
+/* Highlight the active row by accent fill + black text (no checkmark -- the
+ * fill is the indicator; cleaner, and keeps uppercase labels inside the
+ * narrower buttons). Same pattern for transition / mode / browser rows. */
 static void refresh_settings_selection(void)
 {
     for (int i = 0; i < UI_TRANSITION_COUNT; i++) {
         if (!s_opt_btns[i] || !s_opt_labels[i]) continue;
         bool sel = (i == (int)s_transition);
         lv_obj_set_style_bg_color(s_opt_btns[i],
-            sel ? lv_color_hex(THEME_ACCENT) : lv_color_hex(s_th->surface), 0);
+            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_opt_labels[i],
-            sel ? lv_color_white() : lv_color_hex(s_th->text2), 0);
-        if (sel) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", k_transition_names[i]);
-            lv_label_set_text(s_opt_labels[i], buf);
-        } else {
-            lv_label_set_text(s_opt_labels[i], k_transition_names[i]);
-        }
+            sel ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+        lv_label_set_text(s_opt_labels[i], k_transition_names[i]);
     }
 }
 
-/* Same, for the Dark/Light theme row. */
 static void refresh_theme_selection(void)
 {
     for (int i = 0; i < THEME_COUNT; i++) {
         if (!s_theme_btns[i] || !s_theme_labels[i]) continue;
         bool sel = (i == (int)s_theme);
         lv_obj_set_style_bg_color(s_theme_btns[i],
-            sel ? lv_color_hex(THEME_ACCENT) : lv_color_hex(s_th->surface), 0);
+            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_theme_labels[i],
-            sel ? lv_color_white() : lv_color_hex(s_th->text2), 0);
+            sel ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+        lv_label_set_text(s_theme_labels[i], k_theme_names[i]);
+    }
+}
+
+/* Colour theme row. Each button is a swatch filled with its own accent colour
+ * (so you can see the choices); the selected one gets a white ring + check. */
+static void refresh_accent_selection(void)
+{
+    for (int i = 0; i < ACCENT_COUNT; i++) {
+        if (!s_accent_btns[i] || !s_accent_labels[i]) continue;
+        bool sel = (i == (int)s_accent);
+        lv_obj_set_style_bg_color(s_accent_btns[i], lv_color_hex(k_accents[i]), 0);
+        lv_obj_set_style_border_width(s_accent_btns[i], sel ? 3 : 0, 0);
+        lv_obj_set_style_border_color(s_accent_btns[i], lv_color_white(), 0);
+        lv_obj_set_style_text_color(s_accent_labels[i], lv_color_white(), 0);
         if (sel) {
             char buf[24];
-            snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", k_theme_names[i]);
-            lv_label_set_text(s_theme_labels[i], buf);
+            snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", k_accent_names[i]);
+            lv_label_set_text(s_accent_labels[i], buf);
         } else {
-            lv_label_set_text(s_theme_labels[i], k_theme_names[i]);
+            lv_label_set_text(s_accent_labels[i], k_accent_names[i]);
         }
     }
 }
@@ -507,31 +564,36 @@ static void build_settings_screen(void)
     lv_obj_set_size(back, 120, 44);
     lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
     lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
-    lv_obj_set_style_radius(back, 6, 0);
+    lv_obj_set_style_radius(back, 3, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
     lv_obj_add_event_cb(back, on_settings_back, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
-    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " Back");
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(s_th->text), 0);
     lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
     lv_obj_center(back_lbl);
 
     lv_obj_t *title = lv_label_create(s_screen_settings);
-    lv_label_set_text(title, "Settings");
+    lv_label_set_text(title, "SETTINGS");
     lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    /* Letter-spacing gives the uppercase title a cleaner, more deliberate feel. */
+    lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
     lv_obj_t *section = lv_label_create(s_screen_settings);
-    lv_label_set_text(section, "Menu transition");
+    lv_label_set_text(section, "MENU TRANSITION");
     lv_obj_set_style_text_color(section, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_letter_space(section, 2, 0);
     lv_obj_align(section, LV_ALIGN_TOP_LEFT, 24, 66);
 
     for (int i = 0; i < UI_TRANSITION_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(s_screen_settings);
         lv_obj_set_size(btn, 520, 48);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 102 + i * 54);
-        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_set_style_radius(btn, 3, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_add_event_cb(btn, on_transition_option, LV_EVENT_CLICKED,
                             (void *)(uintptr_t)i);
 
@@ -544,9 +606,10 @@ static void build_settings_screen(void)
     }
 
     lv_obj_t *th_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(th_section, "Theme");
+    lv_label_set_text(th_section, "MODE");
     lv_obj_set_style_text_color(th_section, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(th_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_letter_space(th_section, 2, 0);
     lv_obj_align(th_section, LV_ALIGN_TOP_LEFT, 24, 324);
 
     /* Dark | Light side by side (a binary choice reads as a segmented pair). */
@@ -554,7 +617,8 @@ static void build_settings_screen(void)
         lv_obj_t *btn = lv_button_create(s_screen_settings);
         lv_obj_set_size(btn, 250, 48);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -134 : 134, 360);
-        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_set_style_radius(btn, 3, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_add_event_cb(btn, on_theme_option, LV_EVENT_CLICKED,
                             (void *)(uintptr_t)i);
 
@@ -566,23 +630,53 @@ static void build_settings_screen(void)
         s_theme_labels[i] = lbl;
     }
 
+    /* Colour theme -- accent swatches, independent of light/dark mode. */
+    lv_obj_t *col_section = lv_label_create(s_screen_settings);
+    lv_label_set_text(col_section, "COLOUR");
+    lv_obj_set_style_text_color(col_section, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(col_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_letter_space(col_section, 2, 0);
+    lv_obj_align(col_section, LV_ALIGN_TOP_LEFT, 24, 420);
+
+    for (int i = 0; i < ACCENT_COUNT; i++) {
+        lv_obj_t *btn = lv_button_create(s_screen_settings);
+        lv_obj_set_size(btn, 168, 48);
+        /* Centres of four 168px swatches across the row. */
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 176) - 264, 456);
+        lv_obj_set_style_radius(btn, 3, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, on_accent_option, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+        lv_obj_center(lbl);
+
+        s_accent_btns[i]   = btn;
+        s_accent_labels[i] = lbl;
+    }
+
     lv_obj_t *br_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(br_section, "Browser style");
+    lv_label_set_text(br_section, "BROWSER STYLE");
     lv_obj_set_style_text_color(br_section, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(br_section, &lv_font_montserrat_24, 0);
-    lv_obj_align(br_section, LV_ALIGN_TOP_LEFT, 24, 420);
+    lv_obj_set_style_text_letter_space(br_section, 2, 0);
+    lv_obj_align(br_section, LV_ALIGN_TOP_LEFT, 24, 516);
 
-    /* Carousel | Cover Flow side by side. */
+    /* Carousel | Focus | Cover Flow -- three buttons in a row. */
     for (int i = 0; i < BROWSER_STYLE_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(s_screen_settings);
-        lv_obj_set_size(btn, 250, 48);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -134 : 134, 456);
-        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_set_size(btn, 170, 48);
+        /* Centres of three 170px buttons across the 520px content width. */
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 176, 552);
+        lv_obj_set_style_radius(btn, 3, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_add_event_cb(btn, on_browser_style_option, LV_EVENT_CLICKED,
                             (void *)(uintptr_t)i);
 
         lv_obj_t *lbl = lv_label_create(btn);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        /* 20px (not 24): "Cover Flow" + a checkmark must fit the 170px button. */
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
         lv_obj_center(lbl);
 
         s_brstyle_btns[i]   = btn;
@@ -591,6 +685,7 @@ static void build_settings_screen(void)
 
     refresh_settings_selection();
     refresh_theme_selection();
+    refresh_accent_selection();
     refresh_browser_style_selection();
 }
 
@@ -630,6 +725,18 @@ static void on_theme_option(lv_event_t *e)
     lv_async_call(apply_theme_cb, NULL);
 }
 
+static void on_accent_option(lv_event_t *e)
+{
+    uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx >= ACCENT_COUNT || idx == s_accent) return;
+    s_accent = idx;
+    save_accent(idx);
+    ESP_LOGI(TAG, "accent -> %s", k_accent_names[idx]);
+    /* Same rebuild path as a mode change: every screen re-reads accent_color()
+     * for highlights + progress, so a full rebuild repaints the accent. */
+    lv_async_call(apply_theme_cb, NULL);
+}
+
 static void apply_theme_cb(void *unused)
 {
     (void)unused;
@@ -660,7 +767,7 @@ static void apply_theme_cb(void *unused)
             lv_label_set_text(s_browser_title,  a->title);
             lv_label_set_text(s_browser_artist, a->artist);
         }
-        apply_coverflow_scales();
+        apply_card_transforms();
     }
 
     /* Restore now-playing labels from cached track state. */
@@ -689,6 +796,10 @@ static void load_settings(void)
         s_theme = t;
         s_th    = (t == THEME_LIGHT_IDX) ? &THEME_LIGHT : &THEME_DARK;
     }
+    uint8_t ac = ACCENT_ORANGE;
+    if (nvs_get_u8(h, NVS_KEY_ACCENT, &ac) == ESP_OK && ac < ACCENT_COUNT) {
+        s_accent = ac;
+    }
     uint8_t bs = BROWSER_CAROUSEL;
     if (nvs_get_u8(h, NVS_KEY_BROWSER_STYLE, &bs) == ESP_OK && bs < BROWSER_STYLE_COUNT) {
         s_browser_style = bs;
@@ -710,6 +821,15 @@ static void save_theme(uint8_t idx)
     nvs_handle_t h;
     if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_u8(h, NVS_KEY_THEME, idx);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void save_accent(uint8_t idx)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_ACCENT, idx);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -737,11 +857,23 @@ void ui_init(lv_image_dsc_t *art_dsc)
     extern const uint8_t deja_start[] asm("_binary_DejaVuSans_ttf_start");
     extern const uint8_t deja_end[]   asm("_binary_DejaVuSans_ttf_end");
 
-    s_font_28 = lv_tiny_ttf_create_data(mont_start, (size_t)(mont_end - mont_start), 28);
-    s_font_24 = lv_tiny_ttf_create_data(mont_start, (size_t)(mont_end - mont_start), 24);
+    /* KERNING DISABLED on purpose. lv_tiny_ttf's kerning cache (an lv_rb tree)
+     * corrupts the heap in LVGL 9.4 (upstream issue #6304) -- it crashed here
+     * under sustained scrolling, sometimes in tiny_ttf_kerning_cache_compare_cb
+     * directly, sometimes as a later double-free (tlsf_free "block already
+     * marked as free") once the damaged metadata was freed. create_data()
+     * defaults to LV_FONT_KERNING_NORMAL; the _ex form lets us pass NONE, which
+     * skips the kerning cache path entirely. Visual cost is negligible (slightly
+     * looser spacing on a few letter pairs). */
+    s_font_28 = lv_tiny_ttf_create_data_ex(mont_start, (size_t)(mont_end - mont_start), 28,
+                                           LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
+    s_font_24 = lv_tiny_ttf_create_data_ex(mont_start, (size_t)(mont_end - mont_start), 24,
+                                           LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
 
-    lv_font_t *deja_28 = lv_tiny_ttf_create_data(deja_start, (size_t)(deja_end - deja_start), 28);
-    lv_font_t *deja_24 = lv_tiny_ttf_create_data(deja_start, (size_t)(deja_end - deja_start), 24);
+    lv_font_t *deja_28 = lv_tiny_ttf_create_data_ex(deja_start, (size_t)(deja_end - deja_start), 28,
+                                                    LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
+    lv_font_t *deja_24 = lv_tiny_ttf_create_data_ex(deja_start, (size_t)(deja_end - deja_start), 24,
+                                                    LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
 
     if (s_font_28 && deja_28) s_font_28->fallback = deja_28;
     if (s_font_24 && deja_24) s_font_24->fallback = deja_24;
@@ -924,35 +1056,24 @@ static void on_card_clicked(lv_event_t *e)
 static int find_centered_card(void)
 {
     if (!s_browser_scroller || s_card_count == 0) return -1;
-    /* Use absolute screen coordinates so we don't have to reason about
-     * LVGL's content-vs-visual coordinate semantics. lv_obj_get_coords()
-     * reflects each card's real on-screen position (it moves as the
-     * carousel scrolls), so the card whose centre is closest to the
-     * scroller's screen centre is the one snapped under the viewport. */
-    lv_area_t sa;
-    lv_obj_get_coords(s_browser_scroller, &sa);
-    int32_t target = (sa.x1 + sa.x2) / 2;
-
-    int best_i = 0;
-    int32_t best_d = INT32_MAX;
-    for (size_t i = 0; i < s_card_count; i++) {
-        if (!s_cards[i]) continue;
-        lv_area_t ca;
-        lv_obj_get_coords(s_cards[i], &ca);
-        int32_t cx = (ca.x1 + ca.x2) / 2;
-        int32_t d  = (cx > target) ? (cx - target) : (target - cx);
-        if (d < best_d) {
-            best_d = d;
-            best_i = (int)i;
-        }
-    }
-    return best_i;
+    /* Derive the centred index from scroll position + the fixed card layout.
+     * Card i's layout slot starts at pad_left + i*step; the slot snapped under
+     * the viewport centre is round(scroll_x / step) since the scroller
+     * centre-snaps each card. (Matches the snap convention in rebuild_browser_cb
+     * and ui_scroll_browser: card i is centred when scroll_left == i*step.) */
+    int32_t scroll_x = lv_obj_get_scroll_left(s_browser_scroller);
+    int32_t step     = cs() + cg();
+    if (step <= 0) return 0;
+    int idx = (int)((scroll_x + step / 2) / step);
+    if (idx < 0) idx = 0;
+    if (idx >= (int)s_card_count) idx = (int)s_card_count - 1;
+    return idx;
 }
 
 static void on_browser_scroll(lv_event_t *e)
 {
     (void)e;
-    apply_coverflow_scales(); /* no-op in carousel mode */
+    apply_card_transforms(); /* no-op in carousel mode */
     int idx = find_centered_card();
     /* When a touch/pointer is driving the scroll, adopt the visually centered
      * card as the encoder's target so the two input paths stay in sync. During
@@ -992,29 +1113,60 @@ static void progress_timer_cb(lv_timer_t *t)
     update_progress_bar();
 }
 
-/* Scale and dim cards based on their distance from the viewport centre.
- * Uses the scroller's left padding + card layout math (no screen coords
- * needed) so it works before the screen is loaded for the first time. */
-static void apply_coverflow_scales(void)
+/* Scale + dim each album cover by its distance from the viewport centre, per
+ * style. Layout math only (scroller pad + step), no lv_obj_get_coords, so it's
+ * correct before first paint and immune to the transforms feeding back in.
+ *
+ * IMPORTANT: the transform is applied to the child lv_image (scale + recolor),
+ * NOT to the card object. Setting transform_scale/opa on an lv_obj forces LVGL
+ * to snapshot it into a per-frame layer, which this board's DIRECT-mode rotated
+ * DSI flush mis-composited -- side cards faded to black as you scrolled. Image
+ * transforms draw directly (no layer), so they render correctly. (We also tried
+ * the 3x3 matrix path for a real iPod skew/tilt, but it crashed the SW blender
+ * outright -- see git history; no true 3D tilt is possible safely here.)
+ *
+ *  - FOCUS:    uniform shrink + dim, centre cover prominent.
+ *  - COVERFLOW: side covers squash HORIZONTALLY (scale_x falls faster than
+ *               scale_y) so they read as rotated away on a vertical axis -- the
+ *               iPod "turning cover" look, faked with non-uniform image scale
+ *               since real skew/perspective isn't available safely here. */
+static void apply_card_transforms(void)
 {
-    if (s_browser_style != BROWSER_COVERFLOW || !s_browser_scroller) return;
+    if (!BROWSER_STYLE_TRANSFORMS(s_browser_style) || !s_browser_scroller) return;
+    bool cf = (s_browser_style == BROWSER_COVERFLOW);
+    int32_t dim_rise   = cf ? 150 : 95;   /* per-step recolor-toward-black */
+    int32_t dim_max    = cf ? 160 : 110;
     int32_t scroll_x   = lv_obj_get_scroll_left(s_browser_scroller);
     int32_t pad_left   = (SCREEN_W - cs()) / 2;
     int32_t step       = cs() + cg();
     int32_t scr_center = SCREEN_W / 2;
     for (size_t i = 0; i < s_card_count; i++) {
-        if (!s_cards[i]) continue;
+        if (!s_card_imgs[i]) continue;
         int32_t card_cx = pad_left + (int32_t)i * step + cs() / 2 - scroll_x;
         int32_t dist = card_cx - scr_center;
         if (dist < 0) dist = -dist;
-        /* Scale: LV_SCALE_NONE (256) at centre, ~180 one step away, min 150. */
-        int32_t scale = LV_SCALE_NONE - dist * 76 / step;
-        if (scale < 150) scale = 150;
-        lv_obj_set_style_transform_scale(s_cards[i], scale, 0);
-        /* Opacity: full at centre, dims for side cards, min 100/255. */
-        int32_t opa = 255 - dist * 95 / step;
-        if (opa < 100) opa = 100;
-        lv_obj_set_style_opa(s_cards[i], (lv_opa_t)opa, 0);
+
+        if (cf) {
+            /* Horizontal squash dominates (the "turning" illusion); vertical
+             * shrinks only a little (depth). At one step out: ~40% wide, ~80%
+             * tall. Both 100% at centre. */
+            int32_t sx = LV_SCALE_NONE - dist * 150 / step;
+            if (sx < 70) sx = 70;
+            int32_t sy = LV_SCALE_NONE - dist * 55 / step;
+            if (sy < 170) sy = 170;
+            lv_image_set_scale_x(s_card_imgs[i], (uint32_t)sx);
+            lv_image_set_scale_y(s_card_imgs[i], (uint32_t)sy);
+        } else {
+            int32_t scale = LV_SCALE_NONE - dist * 76 / step;
+            if (scale < 150) scale = 150;
+            lv_image_set_scale(s_card_imgs[i], (uint32_t)scale);
+        }
+        /* Dim side covers by recoloring toward black (image-draw path, no
+         * layer). 0 at centre, rising with distance. */
+        int32_t dim = dist * dim_rise / step;
+        if (dim > dim_max) dim = dim_max;
+        lv_obj_set_style_image_recolor(s_card_imgs[i], lv_color_black(), 0);
+        lv_obj_set_style_image_recolor_opa(s_card_imgs[i], (lv_opa_t)dim, 0);
     }
 }
 
@@ -1024,16 +1176,10 @@ static void refresh_browser_style_selection(void)
         if (!s_brstyle_btns[i] || !s_brstyle_labels[i]) continue;
         bool sel = (i == (int)s_browser_style);
         lv_obj_set_style_bg_color(s_brstyle_btns[i],
-            sel ? lv_color_hex(THEME_ACCENT) : lv_color_hex(s_th->surface), 0);
+            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_brstyle_labels[i],
-            sel ? lv_color_white() : lv_color_hex(s_th->text2), 0);
-        if (sel) {
-            char buf[24];
-            snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", k_browser_style_names[i]);
-            lv_label_set_text(s_brstyle_labels[i], buf);
-        } else {
-            lv_label_set_text(s_brstyle_labels[i], k_browser_style_names[i]);
-        }
+            sel ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+        lv_label_set_text(s_brstyle_labels[i], k_browser_style_names[i]);
     }
 }
 
@@ -1070,7 +1216,7 @@ static void rebuild_browser_cb(void *unused)
             lv_label_set_text(s_browser_artist, a->artist);
         }
     }
-    apply_coverflow_scales();
+    apply_card_transforms();
     lv_obj_delete(old_browser);
 }
 
@@ -1130,14 +1276,11 @@ void ui_scroll_browser(int32_t delta)
     s_target_card = t;
     if (!s_cards[t]) return;
 
-    /* Scroll by the exact distance to bring the target card's centre onto the
-     * scroller's centre. Self-correcting: any accumulated drift is absorbed
-     * each step, so the carousel always lands snapped on a card. */
-    lv_area_t sa, ca;
-    lv_obj_get_coords(s_browser_scroller, &sa);
-    lv_obj_get_coords(s_cards[t], &ca);
-    int32_t v = ((sa.x1 + sa.x2) - (ca.x1 + ca.x2)) / 2;
-    if (v != 0) lv_obj_scroll_by(s_browser_scroller, v, 0, LV_ANIM_ON);
+    /* Scroll straight to the target card's layout slot (t*step), matching the
+     * snap convention in rebuild_browser_cb/find_centered_card: card i is
+     * centred when scroll_left == i*step. */
+    lv_obj_scroll_to_x(s_browser_scroller, (int32_t)t * (cs() + cg()),
+                       LV_ANIM_ON);
 }
 
 uint32_t ui_get_progress_ms(void)

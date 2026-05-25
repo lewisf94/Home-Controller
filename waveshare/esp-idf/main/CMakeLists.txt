@@ -34,3 +34,12 @@ idf_component_register(
         joltwallet__littlefs  # cp5: album-art JPEG scratch (storage partition)
         bitbank2__jpegdec     # cp5: now-playing art JPEG decode
 )
+
+# Silence warnings from the third-party bitbank JPEGDEC library (pointer-to-int
+# casts, shift-of-negative, unused statics). They're benign and not our code;
+# this targets only that component's lib so our own warnings still surface.
+# Lives here (not in managed_components) so it survives dependency regeneration.
+idf_component_get_property(jpegdec_lib bitbank2__jpegdec COMPONENT_LIB)
+if(jpegdec_lib)
+    target_compile_options(${jpegdec_lib} PRIVATE -w)
+endif()

@@ -32,7 +32,7 @@ swaps out.
 |---|---|---|
 | **PlatformIO CYD** (Arduino) | Shipped (Phase 1 + 1.5); now ported to LVGL, needs re-verify on hardware. | Not started. |
 | **ESP-IDF CYD** | **Done — feature-complete and verified on hardware** (lead build). | First build exists (`cyd/esp-idf-ha/`), not yet hardware-tested. |
-| **ESP-IDF P4** (Waveshare) | **Active** — board in hand; checkpoints 1 (display) + 2 (WiFi) + 3 (Spotify) hardware-verified; cp4 (UI) next. | Future — copy of the P4 non-HA build with the backend swapped. |
+| **ESP-IDF P4** (Waveshare) | **Active** — board in hand; checkpoints 1–3 hardware-verified; UI (cp4+) committed with Cover Flow / colour themes / crash fix — **needs hardware verify**. | Future — copy of the P4 non-HA build with the backend swapped. |
 
 **Status legend:** "Needs polish" = functional on hardware but has open
 bugs / rough edges to clean up before it's a finished variant.
@@ -362,15 +362,51 @@ call the same command functions, just from a different backend.
 The Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (4.3" IPS, ST7701 MIPI-DSI,
 GT911 capacitive touch, onboard ESP32-C6 WiFi) has arrived. The build lives in
 `waveshare/esp-idf/` (direct Spotify, touch-first). **Checkpoints 1 (display),
-2 (WiFi) and 3 (Spotify) are hardware-verified** — a label renders at 800×480
-landscape, the board associates to WiFi via the onboard C6 (`esp_wifi_remote` +
-`esp_hosted` over SDIO) and pulls a DHCP lease, and the Spotify task refreshes
-the OAuth token (cached in NVS), validates the TLS cert bundle, and polls
-`/me/player` every 5 s (track logged to serial). cp4 (UI) is next. On-chip memory
-budget measured at cp2 (~390 KB internal heap free + 31 MB PSRAM; see
-`docs/PORT-NOTES.md`). See `waveshare/esp-idf/README.md` for the full checkpoint
-roadmap (1 display → 2 WiFi → 3 Spotify → 4 UI → 5 assets → 6 controls →
-7 parity).
+2 (WiFi) and 3 (Spotify) are hardware-verified.** The UI (cp4+) has been built
+and committed — see below — but **needs a hardware verification pass.**
+
+On-chip memory budget measured at cp2 (~390 KB internal heap free + 31 MB PSRAM;
+see `docs/PORT-NOTES.md`). See `waveshare/esp-idf/README.md` for the full
+checkpoint roadmap (1 display → 2 WiFi → 3 Spotify → 4 UI → 5 assets →
+6 controls → 7 parity).
+
+### What the UI commit contains (needs hardware verify)
+
+- Full LVGL browser (carousel, touch scroll, centre-snap) + now-playing
+  (album art, title/artist, progress bar, volume HUD, WiFi bars) at 800×480.
+- Three browser styles (Carousel / Focus / Cover Flow), NVS-persisted.
+  - Cover Flow uses `lv_image_set_scale_x/y` + image recolor on child `lv_image`
+    objects — the only safe per-scroll transform path on this board. Object-level
+    `transform_scale` / `opa` forces layer snapshots that the DIRECT-mode rotated
+    DSI flush mis-composites → progressive card blackout. Never regress to that.
+  - `LV_USE_MATRIX` / `LV_DRAW_TRANSFORM_USE_MATRIX` produces negative X
+    coordinates in the SW blender → store/load fault. Never enable.
+- Settings screen: Menu Transition / Mode (Dark/Light) / Colour (accent) /
+  Browser Style — all NVS-persisted.
+- Colour accent system: Orange / Red / Green / Purple, drives highlights + progress
+  bar. Separate from the Dark/Light neutral palette so all accents work with both.
+- Charcoal palette, flat buttons (radius 3, no shadow), uppercase letter-spaced
+  section headers.
+- **Crash fix (tiny_ttf kerning cache):** `lv_tiny_ttf_create_data_ex(...,
+  LV_FONT_KERNING_NONE, 128)` on all font instances. LVGL 9.4 kerning cache
+  (upstream issue #6304) corrupts the heap under sustained scrolling; KERNING_NONE
+  bypasses the cache entirely. Never use plain `lv_tiny_ttf_create_data` here.
+- JPEGDEC third-party warnings silenced via `CMakeLists.txt`
+  `target_compile_options(${jpegdec_lib} PRIVATE -w)`.
+
+### Deferred — after hardware is confirmed stable
+
+1. **PPA hardware acceleration (isolated change):** `enable_ppa_accel = true` in
+   `bsp_display_cfg_t`. The P4 PPA does the 90° rotation/blit in hardware
+   (currently software every frame). One config line; verify nothing regresses.
+2. **TLS keep-alive (highest perf priority):** `spotify.c` opens/closes a fresh
+   TLS connection per call — full handshake every 5 s poll (~0.5–2 s, ~30–40 KB
+   heap). Reuse the client handle with reconnect-and-retry fallback.
+3. **RAM art decode:** waveshare has PSRAM — switch album art from the LittleFS
+   round-trip to the existing `spotify_download_bytes` + `album_art_decode` RAM
+   path, bypassing LittleFS entirely.
+4. **Adaptive poll backoff:** fast poll while playing, back off to 15–30 s when
+   paused / 204 response.
 
 Key facts and adaptations:
 - **Toolchain: ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0). The vendored BSP needs the

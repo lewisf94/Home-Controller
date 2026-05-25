@@ -235,24 +235,62 @@ the other. Secrets are `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` in
 setup. The backend is kept behind the `ui_request_*()` seam — swap the backend,
 don't entangle it with the UI.
 
-### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — checkpoint 3 / Spotify verified
+### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — UI committed, needs hardware verify
 
 **Board in hand; brought up incrementally.** Waveshare
 ESP32-P4-WIFI6-Touch-LCD-4.3 (ESP32-P4 RISC-V, 4.3" IPS, ST7701 MIPI-DSI, GT911
 capacitive touch, onboard ESP32-C6 WiFi over SDIO, PSRAM, 32 MB flash). Talks
 **directly to the Spotify Web API**; a future `waveshare/esp-idf-ha/` will swap
 to the HA backend. **Checkpoints 1 (display), 2 (WiFi) and 3 (Spotify) are
-hardware-verified** — a label renders at 800×480 landscape, the board associates
-to WiFi via the onboard C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls
-a DHCP lease, and the Spotify task refreshes the OAuth token (cached in NVS),
-validates the TLS cert bundle, and polls `/me/player` every 5 s (track logged to
-serial). Memory budget verified on-chip at cp2 (~390 KB internal heap free +
-31 MB PSRAM; see `docs/PORT-NOTES.md`). cp4 (UI port) is next.
-- **Known cp3 inefficiency (not yet fixed):** `spotify.c` does
-  `esp_http_client_init`/`perform`/`cleanup` per call, so every 5 s poll runs a
-  full TLS handshake + cert-bundle validation (`Certificate validated` each
-  poll). Reuse the client handle / enable keep-alive to persist the TLS session;
-  watch TLS heap (CLAUDE flags it tight). Same pattern in the CYD build.
+hardware-verified.** The UI (cp4+) has been built and committed but
+**the latest code — Cover Flow, colour themes, crash fix — still needs a hardware
+verification pass before it is considered stable.**
+
+What's in `ui.c` as committed:
+- Full LVGL browser + now-playing + volume HUD + WiFi bars, laid out for 800×480.
+- Three browser styles (Carousel / Focus / Cover Flow), NVS-persisted. Cover Flow
+  uses `lv_image_set_scale_x/y` + image recolor (no object-layer transforms — the
+  only safe per-scroll transform path on this board; see CRITICAL NOTE below).
+- Settings screen with four sections: Menu Transition, Mode (Dark/Light),
+  Colour (accent), Browser Style. All NVS-persisted.
+- Colour accent system: four accents (Orange / Red / Green / Purple), drives
+  selection highlights and progress bar. Separate from Dark/Light neutral palette.
+- Charcoal palette, flat buttons (radius 3, no shadow), uppercase letter-spaced
+  section headers.
+- **Crash fix:** `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, 128)` on
+  all four font instances. LVGL 9.4 kerning cache (upstream #6304) corrupts the
+  heap under sustained scrolling; KERNING_NONE bypasses the cache entirely.
+- JPEGDEC third-party warnings silenced via `CMakeLists.txt` `target_compile_options`.
+
+CRITICAL constraints on this board (never regress):
+- **Do NOT use `lv_obj_set_style_transform_scale` or `lv_obj_set_style_opa` on
+  card objects.** DIRECT-mode + software rotation + dirty-region tracking causes
+  LVGL to snapshot these into intermediate layers; the rotated DSI flush
+  mis-composites them → progressive card blackout. Transform the child `lv_image`
+  directly with `lv_image_set_scale/scale_x/scale_y` and dim with
+  `lv_obj_set_style_image_recolor_opa` instead — no layer is created.
+- **Do NOT enable `LV_USE_MATRIX` / `LV_DRAW_TRANSFORM_USE_MATRIX`.** The SW
+  blender produces negative X coordinates → store/load fault (crash).
+- **Do NOT use plain `lv_tiny_ttf_create_data`.** Always use
+  `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, ...)`.
+
+Deferred work (do after hardware is confirmed stable):
+- **PPA hardware acceleration:** `enable_ppa_accel = true` in `bsp_display_cfg_t`.
+  The P4 PPA can do the 90° rotation/blit in hardware (currently software every
+  frame). Off until stability is confirmed — would muddy crash bisection.
+- **TLS keep-alive (highest perf priority):** `spotify.c` does
+  `esp_http_client_init`/`perform`/`cleanup` per call — full TLS handshake every
+  5 s poll. Reuse the client handle; add reconnect-and-retry fallback.
+- **RAM art decode:** waveshare has PSRAM — switch album art to decode in RAM
+  rather than the LittleFS round-trip (`spotify_download_bytes` + `album_art_decode`
+  RAM path already exists but is unused).
+- **Adaptive poll backoff:** poll fast while playing, back off to 15–30 s when
+  paused/204.
+
+Known inefficiency (not yet fixed):
+- `spotify.c` does `esp_http_client_init`/`perform`/`cleanup` per call, so every
+  5 s poll runs a full TLS handshake + cert-bundle validation (`Certificate
+  validated` each poll). Same pattern in the CYD build.
 
 Key differences from the CYD IDF build:
 - **Toolchain ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0): the vendored BSP needs the
@@ -352,9 +390,11 @@ Full detail in `docs/ROADMAP.md`. Three phases:
    state. A first build exists in `cyd/esp-idf-ha/` (not yet hardware-tested).
    See `docs/ROADMAP.md` Phase 3 for WebSocket handshake and HA setup.
 
-ESP32-P4 migration: ACTIVE — the Waveshare board is in hand and
-`waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5) has checkpoints 1 (display)
-and 2 (WiFi) verified on hardware; cp3 (Spotify) is in progress. A future
+ESP32-P4 migration: ACTIVE — `waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5)
+has checkpoints 1–3 hardware-verified (display, WiFi, Spotify). The UI (cp4+)
+including Cover Flow, colour themes, and the tiny_ttf kerning crash fix is
+committed but needs a hardware verification pass. After stability is confirmed,
+next steps are PPA hardware acceleration, then TLS keep-alive. A future
 `waveshare/esp-idf-ha/` carries the Phase 3 HA client over untouched.
 
 ---
@@ -455,7 +495,7 @@ git log --oneline -10          # recent history
 - **Lead build (direct Spotify, verified):** `cyd/esp-idf/`
 - **HA backend variant (untested):** `cyd/esp-idf-ha/`
 - **Arduino build (LVGL port, needs re-verify):** `cyd/platformio/`
-- **Waveshare ESP32-P4 (direct Spotify, checkpoint 3 / Spotify verified):** `waveshare/esp-idf/`
+- **Waveshare ESP32-P4 (direct Spotify, UI committed — needs hardware verify):** `waveshare/esp-idf/`
 - **Current status: MILESTONE — CYD fully working on ESP-IDF.** The ESP-IDF
   build is now feature-complete for the CYD hardware and verified smooth on
   device: display, LVGL 9.5, XPT2046 touch, WiFi STA, Spotify HTTPS (token
@@ -479,37 +519,31 @@ git log --oneline -10          # recent history
   - **Next:** Phase 3 — Home Assistant integration (see Architecture →
     "CYD — ESP-IDF HA build" and `docs/ROADMAP.md` Phase 3).
 
-- **Waveshare ESP32-P4 — checkpoints 1 (display) + 2 (WiFi) + 3 (Spotify) HARDWARE-VERIFIED.**
-  The board arrived and `waveshare/esp-idf/` is being brought up incrementally.
-  cp1 renders a centred label at 800×480 landscape; cp2 associates to WiFi via
-  the onboard ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a
-  DHCP lease (`wifi_init_sta` ported from `cyd/esp-idf/main.c`); cp3 runs the
-  Spotify task — OAuth token cached in NVS, TLS cert bundle validated, `/me/player`
-  polled every 5 s with the track logged to serial (`scmd_t` command queue in
-  place for cp4+ controls, nothing posts to it yet). Toolchain is
-  **ESP-IDF 5.5.x** (NOT 5.4/6.0 — see the Architecture section and
-  `waveshare/esp-idf/README.md` for why), display/touch via the vendored
-  `esp32_p4_wifi6_touch_lcd_4_3` BSP, LVGL via `esp_lvgl_adapter`. Sources/deps
-  staged per checkpoint in `main/CMakeLists.txt`.
+- **Waveshare ESP32-P4 — checkpoints 1–3 HARDWARE-VERIFIED. UI (cp4+) committed,
+  needs hardware verify.**
+  cp1–3 verified: display renders at 800×480 landscape, WiFi via onboard C6,
+  Spotify token refresh + poll every 5 s. The UI (`ui.c`) has been committed with:
+  full LVGL browser + now-playing, three browser styles (Carousel/Focus/Cover Flow),
+  settings screen (Menu Transition / Mode / Colour / Browser Style), charcoal
+  palette, flat buttons, colour accent system (Orange/Red/Green/Purple),
+  tiny_ttf kerning crash fix. **All of this still needs a hardware verification
+  pass.** Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
+  5.5.4 PowerShell profile, `idf.py set-target esp32p4`, `idf.py build flash
+  monitor`. Board enumerates as CH343 USB-serial (COM3/COM4). Creds in
+  `waveshare/esp-idf/include/secrets.h` (gitignored; template at
+  `include/secrets.h.example`).
   - **cp2 memory budget (measured on-chip):** 768 KB internal SRAM total; after
     WiFi there's ~390 KB internal heap free + 31 MB PSRAM. The WiFi link
     overflowed the fixed IRAM segment by ~2 KB — fixed with
     `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`. Display framebuffers (2.25 MB) live
     in PSRAM. The 256 KB Spotify response buffer + album art must be allocated
     from PSRAM at cp3/cp5. Full analysis + PSRAM-first policy in `docs/PORT-NOTES.md`.
-  - **To build:** dot-source the IDF 5.5.4 PowerShell profile, then
-    `idf.py set-target esp32p4` and `idf.py build flash monitor`. WiFi + Spotify
-    creds go in `waveshare/esp-idf/include/secrets.h` (gitignored; template at
-    `include/secrets.h.example`). The board enumerates as a CH343 USB-serial
-    device (COM3/COM4 on Lewis's machine, depending on USB port).
-  - **cp3 verified (Spotify):** boot log shows the OAuth token loaded from NVS,
-    `esp-x509-crt-bundle: Certificate validated`, and `now playing: <artist> --
-    <title> [.../... ms, playing]` every 5 s. SSID/IP are no longer logged (so
-    serial output is shareable without redaction). Known inefficiency: a full TLS
-    handshake per poll — see the Architecture section's keep-alive note.
-  - **Next:** checkpoint 4 — UI. Port `cyd/esp-idf/main/ui.c`; map
-    `lvgl_port_lock(0)` → `bsp_display_lock(0)`; re-lay-out constants for 800×480;
-    wire the browser carousel + now-playing to the existing `ui_request_*()` seam.
+  - **After hardware verify:** enable PPA hardware acceleration (single isolated
+    change: `enable_ppa_accel = true`), then tackle TLS keep-alive (biggest perf
+    win), then RAM art decode (waveshare has PSRAM), then adaptive poll backoff.
+  - **CRITICAL constraints (do not regress):** no object-level transform_scale/opa
+    on cards; no LV_USE_MATRIX; always use lv_tiny_ttf_create_data_ex with
+    LV_FONT_KERNING_NONE. See the Architecture section for full rationale.
 
 - **PlatformIO LVGL port — committed but NOT YET HARDWARE-TESTED (needs Lewis to
   check on device).** The Arduino build was rewritten from TFT_eSPI direct-draw
