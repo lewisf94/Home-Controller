@@ -27,10 +27,23 @@ art). Ordered by priority. Update as items land.
   the single `load_screen` helper.
 - Next settings to add: dark/light theme (below), then the Cover Flow toggle.
 
-## 2. Dark / light theme toggle
-- Add to the settings screen; persist in NVS.
-- Route the hardcoded black-bg / white-text colours through a small theme
-  (one place to flip), then it's free for new screens.
+## 2. Dark / light theme toggle — DONE
+- Dark / Light buttons in Settings; persisted to NVS (`settings` / `theme`),
+  restored at boot. All three screens rebuilt on switch via `lv_async_call`;
+  carousel position and track labels restored after rebuild.
+- `apply_theme_cb` preserves `s_centered_card` and snaps the new scroller to
+  the same card via `lv_obj_scroll_to_x` (layout forced first).
+
+## 2.5. Now-playing playback controls — DONE
+- Prev / play-pause / next buttons in the right column beside the art
+  (x=600..760, y=72/160/248, 160x64 each) on `s_screen_np`.
+- Play/pause icon updates on every Spotify poll and on theme rebuild.
+- Calls `ui_request_prev/toggle_play/next` -- same path as the encoder.
+
+## 2.6. Spotify TLS keep-alive fix — DONE
+- `poll_client_close()` was only called on `status==0`; now called on
+  `err!=ESP_OK` so the broken keep-alive handle is dropped on conn-reset /
+  timeout and the next poll opens a fresh TLS session.
 
 ## 3. Fonts — accented names (lv_tiny_ttf)
 - Built-in montserrat is ASCII-only, so "Ö", Irish á/í, etc. render as boxes.
