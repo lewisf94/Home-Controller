@@ -38,6 +38,7 @@
 #include "albums.h"
 #include "album_thumbs.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
 #include "bsp/esp-bsp.h"
 #include "spotify.h"
 #include "nvs.h"
@@ -51,6 +52,8 @@ static const char *TAG = "ui";
 
 #define CARD_SIZE     220
 #define CARD_GAP       28
+#define CARD_SIZE_CF  300   /* cover flow: larger card so the centre dominates */
+#define CARD_GAP_CF    28
 #define SCROLLER_Y     40
 #define SCROLLER_H    244
 
@@ -99,6 +102,7 @@ static bool        s_seeking        = false;
 static lv_obj_t *s_browser_scroller = NULL;
 static lv_obj_t *s_browser_title    = NULL;
 static lv_obj_t *s_browser_artist   = NULL;
+static lv_obj_t *s_wifi_bars[4]     = {0};
 
 #define MAX_CARDS 32
 static lv_obj_t       *s_cards[MAX_CARDS]    = {0};
@@ -147,21 +151,28 @@ static const theme_t *s_th = &THEME_DARK;
 enum { THEME_DARK_IDX = 0, THEME_LIGHT_IDX = 1, THEME_COUNT = 2 };
 static uint8_t s_theme = THEME_DARK_IDX;
 
-/* Settings screen + its option rows (transition style + theme). */
-static lv_obj_t *s_screen_settings = NULL;
-static lv_obj_t *s_opt_btns[UI_TRANSITION_COUNT]   = {0};
-static lv_obj_t *s_opt_labels[UI_TRANSITION_COUNT] = {0};
-static lv_obj_t *s_theme_btns[THEME_COUNT]   = {0};
-static lv_obj_t *s_theme_labels[THEME_COUNT] = {0};
+enum { BROWSER_CAROUSEL = 0, BROWSER_COVERFLOW = 1, BROWSER_STYLE_COUNT = 2 };
+static uint8_t s_browser_style = BROWSER_CAROUSEL;
 
-#define NVS_SETTINGS_NS     "settings"
-#define NVS_KEY_TRANSITION  "transition"
-#define NVS_KEY_THEME       "theme"
+/* Settings screen + its option rows (transition style + theme + browser style). */
+static lv_obj_t *s_screen_settings = NULL;
+static lv_obj_t *s_opt_btns[UI_TRANSITION_COUNT]          = {0};
+static lv_obj_t *s_opt_labels[UI_TRANSITION_COUNT]        = {0};
+static lv_obj_t *s_theme_btns[THEME_COUNT]                = {0};
+static lv_obj_t *s_theme_labels[THEME_COUNT]              = {0};
+static lv_obj_t *s_brstyle_btns[BROWSER_STYLE_COUNT]      = {0};
+static lv_obj_t *s_brstyle_labels[BROWSER_STYLE_COUNT]    = {0};
+
+#define NVS_SETTINGS_NS       "settings"
+#define NVS_KEY_TRANSITION    "transition"
+#define NVS_KEY_THEME         "theme"
+#define NVS_KEY_BROWSER_STYLE "browser_style"
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "Over (slide)", "Move (push)", "Fade", "None (instant)",
 };
 static const char *const k_theme_names[THEME_COUNT] = { "Dark", "Light" };
+static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "Carousel", "Cover Flow" };
 
 /* Cached track state. The LVGL progress timer reads progress_ms /
  * duration_ms / is_playing from here and ticks the bar between
@@ -182,12 +193,18 @@ static void on_seek_start(lv_event_t *e);
 static void on_seek_pressing(lv_event_t *e);
 static void on_seek_released(lv_event_t *e);
 static void on_seek_click_absorb(lv_event_t *e);
+static void wifi_timer_cb(lv_timer_t *t);
 static void refresh_settings_selection(void);
 static void refresh_theme_selection(void);
+static void refresh_browser_style_selection(void);
 static void apply_theme_cb(void *unused);
+static void rebuild_browser_cb(void *unused);
+static void apply_coverflow_scales(void);
 static void load_settings(void);
 static void save_transition(ui_transition_t style);
 static void save_theme(uint8_t idx);
+static void save_browser_style(uint8_t idx);
+static void on_browser_style_option(lv_event_t *e);
 
 static lv_color_t card_color(size_t i)
 {
@@ -205,6 +222,10 @@ static lv_color_t card_color(size_t i)
     size_t n = sizeof(palettes) / sizeof(palettes[0]);
     return lv_palette_darken(palettes[i % n], 1);
 }
+
+/* Active card and gap size: differs between carousel and cover flow. */
+static int cs(void) { return s_browser_style == BROWSER_COVERFLOW ? CARD_SIZE_CF : CARD_SIZE; }
+static int cg(void) { return s_browser_style == BROWSER_COVERFLOW ? CARD_GAP_CF  : CARD_GAP; }
 
 static void style_label(lv_obj_t *label, const lv_font_t *font,
                         lv_color_t color, int16_t y)
@@ -238,9 +259,9 @@ static void build_browser_screen(void)
     lv_obj_set_style_pad_top(s_browser_scroller, 0, 0);
     lv_obj_set_style_pad_bottom(s_browser_scroller, 0, 0);
     /* Pad left/right so the first and last cards can fully snap to centre. */
-    lv_obj_set_style_pad_left (s_browser_scroller, (SCREEN_W - CARD_SIZE) / 2, 0);
-    lv_obj_set_style_pad_right(s_browser_scroller, (SCREEN_W - CARD_SIZE) / 2, 0);
-    lv_obj_set_style_pad_column(s_browser_scroller, CARD_GAP, 0);
+    lv_obj_set_style_pad_left (s_browser_scroller, (SCREEN_W - cs()) / 2, 0);
+    lv_obj_set_style_pad_right(s_browser_scroller, (SCREEN_W - cs()) / 2, 0);
+    lv_obj_set_style_pad_column(s_browser_scroller, cg(), 0);
     lv_obj_set_flex_flow(s_browser_scroller, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_browser_scroller, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -257,7 +278,12 @@ static void build_browser_screen(void)
         const uint16_t      *thumb = album_thumb_data(i);
 
         lv_obj_t *card = lv_obj_create(s_browser_scroller);
-        lv_obj_set_size(card, CARD_SIZE, CARD_SIZE);
+        lv_obj_set_size(card, cs(), cs());
+        /* Cover flow: set scale pivot to card centre so side cards shrink inward. */
+        if (s_browser_style == BROWSER_COVERFLOW) {
+            lv_obj_set_style_transform_pivot_x(card, cs() / 2, 0);
+            lv_obj_set_style_transform_pivot_y(card, cs() / 2, 0);
+        }
         lv_obj_set_style_radius(card, 0, 0);
         lv_obj_set_style_border_width(card, 0, 0);
         lv_obj_set_style_pad_all(card, 0, 0);
@@ -313,8 +339,23 @@ static void build_browser_screen(void)
         s_centered_card = 0;
     }
 
-    /* WiFi-strength bars: added at cp7 (needs esp_wifi_sta_get_rssi routed
-     * through esp_wifi_remote). Omitted here to keep cp4 link-light. */
+    /* Apply initial cover flow scales (index-based, scroll_x=0 = card 0 centred). */
+    apply_coverflow_scales();
+
+    /* WiFi-strength indicator: four rising bars at top-left. */
+    for (int i = 0; i < 4; i++) {
+        int h = 6 + i * 4;   /* 6, 10, 14, 18 px tall */
+        lv_obj_t *bar = lv_obj_create(s_screen_browser);
+        lv_obj_set_size(bar, 5, h);
+        lv_obj_set_pos(bar, 6 + i * 8, 22 - h);
+        lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_border_width(bar, 0, 0);
+        lv_obj_set_style_radius(bar, 0, 0);
+        lv_obj_set_style_pad_all(bar, 0, 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(s_th->track), 0);
+        s_wifi_bars[i] = bar;
+    }
 
     /* "^ now playing" hint at the bottom edge. */
     lv_obj_t *hint = lv_label_create(s_screen_browser);
@@ -460,7 +501,7 @@ static void build_settings_screen(void)
     s_screen_settings = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_settings, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_settings, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(s_screen_settings, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(s_screen_settings, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t *back = lv_button_create(s_screen_settings);
     lv_obj_set_size(back, 120, 44);
@@ -525,8 +566,32 @@ static void build_settings_screen(void)
         s_theme_labels[i] = lbl;
     }
 
+    lv_obj_t *br_section = lv_label_create(s_screen_settings);
+    lv_label_set_text(br_section, "Browser style");
+    lv_obj_set_style_text_color(br_section, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(br_section, &lv_font_montserrat_24, 0);
+    lv_obj_align(br_section, LV_ALIGN_TOP_LEFT, 24, 420);
+
+    /* Carousel | Cover Flow side by side. */
+    for (int i = 0; i < BROWSER_STYLE_COUNT; i++) {
+        lv_obj_t *btn = lv_button_create(s_screen_settings);
+        lv_obj_set_size(btn, 250, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -134 : 134, 456);
+        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_add_event_cb(btn, on_browser_style_option, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_center(lbl);
+
+        s_brstyle_btns[i]   = btn;
+        s_brstyle_labels[i] = lbl;
+    }
+
     refresh_settings_selection();
     refresh_theme_selection();
+    refresh_browser_style_selection();
 }
 
 static void on_open_settings(lv_event_t *e)
@@ -586,7 +651,7 @@ static void apply_theme_cb(void *unused)
     if (saved_card > 0 && s_browser_scroller) {
         lv_obj_update_layout(s_browser_scroller);
         lv_obj_scroll_to_x(s_browser_scroller,
-                           (int32_t)saved_card * (CARD_SIZE + CARD_GAP),
+                           (int32_t)saved_card * (cs() + cg()),
                            LV_ANIM_OFF);
         s_centered_card = saved_card;
         s_target_card   = saved_card;
@@ -595,6 +660,7 @@ static void apply_theme_cb(void *unused)
             lv_label_set_text(s_browser_title,  a->title);
             lv_label_set_text(s_browser_artist, a->artist);
         }
+        apply_coverflow_scales();
     }
 
     /* Restore now-playing labels from cached track state. */
@@ -623,6 +689,10 @@ static void load_settings(void)
         s_theme = t;
         s_th    = (t == THEME_LIGHT_IDX) ? &THEME_LIGHT : &THEME_DARK;
     }
+    uint8_t bs = BROWSER_CAROUSEL;
+    if (nvs_get_u8(h, NVS_KEY_BROWSER_STYLE, &bs) == ESP_OK && bs < BROWSER_STYLE_COUNT) {
+        s_browser_style = bs;
+    }
     nvs_close(h);
 }
 
@@ -640,6 +710,15 @@ static void save_theme(uint8_t idx)
     nvs_handle_t h;
     if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_u8(h, NVS_KEY_THEME, idx);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void save_browser_style(uint8_t idx)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_BROWSER_STYLE, idx);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -678,6 +757,9 @@ void ui_init(lv_image_dsc_t *art_dsc)
     /* Local-progress simulation -- ticks 200 ms of progress every 200 ms
      * so the bar advances smoothly between Spotify polls. */
     lv_timer_create(progress_timer_cb, 200, NULL);
+
+    /* WiFi-strength indicator: poll RSSI every 5 s. */
+    lv_timer_create(wifi_timer_cb, 5000, NULL);
 
     bsp_display_unlock();
 }
@@ -869,6 +951,8 @@ static int find_centered_card(void)
 
 static void on_browser_scroll(lv_event_t *e)
 {
+    (void)e;
+    apply_coverflow_scales(); /* no-op in carousel mode */
     int idx = find_centered_card();
     /* When a touch/pointer is driving the scroll, adopt the visually centered
      * card as the encoder's target so the two input paths stay in sync. During
@@ -881,7 +965,6 @@ static void on_browser_scroll(lv_event_t *e)
     if (!a) return;
     if (s_browser_title)  lv_label_set_text(s_browser_title, a->title);
     if (s_browser_artist) lv_label_set_text(s_browser_artist, a->artist);
-    (void)e;
 }
 
 static void update_progress_bar(void)
@@ -907,6 +990,108 @@ static void progress_timer_cb(lv_timer_t *t)
         s_track.progress_ms = s_track.duration_ms;
     }
     update_progress_bar();
+}
+
+/* Scale and dim cards based on their distance from the viewport centre.
+ * Uses the scroller's left padding + card layout math (no screen coords
+ * needed) so it works before the screen is loaded for the first time. */
+static void apply_coverflow_scales(void)
+{
+    if (s_browser_style != BROWSER_COVERFLOW || !s_browser_scroller) return;
+    int32_t scroll_x   = lv_obj_get_scroll_left(s_browser_scroller);
+    int32_t pad_left   = (SCREEN_W - cs()) / 2;
+    int32_t step       = cs() + cg();
+    int32_t scr_center = SCREEN_W / 2;
+    for (size_t i = 0; i < s_card_count; i++) {
+        if (!s_cards[i]) continue;
+        int32_t card_cx = pad_left + (int32_t)i * step + cs() / 2 - scroll_x;
+        int32_t dist = card_cx - scr_center;
+        if (dist < 0) dist = -dist;
+        /* Scale: LV_SCALE_NONE (256) at centre, ~180 one step away, min 150. */
+        int32_t scale = LV_SCALE_NONE - dist * 76 / step;
+        if (scale < 150) scale = 150;
+        lv_obj_set_style_transform_scale(s_cards[i], scale, 0);
+        /* Opacity: full at centre, dims for side cards, min 100/255. */
+        int32_t opa = 255 - dist * 95 / step;
+        if (opa < 100) opa = 100;
+        lv_obj_set_style_opa(s_cards[i], (lv_opa_t)opa, 0);
+    }
+}
+
+static void refresh_browser_style_selection(void)
+{
+    for (int i = 0; i < BROWSER_STYLE_COUNT; i++) {
+        if (!s_brstyle_btns[i] || !s_brstyle_labels[i]) continue;
+        bool sel = (i == (int)s_browser_style);
+        lv_obj_set_style_bg_color(s_brstyle_btns[i],
+            sel ? lv_color_hex(THEME_ACCENT) : lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_text_color(s_brstyle_labels[i],
+            sel ? lv_color_white() : lv_color_hex(s_th->text2), 0);
+        if (sel) {
+            char buf[24];
+            snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", k_browser_style_names[i]);
+            lv_label_set_text(s_brstyle_labels[i], buf);
+        } else {
+            lv_label_set_text(s_brstyle_labels[i], k_browser_style_names[i]);
+        }
+    }
+}
+
+static void on_browser_style_option(lv_event_t *e)
+{
+    uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx >= BROWSER_STYLE_COUNT || idx == s_browser_style) return;
+    s_browser_style = idx;
+    save_browser_style(idx);
+    refresh_browser_style_selection();
+    ESP_LOGI(TAG, "browser style -> %s", k_browser_style_names[idx]);
+    /* Rebuild the browser screen in the background -- user stays in settings. */
+    lv_async_call(rebuild_browser_cb, NULL);
+}
+
+static void rebuild_browser_cb(void *unused)
+{
+    (void)unused;
+    int     saved_card  = s_centered_card;
+    lv_obj_t *old_browser = s_screen_browser;
+
+    build_browser_screen();
+
+    if (saved_card > 0 && s_browser_scroller) {
+        lv_obj_update_layout(s_browser_scroller);
+        lv_obj_scroll_to_x(s_browser_scroller,
+                           (int32_t)saved_card * (cs() + cg()),
+                           LV_ANIM_OFF);
+        s_centered_card = saved_card;
+        s_target_card   = saved_card;
+        const album_entry_t *a = albums_get((size_t)saved_card);
+        if (a && s_browser_title && s_browser_artist) {
+            lv_label_set_text(s_browser_title,  a->title);
+            lv_label_set_text(s_browser_artist, a->artist);
+        }
+    }
+    apply_coverflow_scales();
+    lv_obj_delete(old_browser);
+}
+
+static void wifi_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    int bars = 0;
+    int rssi = 0;
+    if (esp_wifi_sta_get_rssi(&rssi) == ESP_OK) {
+        if      (rssi >= -55) bars = 4;
+        else if (rssi >= -65) bars = 3;
+        else if (rssi >= -75) bars = 2;
+        else                  bars = 1;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (!s_wifi_bars[i]) continue;
+        lv_color_t c = (i < bars)
+            ? lv_color_hex(s_th->text)
+            : lv_color_hex(s_th->track);
+        lv_obj_set_style_bg_color(s_wifi_bars[i], c, 0);
+    }
 }
 
 bool ui_is_now_playing(void)
