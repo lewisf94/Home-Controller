@@ -3,8 +3,9 @@
 
 The album list, order and metadata come from the single source of truth
 (spotify-albums-list.txt -> gen_albums.py). This script only maps each
-album to its cover image and bakes the 120x120 little-endian RGB565
-thumbs, in the *same* sorted order as albums.c, into album_thumbs.bin.
+album to its cover image and bakes the little-endian RGB565 thumbs, in the
+*same* sorted order as albums.c, into album_thumbs.bin -- at a per-build size
+(120 px for the CYD's 320x240 panel, 220 px for the Waveshare P4's 800x480).
 
     python scripts/embed_albums_idf.py
 
@@ -25,18 +26,21 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gen_albums import parse_master, sort_albums  # noqa: E402
 
-SIZE = 120  # matches CARD_SIZE in ui.c so each thumb fills its card exactly.
 PLACEHOLDER_RGB = (32, 32, 32)  # neutral tile for albums with no cover yet.
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "scripts" / "input_albums"
 
-# album_thumbs.bin is embedded by each IDF build's CMakeLists (EMBED_FILES);
-# write every build's copy so they all stay aligned with albums.c.
-OUT_DIRS = [
-    REPO_ROOT / "cyd" / "esp-idf" / "main",
-    REPO_ROOT / "cyd" / "esp-idf-ha" / "main",
-    REPO_ROOT / "waveshare" / "esp-idf" / "main",
+# album_thumbs.bin is embedded by each IDF build's CMakeLists (EMBED_FILES).
+# Each build bakes at the size matching its CARD_SIZE in ui.c (and
+# ALBUM_THUMB_W/H in album_thumbs.h): the CYD (320x240) uses 120 px cards, the
+# Waveshare P4 (800x480) uses 220 px. Covers downscale from the 640 px source
+# either way, so thumbs stay sharp. Keep each entry in sync with that build's
+# ALBUM_THUMB_W/H.
+OUT_TARGETS = [
+    (REPO_ROOT / "cyd" / "esp-idf" / "main", 120),
+    (REPO_ROOT / "cyd" / "esp-idf-ha" / "main", 120),
+    (REPO_ROOT / "waveshare" / "esp-idf" / "main", 220),
 ]
 
 # Spotify album id -> cover filename in input_albums/. Optional: an id with
@@ -74,25 +78,25 @@ def find_cover(album_id: str) -> Path | None:
     return None
 
 
-def encode(path: Path) -> bytes:
+def encode(path: Path, size: int) -> bytes:
     try:
         from PIL import Image
     except ImportError:
         sys.exit("Install Pillow to encode covers:  pip install Pillow")
-    img = Image.open(path).convert("RGB").resize((SIZE, SIZE), Image.Resampling.LANCZOS)
-    return _to_rgb565(img.load(), lambda x, y, px: px[x, y])
+    img = Image.open(path).convert("RGB").resize((size, size), Image.Resampling.LANCZOS)
+    return _to_rgb565(size, img.load(), lambda x, y, px: px[x, y])
 
 
-def placeholder() -> bytes:
+def placeholder(size: int) -> bytes:
     r, g, b = PLACEHOLDER_RGB
-    return _to_rgb565(None, lambda x, y, _: (r, g, b))
+    return _to_rgb565(size, None, lambda x, y, _: (r, g, b))
 
 
-def _to_rgb565(px, get) -> bytes:
-    out = bytearray(SIZE * SIZE * 2)
+def _to_rgb565(size: int, px, get) -> bytes:
+    out = bytearray(size * size * 2)
     i = 0
-    for y in range(SIZE):
-        for x in range(SIZE):
+    for y in range(size):
+        for x in range(size):
             r, g, b = get(x, y, px)
             v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
             out[i] = v & 0xFF
@@ -103,26 +107,37 @@ def _to_rgb565(px, get) -> bytes:
 
 def main() -> None:
     albums = sort_albums(parse_master())
-    blob = bytearray()
-    missing = []
 
+    # Resolve each album to a cover (or placeholder) once -- the mapping is the
+    # same regardless of thumb size.
+    covers = []   # (cover_path_or_None) in album order
+    missing = []
     for idx, (title, artist, uri) in enumerate(albums):
         album_id = uri.rsplit(":", 1)[-1]
         cover = find_cover(album_id)
+        covers.append(cover)
         if cover:
-            blob.extend(encode(cover))
             print(f"  [{idx:2d}] {artist:20s} -- {title:34s} <- {cover.name}")
         else:
-            blob.extend(placeholder())
             missing.append((artist, title, album_id))
             print(f"  [{idx:2d}] {artist:20s} -- {title:34s} <- (placeholder, no cover)")
 
-    for out_dir in OUT_DIRS:
-        if out_dir.is_dir():
-            (out_dir / "album_thumbs.bin").write_bytes(blob)
-            print(f"wrote {(out_dir / 'album_thumbs.bin').relative_to(REPO_ROOT)}  ({len(blob)} bytes)")
+    # Bake once per distinct size, then write that blob to every build dir using it.
+    sizes = {}
+    for path, size in OUT_TARGETS:
+        sizes.setdefault(size, []).append(path)
 
-    print(f"\n{len(albums)} thumbs @ {SIZE}x{SIZE}, in albums.c order.")
+    for size, paths in sizes.items():
+        blob = bytearray()
+        for cover in covers:
+            blob.extend(encode(cover, size) if cover else placeholder(size))
+        for out_dir in paths:
+            if out_dir.is_dir():
+                (out_dir / "album_thumbs.bin").write_bytes(blob)
+                print(f"wrote {(out_dir / 'album_thumbs.bin').relative_to(REPO_ROOT)}  "
+                      f"({size}x{size}, {len(blob)} bytes)")
+
+    print(f"\n{len(albums)} thumbs, in albums.c order.")
     if missing:
         print(f"\n{len(missing)} album(s) need a cover in {SRC_DIR.relative_to(REPO_ROOT)}/ "
               f"(named <id>.jpg or .png):")

@@ -13,8 +13,9 @@ the line in the canonical  "Title", "Artist", "spotify:album:<id>",  form. It
 also normalises casing on every album line (lowercasing stray articles like
 "The"/"A" that Spotify title-cases). Blank lines and notes are left untouched.
 Newly resolved albums also get their cover downloaded to
-scripts/input_albums/<id>.jpg (so embed_albums_idf.py finds it). Finally it
-regenerates the album source files.
+scripts/input_albums/<id>.jpg. Finally it regenerates the album source files
+and rebakes the embedded thumbnail blob (album_thumbs.bin) from the covers, so
+a single run does everything: resolve -> download covers -> albums.c -> thumbs.
 
 Note: if you want an exact custom casing, set it in the master and use
 gen_albums.py to regenerate -- add_albums.py would re-normalise it.
@@ -30,6 +31,7 @@ set -- nothing is written to disk. To skip the prompt, set them first:
 
 Flags:  --no-covers   skip cover-art download
          --no-generate skip regenerating albums.c (just enrich the master)
+         --no-embed    skip rebaking album_thumbs.bin (needs Pillow)
 """
 from __future__ import annotations
 
@@ -40,6 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_albums  # noqa: E402
+import embed_albums_idf  # noqa: E402
 
 MASTER = gen_albums.MASTER
 INPUT_ALBUMS = Path(__file__).resolve().parent / "input_albums"
@@ -129,6 +132,7 @@ def _download_cover(album_id: str, images: list) -> None:
 def main() -> None:
     do_covers = "--no-covers" not in sys.argv
     do_generate = "--no-generate" not in sys.argv
+    do_embed = "--no-embed" not in sys.argv
 
     if not MASTER.exists():
         sys.exit(f"Missing master album list: {MASTER}")
@@ -174,8 +178,10 @@ def main() -> None:
     if do_generate:
         print()
         gen_albums.main()
-        print("\nNote: run  python scripts/embed_albums_idf.py  to rebake "
-              "album_thumbs.bin from the new covers.")
+
+    if do_embed:
+        print()
+        embed_albums_idf.main()
 
 
 if __name__ == "__main__":

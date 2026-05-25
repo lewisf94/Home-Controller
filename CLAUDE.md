@@ -392,7 +392,11 @@ and 2 (WiFi) verified on hardware; cp3 (Spotify) is in progress. A future
   Spotify Web API (Client-Credentials flow; creds from `SPOTIPY_CLIENT_ID` /
   `SPOTIPY_CLIENT_SECRET` env vars or an interactive prompt), normalises casing
   (lowercasing stray title-cased articles), downloads each cover into
-  `input_albums/<id>.jpg`, and runs gen_albums.
+  `input_albums/<id>.jpg`, then runs gen_albums **and** rebakes
+  `album_thumbs.bin` — so one command does the whole pipeline (resolve →
+  covers → albums.c → thumbs). Flags: `--no-covers`, `--no-generate`,
+  `--no-embed` opt out of individual stages. (`embed_albums_idf.py` still runs
+  standalone if you only added a cover by hand.)
 - **Browser thumbnails stay aligned via the same source.** `album_thumbs.bin` is
   indexed *positionally* by album order, so it must match `albums.c`.
   `scripts/embed_albums_idf.py` imports the sorted list from `gen_albums.py` and
