@@ -21,11 +21,11 @@
  *
  *   Now-playing screen
  *     y=  6       : "v albums" hint (swipe down = back, left = next, right = prev)
- *     y= 32..352  : 320x320 album art (Spotify 640px JPEG decoded /2), centred
+ *     y= 48..368  : 320x320 album art (Spotify 640px JPEG decoded /2), centred
  *                   tap anywhere on screen = play/pause
- *     y=366       : track title (montserrat 28)
- *     y=414       : artist (montserrat 24, dimmer)
- *     y=456       : 520x12 progress bar
+ *     y=380       : track title (montserrat 28)
+ *     y=418       : artist (montserrat 24, dimmer)
+ *     y=452       : 520x12 progress bar (drag to seek)
  *
  * Local progress simulation: an LVGL timer ticks every 200 ms and adds
  * 200 ms to the cached progress_ms when is_playing is true, so the bar
@@ -57,15 +57,22 @@ static const char *TAG = "ui";
 #define ART_W         320
 #define ART_H         320
 #define ART_X          ((SCREEN_W - ART_W) / 2)
-#define ART_Y          32
+#define ART_Y          48
 
 #define PROG_W        520
 #define PROG_H         12
 #define PROG_X         ((SCREEN_W - PROG_W) / 2)
-#define PROG_Y        456
+#define PROG_Y        452
 
-#define NP_TITLE_Y    366
-#define NP_ARTIST_Y   414
+/* Generous touch band around the thin progress bar: a drag that starts here is
+ * a scrub, not a screen swipe. Wider than the bar so 0%/100% are easy to grab. */
+#define SEEK_OV_W     (PROG_W + 80)
+#define SEEK_OV_H      72
+#define SEEK_OV_X     ((SCREEN_W - SEEK_OV_W) / 2)
+#define SEEK_OV_Y     (PROG_Y + PROG_H / 2 - SEEK_OV_H / 2)
+
+#define NP_TITLE_Y    380
+#define NP_ARTIST_Y   418
 
 #define BR_TITLE_Y    298
 #define BR_ARTIST_Y   340
@@ -81,6 +88,7 @@ static lv_obj_t *s_np_progress = NULL;
 static lv_obj_t *s_vol_hud     = NULL;
 
 static lv_timer_t *s_vol_hud_timer = NULL;
+static bool        s_seeking        = false;
 
 static lv_obj_t *s_browser_scroller = NULL;
 static lv_obj_t *s_browser_title    = NULL;
@@ -164,6 +172,10 @@ static void on_settings_back(lv_event_t *e);
 static void on_transition_option(lv_event_t *e);
 static void on_theme_option(lv_event_t *e);
 static void on_np_tap(lv_event_t *e);
+static void on_seek_start(lv_event_t *e);
+static void on_seek_pressing(lv_event_t *e);
+static void on_seek_released(lv_event_t *e);
+static void on_seek_click_absorb(lv_event_t *e);
 static void refresh_settings_selection(void);
 static void refresh_theme_selection(void);
 static void apply_theme_cb(void *unused);
@@ -363,6 +375,25 @@ static void build_np_screen(void)
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(s_np_progress, 2, LV_PART_MAIN);
     lv_obj_set_style_radius(s_np_progress, 2, LV_PART_INDICATOR);
+    lv_obj_remove_flag(s_np_progress, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Transparent touch overlay on top of the bar. Reads raw finger X to compute
+     * seek position and drives lv_bar_set_value directly during drag. The bar
+     * stays the visual source of truth and tracks song timing when not seeking. */
+    lv_obj_t *seek_ov = lv_obj_create(s_screen_np);
+    lv_obj_set_size(seek_ov, SEEK_OV_W, SEEK_OV_H);
+    lv_obj_set_pos(seek_ov, SEEK_OV_X, SEEK_OV_Y);
+    lv_obj_set_style_bg_opa(seek_ov, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_opa(seek_ov, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(seek_ov, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(seek_ov, on_seek_start,        LV_EVENT_PRESSED,   NULL);
+    lv_obj_add_event_cb(seek_ov, on_seek_pressing,     LV_EVENT_PRESSING,  NULL);
+    /* Clear s_seeking + send the seek on BOTH release and press-lost, so a press
+     * that gets reclassified mid-drag can never leave s_seeking stuck true. */
+    lv_obj_add_event_cb(seek_ov, on_seek_released,     LV_EVENT_RELEASED,  NULL);
+    lv_obj_add_event_cb(seek_ov, on_seek_released,     LV_EVENT_PRESS_LOST, NULL);
+    /* Absorb CLICKED so it doesn't bubble to on_np_tap (play/pause). */
+    lv_obj_add_event_cb(seek_ov, on_seek_click_absorb, LV_EVENT_CLICKED,   NULL);
 
     s_vol_hud = lv_label_create(s_screen_np);
     lv_label_set_text(s_vol_hud, "");
@@ -700,8 +731,44 @@ ui_transition_t ui_get_transition_style(void)
 
 static void on_np_tap(lv_event_t *e) { (void)e; ui_request_toggle_play(); }
 
+static void on_seek_start(lv_event_t *e)        { (void)e; s_seeking = true; }
+static void on_seek_click_absorb(lv_event_t *e) { lv_event_stop_bubbling(e); }
+
+static void on_seek_pressing(lv_event_t *e)
+{
+    (void)e;
+    if (!s_np_progress || s_track.duration_ms == 0) return;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t pt;
+    lv_indev_get_point(indev, &pt);
+    /* Map finger X onto the bar's coordinate range. */
+    lv_area_t coords;
+    lv_obj_get_coords(s_np_progress, &coords);
+    int32_t rel = pt.x - coords.x1;
+    int32_t w   = coords.x2 - coords.x1;
+    if (rel < 0) rel = 0;
+    if (rel > w) rel = w;
+    int32_t pct = rel * 1000 / w;
+    s_track.progress_ms = (uint32_t)((uint64_t)pct * s_track.duration_ms / 1000);
+    lv_bar_set_value(s_np_progress, pct, LV_ANIM_OFF);
+}
+
+static void on_seek_released(lv_event_t *e)
+{
+    (void)e;
+    if (!s_seeking) return;          /* RELEASED + PRESS_LOST can both fire */
+    s_seeking = false;
+    if (s_track.duration_ms == 0) return;
+    /* progress_ms was kept in sync by on_seek_pressing; send the final value. */
+    ui_request_seek(s_track.progress_ms);
+}
+
 static void on_gesture(lv_event_t *e)
 {
+    /* A drag that began on the progress bar is a scrub, not a swipe. on_seek_start
+     * (PRESSED) runs before the gesture is detected, so s_seeking is already set. */
+    if (s_seeking) return;
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
     lv_dir_t dir = lv_indev_get_gesture_dir(indev);
@@ -718,7 +785,12 @@ static void on_gesture(lv_event_t *e)
         ui_request_next();
     } else if (dir == LV_DIR_RIGHT && active == s_screen_np) {
         lv_indev_wait_release(indev);
-        ui_request_prev();
+        /* Spotify-style: restart from the beginning if more than 3 s into the
+         * track; go to previous track if still in the opening few seconds. */
+        if (s_track.progress_ms > 3000)
+            ui_request_seek(0);
+        else
+            ui_request_prev();
     }
     (void)e;
 }
@@ -783,7 +855,7 @@ static void on_browser_scroll(lv_event_t *e)
 
 static void update_progress_bar(void)
 {
-    if (!s_np_progress) return;
+    if (!s_np_progress || s_seeking) return;
     int32_t pct = 0;
     if (s_track.duration_ms > 0) {
         uint32_t p = s_track.progress_ms;
@@ -796,7 +868,7 @@ static void update_progress_bar(void)
 static void progress_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!s_track.is_playing || s_track.duration_ms == 0) return;
+    if (s_seeking || !s_track.is_playing || s_track.duration_ms == 0) return;
     /* Advance the cached progress at the timer rate. The next spotify
      * poll will overwrite this value with the server's truth. */
     s_track.progress_ms += 200;
