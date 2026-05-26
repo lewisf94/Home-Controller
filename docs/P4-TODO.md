@@ -86,3 +86,61 @@ art). Ordered by priority. Update as items land.
   (show a "no active device" hint) instead of a silent FAILED log.
 - Performance (after stability): PPA hardware acceleration, RAM art decode
   (PSRAM), adaptive poll backoff. TLS poll keep-alive is already done (#2.6).
+
+## Look into next (noted 2026-05-26)
+
+- **Playback control 403 = "Restricted device" — RESOLVED 2026-05-26 (environmental).**
+  Writes (`play`/`next`/`previous`/`seek`) returned `403 {"message":"Restricted
+  device"}` while the poll worked. NOT Premium, NOT scope, NOT a stale token
+  (confirmed via the 403 body now logged in `spotify.c`). Cause: the active
+  playback device was restricted (`is_restricted: true`) — for Lewis the **Sonos
+  speaker and laptop** (Spotify Connect) are restricted; playing on the **iPhone**
+  the controller drives playback fine. So control works on a non-restricted
+  device; nothing to fix in code. Don't assume which device type is restricted —
+  check the `is_restricted` flag (Sonos is a classic restricted device).
+  Remaining OPTIONAL polish: (a) the device switcher below (transfer to a
+  controllable device from the controller); (b) on a "Restricted device" 403,
+  show an on-screen hint instead of the silent FAILED log.
+- **Sonos direct control — DONE for transport/volume (2026-05-26).** `sonos.c`
+  drives play/pause/next/prev/seek/volume over UPnP/SOAP (port 1400) when the
+  active device is restricted; `main.c` routes by matching the active device
+  name to `SONOS_DEVICES` (name->IP map in secrets.h; single `SONOS_HOST` also
+  works). Verified on two speakers across two Sonos systems. **Still TODO:**
+  start a specific album ON the Sonos — needs UPnP `SetAVTransportURI` with a
+  `x-rincon-cpcontainer:...spotify%3aalbum%3a<id>` URI + DIDL metadata carrying
+  the household's Spotify service id + account serial (undocumented, will need
+  trial/error against the live Sonos). `SCMD_PLAY_ALBUM` still goes via Spotify.
+- **Active-device switching (requested) — build after the 403 is fixed.** Uses
+  the same `user-modify-playback-state` permission, so it can't work until the
+  token above is sorted. Spec: `GET /me/player/devices` → parse the `devices[]`
+  array (id/name/type/is_active/volume_percent); `PUT /me/player` with body
+  `{"device_ids":["<id>"],"play":true}` to transfer. New `spotify_get_devices()`
+  + `spotify_transfer_playback(id)` in `spotify.c` (needs a JSON-array iterator —
+  current scanner only has `json_arr_first_obj`); a "DEVICES" list screen off
+  Settings (tap a device to switch). Bonus: switching to a desktop/Connect
+  speaker also sidesteps the phone-volume limitation.
+- **Cover Flow — show more covers either side.** Today only 1 shows each side
+  because card slots are 248 px apart (2nd neighbour is off-screen). Needs a
+  cover-flow-specific tighter slot spacing AND centre-on-top z-ordering; both
+  touch the centre-snap math + the fragile image-transform path, so do it as an
+  isolated, separately-verified change. Watch: LVGL negative `pad_column` support
+  (if unhonored, `step` math desyncs from layout and breaks centring).
+- **Aesthetic pass (retro-industrial / "TE" look).** Highest-impact first:
+  functional colour-coded transport keys (e.g. prev=blue `#1270b8`,
+  play=green `#1aa167`, next=yellow `#ffc003`, red `#ce2021` for active), keeping
+  one accent for the progress bar; monospace tabular numerals for timestamps /
+  volume % (caveat: a 2nd embedded TTF eats the ~4% app-flash headroom and
+  re-opens the tiny_ttf kerning-crash surface); circular knob-style transport
+  buttons; hairline section dividers. Start with the colour-coded keys (no new
+  fonts, board-safe — colours only).
+- **Album capacity is flash-bound.** UI cap `MAX_CARDS = 64` (currently 56). Real
+  limit: thumbnails are embedded in the 8 MB app partition at 220x220 (~95 KB
+  each) and it's ~96% full → only ~3-4 more before it won't build. Flash is
+  32 MB with ~20 MB unused (8 MB app + 4 MB storage). Options: grow the app
+  partition in `partitions.csv` (cleanest, ~85+ more albums), shrink thumbs
+  (160x160 ~51 KB / 120x120 ~29 KB), or move thumbs to a data partition loaded at
+  runtime. Raise `MAX_CARDS` alongside.
+- **Confirm prev-button intent.** Prev (key + swipe-right) currently restarts the
+  track if >3 s in, else goes to previous (Spotify-style). Confirm that's wanted
+  vs. always-previous — the "slider jumps to start" the user saw was this seek-to-0
+  (which also 403'd, so it didn't actually restart on the server).
