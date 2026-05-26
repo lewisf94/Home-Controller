@@ -55,25 +55,44 @@ static const char *TAG = "ui";
 #define SCROLLER_Y     40
 #define SCROLLER_H    244
 
-#define ART_W         320
-#define ART_H         320
+/* Now-playing layout, 8px grid. Art is centred up top; below it the title,
+ * artist, a thin progress bar flanked by elapsed/remaining timestamps, then a
+ * row of three square transport keys at the bottom edge. Swipe gestures still
+ * work as shortcuts. */
+#define ART_W         256
+#define ART_H         256
 #define ART_X          ((SCREEN_W - ART_W) / 2)
-#define ART_Y          48
+#define ART_Y          44
 
 #define PROG_W        520
-#define PROG_H         12
+#define PROG_H          6
 #define PROG_X         ((SCREEN_W - PROG_W) / 2)
-#define PROG_Y        452
+#define PROG_Y        392
 
 /* Generous touch band around the thin progress bar: a drag that starts here is
- * a scrub, not a screen swipe. Wider than the bar so 0%/100% are easy to grab. */
+ * a scrub, not a screen swipe. Wider than the bar so 0%/100% are easy to grab.
+ * The transport keys sit just below and are created after the overlay so they
+ * stay on top in the small region where the two touch zones meet. */
 #define SEEK_OV_W     (PROG_W + 80)
-#define SEEK_OV_H      72
+#define SEEK_OV_H      48
 #define SEEK_OV_X     ((SCREEN_W - SEEK_OV_W) / 2)
 #define SEEK_OV_Y     (PROG_Y + PROG_H / 2 - SEEK_OV_H / 2)
 
-#define NP_TITLE_Y    380
-#define NP_ARTIST_Y   418
+/* Elapsed / remaining timestamps either side of the bar. */
+#define TS_W           64
+#define TS_Y          (PROG_Y - 14)
+
+/* Transport keys: three 56px squares, gap 28, centred (group centre = 400). */
+#define TKEY_SZ        56
+#define TKEY_GAP       28
+#define TKEY_Y        414
+
+/* Draggable seek thumb -- shown only while scrubbing. */
+#define THUMB_W        14
+#define THUMB_H        26
+
+#define NP_TITLE_Y    308
+#define NP_ARTIST_Y   348
 
 #define BR_TITLE_Y    298
 #define BR_ARTIST_Y   340
@@ -93,10 +112,27 @@ static lv_obj_t *s_np_art      = NULL;
 static lv_obj_t *s_np_title    = NULL;
 static lv_obj_t *s_np_artist   = NULL;
 static lv_obj_t *s_np_progress = NULL;
+static lv_obj_t *s_np_elapsed  = NULL;   /* M:SS left of the bar */
+static lv_obj_t *s_np_remain   = NULL;   /* -M:SS right of the bar */
+static lv_obj_t *s_seek_thumb  = NULL;   /* drag knob, shown only while scrubbing */
+static lv_obj_t *s_np_play_lbl = NULL;   /* centre transport-key icon (play/pause) */
 static lv_obj_t *s_vol_hud     = NULL;
 
 static lv_timer_t *s_vol_hud_timer = NULL;
 static bool        s_seeking        = false;
+static bool        s_hint_bounced   = false;   /* browser hint bounces once, first boot only */
+
+/* Seek reconciliation. After a local seek the /me/player poll keeps reporting
+ * the pre-seek position for a cycle or two (Spotify lags the PUT), which would
+ * snap the bar backwards then forwards again. While the guard is armed we keep
+ * the locally-sought position and ignore the server's progress_ms, until either
+ * the server catches up (within TOL of where we expect to be) or the deadline
+ * passes. A track change drops the guard immediately. */
+#define SEEK_GUARD_MAX_MS  8000   /* hard cap on ignoring server progress */
+#define SEEK_GUARD_TOL_MS  3000   /* server within this of expected => trust it */
+static uint32_t s_seek_guard_until = 0;   /* lv_tick deadline; 0 = inactive */
+static uint32_t s_seek_anchor_ms   = 0;   /* position we sought to */
+static uint32_t s_seek_anchor_tick = 0;   /* lv_tick when we sought */
 
 static lv_obj_t *s_browser_scroller = NULL;
 static lv_obj_t *s_browser_title    = NULL;
@@ -142,11 +178,14 @@ typedef struct {
     uint32_t track;    /* progress-bar track */
 } theme_t;
 
-/* Charcoal palette: dark grey (not pure black) + off-white text + neutral
- * greys, with a saturated orange primary accent and a red secondary accent.
- * Light theme is a warm off-white variant sharing the same accents.
- * { bg, surface, text, text2, dim, track }. */
+/* Charcoal palette: dark grey + off-white text + neutral greys. BLACK is the
+ * same neutrals over a pure #000 background (surface kept slightly raised so
+ * cards/buttons still read). NOTE: this panel is an IPS LCD with an always-on
+ * backlight, so pure black does NOT save power vs charcoal -- BLACK exists for
+ * the look / side-by-side comparison only. Light theme is a warm off-white
+ * variant sharing the same accents. { bg, surface, text, text2, dim, track }. */
 static const theme_t THEME_DARK  = { 0x121212, 0x1E1E1E, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x2C2C2C };
+static const theme_t THEME_BLACK = { 0x000000, 0x141414, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x242424 };
 static const theme_t THEME_LIGHT = { 0xECEAE6, 0xDAD6CF, 0x1A1A1A, 0x57534C, 0x8C877E, 0xC6C1B8 };
 static const theme_t *s_th = &THEME_DARK;
 
@@ -155,8 +194,11 @@ static const theme_t *s_th = &THEME_DARK;
  * mid-tone saturated hues chosen to read on both the charcoal and cream
  * backgrounds (no pale/yellow). One accent drives selection highlights AND the
  * live elements (progress bar). */
-enum { THEME_DARK_IDX = 0, THEME_LIGHT_IDX = 1, THEME_COUNT = 2 };
-static uint8_t s_theme = THEME_DARK_IDX;   /* light/dark mode */
+enum { THEME_DARK_IDX = 0, THEME_BLACK_IDX = 1, THEME_LIGHT_IDX = 2, THEME_COUNT = 3 };
+static const theme_t *const k_theme_palettes[THEME_COUNT] = {
+    &THEME_DARK, &THEME_BLACK, &THEME_LIGHT,
+};
+static uint8_t s_theme = THEME_DARK_IDX;   /* dark / black / light mode */
 
 enum { ACCENT_ORANGE = 0, ACCENT_RED, ACCENT_GREEN, ACCENT_PURPLE, ACCENT_COUNT };
 static uint8_t s_accent = ACCENT_ORANGE;
@@ -175,6 +217,7 @@ static uint32_t accent_color(void) { return k_accents[s_accent]; }
 enum { BROWSER_CAROUSEL = 0, BROWSER_FOCUS = 1, BROWSER_COVERFLOW = 2,
        BROWSER_STYLE_COUNT = 3 };
 static uint8_t s_browser_style = BROWSER_CAROUSEL;
+static bool    s_show_sel_line = true;   /* centred-card underline (Settings toggle) */
 
 /* True for any style that transforms cards per scroll position (Focus + CF). */
 #define BROWSER_STYLE_TRANSFORMS(s) ((s) == BROWSER_FOCUS || (s) == BROWSER_COVERFLOW)
@@ -189,17 +232,21 @@ static lv_obj_t *s_accent_btns[ACCENT_COUNT]             = {0};
 static lv_obj_t *s_accent_labels[ACCENT_COUNT]           = {0};
 static lv_obj_t *s_brstyle_btns[BROWSER_STYLE_COUNT]      = {0};
 static lv_obj_t *s_brstyle_labels[BROWSER_STYLE_COUNT]    = {0};
+static lv_obj_t *s_sel_line        = NULL;   /* the centred-card underline object */
+static lv_obj_t *s_line_toggle_btn = NULL;   /* Settings ON/OFF toggle for it */
+static lv_obj_t *s_line_toggle_lbl = NULL;
 
 #define NVS_SETTINGS_NS       "settings"
 #define NVS_KEY_TRANSITION    "transition"
 #define NVS_KEY_THEME         "theme"
 #define NVS_KEY_ACCENT        "accent"
 #define NVS_KEY_BROWSER_STYLE "browser_style"
+#define NVS_KEY_SEL_LINE      "sel_line"
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
 };
-static const char *const k_theme_names[THEME_COUNT] = { "DARK", "LIGHT" };
+static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT" };
 static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSEL", "FOCUS", "COVER FLOW" };
 
 /* Cached track state. The LVGL progress timer reads progress_ms /
@@ -235,7 +282,17 @@ static void save_transition(ui_transition_t style);
 static void save_theme(uint8_t idx);
 static void save_accent(uint8_t idx);
 static void save_browser_style(uint8_t idx);
+static void save_sel_line(uint8_t v);
 static void on_browser_style_option(lv_event_t *e);
+static void on_line_toggle(lv_event_t *e);
+static void refresh_line_selection(void);
+static void on_hint_to_np(lv_event_t *e);
+static void on_hint_to_browser(lv_event_t *e);
+static void on_transport_prev(lv_event_t *e);
+static void on_transport_toggle(lv_event_t *e);
+static void on_transport_next(lv_event_t *e);
+static void refresh_play_icon(void);
+static void position_seek_thumb(int32_t pct);
 
 static lv_color_t card_color(size_t i)
 {
@@ -273,6 +330,72 @@ static void style_label(lv_obj_t *label, const lv_font_t *font,
     lv_obj_set_style_text_font(label, font, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, y);
+}
+
+/* Pressed-state feedback: flash the fill to the accent while the button is
+ * held, for a tactile cue. NOTE: object-level transform_scale (the obvious
+ * "shrink on press") is unsafe on this board -- it forces a layer the
+ * DIRECT-mode rotated DSI flush mis-composites (same reason cards use
+ * image-direct transforms). A colour flash needs no layer. */
+static void style_button_press(lv_obj_t *btn)
+{
+    lv_obj_set_style_bg_color(btn, lv_color_hex(accent_color()),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
+}
+
+/* Three small vertical faders (mixer look) drawn from rects -- a "controls"
+ * glyph for the settings button. Avoids embedding a new symbol font. The button
+ * must have pad_all 0 so the TOP_LEFT-aligned children sit at known offsets. */
+static void make_faders_icon(lv_obj_t *btn)
+{
+    static const int track_x[3] = { 9, 21, 33 };   /* fader columns in the 44px button */
+    static const int knob_dy[3] = { 3, 13, 8 };    /* differing fader positions */
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *track = lv_obj_create(btn);
+        lv_obj_set_size(track, 2, 18);
+        lv_obj_set_style_radius(track, 1, 0);
+        lv_obj_set_style_border_width(track, 0, 0);
+        lv_obj_set_style_bg_color(track, lv_color_hex(s_th->text2), 0);
+        lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
+        lv_obj_remove_flag(track, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(track, LV_ALIGN_TOP_LEFT, track_x[i], 5);
+
+        lv_obj_t *knob = lv_obj_create(btn);
+        lv_obj_set_size(knob, 10, 5);
+        lv_obj_set_style_radius(knob, 2, 0);
+        lv_obj_set_style_border_width(knob, 0, 0);
+        lv_obj_set_style_bg_color(knob, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_bg_opa(knob, LV_OPA_COVER, 0);
+        lv_obj_remove_flag(knob, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(knob, LV_ALIGN_TOP_LEFT, track_x[i] - 4, 5 + knob_dy[i]);
+    }
+}
+
+/* Shared "hint pill": a tappable rounded chip with a chevron + letter-spaced
+ * uppercase label. Used at the bottom of the browser ("^ NOW PLAYING") and the
+ * top of now-playing ("v ALBUMS") so the two navigation affordances match. */
+static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t cb)
+{
+    lv_obj_t *pill = lv_button_create(parent);
+    lv_obj_set_size(pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(pill, lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(pill, 14, 0);
+    lv_obj_set_style_border_width(pill, 0, 0);
+    lv_obj_set_style_shadow_width(pill, 0, 0);
+    lv_obj_set_style_pad_hor(pill, 14, 0);
+    lv_obj_set_style_pad_ver(pill, 5, 0);
+    style_button_press(pill);
+    lv_obj_add_event_cb(pill, cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl = lv_label_create(pill);
+    lv_label_set_text(lbl, txt);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_letter_space(lbl, 2, 0);
+    lv_obj_center(lbl);
+    return pill;
 }
 
 static void build_browser_screen(void)
@@ -389,6 +512,19 @@ static void build_browser_screen(void)
     /* Apply initial cover flow scales (index-based, scroll_x=0 = card 0 centred). */
     apply_card_transforms();
 
+    /* Selection marker: a short accent underline fixed beneath the centred card
+     * slot (cards always centre-snap to the screen middle), so the active album
+     * is unambiguous even in flat Carousel mode. Toggleable in Settings. */
+    s_sel_line = lv_obj_create(s_screen_browser);
+    lv_obj_set_size(s_sel_line, 88, 3);
+    lv_obj_set_style_radius(s_sel_line, 2, 0);
+    lv_obj_set_style_border_width(s_sel_line, 0, 0);
+    lv_obj_set_style_bg_color(s_sel_line, lv_color_hex(accent_color()), 0);
+    lv_obj_set_style_bg_opa(s_sel_line, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_sel_line, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(s_sel_line, LV_ALIGN_TOP_MID, 0, SCROLLER_Y + SCROLLER_H - 8);
+    if (!s_show_sel_line) lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
+
     /* WiFi-strength indicator: four rising bars at top-left. */
     for (int i = 0; i < 4; i++) {
         int h = 6 + i * 4;   /* 6, 10, 14, 18 px tall */
@@ -404,27 +540,42 @@ static void build_browser_screen(void)
         s_wifi_bars[i] = bar;
     }
 
-    /* "^ now playing" hint at the bottom edge. */
-    lv_obj_t *hint = lv_label_create(s_screen_browser);
-    lv_label_set_text(hint, LV_SYMBOL_UP " now playing");
-    lv_obj_set_style_text_color(hint, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -6);
+    /* Tappable "now playing" hint pill at the bottom edge (matches the "albums"
+     * pill on now-playing). Tap or swipe up to open now-playing. Bounces once on
+     * first boot to advertise the gesture. */
+    lv_obj_t *pill = make_hint_pill(s_screen_browser, LV_SYMBOL_UP "  NOW PLAYING",
+                                    on_hint_to_np);
+    lv_obj_align(pill, LV_ALIGN_BOTTOM_MID, 0, -8);
+
+    if (!s_hint_bounced) {
+        s_hint_bounced = true;   /* first boot only -- not on theme/accent rebuilds */
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, pill);
+        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
+        lv_anim_set_values(&a, -8 + 24, -8);   /* y is the offset from the bottom align */
+        lv_anim_set_time(&a, 650);
+        lv_anim_set_path_cb(&a, lv_anim_path_bounce);
+        lv_anim_start(&a);
+    }
 
     /* Gear button (top-right) -> settings. Sits in the empty strip above the
      * carousel so it never overlaps a card. */
+    /* No surface box -- the faders glyph sits directly on the background, in line
+     * with the WiFi bars at the same top strip. Transparent fill at rest; only a
+     * faint accent flash on press. */
     lv_obj_t *gear = lv_button_create(s_screen_browser);
-    lv_obj_set_size(gear, 44, 36);
-    lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -6, 4);
-    lv_obj_set_style_bg_color(gear, lv_color_hex(s_th->surface), 0);
-    lv_obj_set_style_bg_opa(gear, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(gear, 6, 0);
+    lv_obj_set_size(gear, 44, 28);
+    lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -6, 0);
+    lv_obj_set_style_pad_all(gear, 0, 0);
+    lv_obj_set_style_bg_opa(gear, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(gear, 3, 0);
+    lv_obj_set_style_shadow_width(gear, 0, 0);
+    lv_obj_set_style_bg_color(gear, lv_color_hex(accent_color()),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(gear, LV_OPA_40, LV_PART_MAIN | LV_STATE_PRESSED);
     lv_obj_add_event_cb(gear, on_open_settings, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *gear_lbl = lv_label_create(gear);
-    lv_label_set_text(gear_lbl, LV_SYMBOL_SETTINGS);
-    lv_obj_set_style_text_color(gear_lbl, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(gear_lbl, &lv_font_montserrat_20, 0);
-    lv_obj_center(gear_lbl);
+    make_faders_icon(gear);
 }
 
 static void build_np_screen(void)
@@ -435,11 +586,10 @@ static void build_np_screen(void)
     lv_obj_remove_flag(s_screen_np, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_np, on_gesture, LV_EVENT_GESTURE, NULL);
 
-    /* "v albums" hint at the top so the user knows the swipe-down gesture. */
-    lv_obj_t *hint = lv_label_create(s_screen_np);
-    lv_label_set_text(hint, LV_SYMBOL_DOWN " albums");
-    lv_obj_set_style_text_color(hint, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
+    /* Tappable "albums" hint pill at the top (matches the "now playing" pill on
+     * the browser). Tap or swipe down to go back to the browser. */
+    lv_obj_t *hint = make_hint_pill(s_screen_np, LV_SYMBOL_DOWN "  ALBUMS",
+                                    on_hint_to_browser);
     lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 6);
 
     /* Tap anywhere on the screen to play/pause. The art widget would intercept
@@ -450,6 +600,11 @@ static void build_np_screen(void)
     lv_obj_set_size(s_np_art, ART_W, ART_H);
     lv_obj_set_pos(s_np_art, ART_X, ART_Y);
     lv_obj_remove_flag(s_np_art, LV_OBJ_FLAG_CLICKABLE);
+    /* Thin accent-tinted frame, square corners to match the browser cards. */
+    lv_obj_set_style_radius(s_np_art, 0, 0);
+    lv_obj_set_style_border_width(s_np_art, 2, 0);
+    lv_obj_set_style_border_color(s_np_art, lv_color_hex(accent_color()), 0);
+    lv_obj_set_style_border_opa(s_np_art, LV_OPA_70, 0);
     if (s_art_dsc && s_art_dsc->data) {
         lv_image_set_src(s_np_art, s_art_dsc);
     }
@@ -473,9 +628,28 @@ static void build_np_screen(void)
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(accent_color()), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(s_np_progress, 2, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_np_progress, 2, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_np_progress, 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_np_progress, 3, LV_PART_INDICATOR);
     lv_obj_remove_flag(s_np_progress, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Elapsed (left) / remaining (right) timestamps flanking the bar. Montserrat
+     * isn't monospaced, so the labels are fixed-width and edge-aligned toward the
+     * bar -- the M:SS text shifts at most a pixel as digits change, not the layout. */
+    s_np_elapsed = lv_label_create(s_screen_np);
+    lv_label_set_text(s_np_elapsed, "0:00");
+    lv_obj_set_width(s_np_elapsed, TS_W);
+    lv_obj_set_style_text_align(s_np_elapsed, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_color(s_np_elapsed, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(s_np_elapsed, &lv_font_montserrat_20, 0);
+    lv_obj_set_pos(s_np_elapsed, PROG_X - 8 - TS_W, TS_Y);
+
+    s_np_remain = lv_label_create(s_screen_np);
+    lv_label_set_text(s_np_remain, "0:00");
+    lv_obj_set_width(s_np_remain, TS_W);
+    lv_obj_set_style_text_align(s_np_remain, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_color(s_np_remain, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(s_np_remain, &lv_font_montserrat_20, 0);
+    lv_obj_set_pos(s_np_remain, PROG_X + PROG_W + 8, TS_Y);
 
     /* Transparent touch overlay on top of the bar. Reads raw finger X to compute
      * seek position and drives lv_bar_set_value directly during drag. The bar
@@ -494,6 +668,62 @@ static void build_np_screen(void)
     lv_obj_add_event_cb(seek_ov, on_seek_released,     LV_EVENT_PRESS_LOST, NULL);
     /* Absorb CLICKED so it doesn't bubble to on_np_tap (play/pause). */
     lv_obj_add_event_cb(seek_ov, on_seek_click_absorb, LV_EVENT_CLICKED,   NULL);
+
+    /* Drag thumb: accent knob centred on the bar, hidden until a scrub starts.
+     * A plain rounded rect (no transform), so it's safe under the rotated flush. */
+    s_seek_thumb = lv_obj_create(s_screen_np);
+    lv_obj_set_size(s_seek_thumb, THUMB_W, THUMB_H);
+    lv_obj_set_style_radius(s_seek_thumb, THUMB_W / 2, 0);
+    lv_obj_set_style_bg_color(s_seek_thumb, lv_color_hex(accent_color()), 0);
+    lv_obj_set_style_bg_opa(s_seek_thumb, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_seek_thumb, 0, 0);
+    lv_obj_remove_flag(s_seek_thumb, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_seek_thumb, LV_OBJ_FLAG_HIDDEN);
+    position_seek_thumb(0);
+
+    /* Transport keys: prev / play-pause / next. Square flat tactile keys
+     * matching the settings buttons (radius 3), with a pressed accent flash.
+     * Created after the seek overlay so they win the hit-test where the two
+     * touch zones overlap. Gestures still work as shortcuts. */
+    struct { const char *sym; lv_event_cb_t cb; } keys[3] = {
+        { LV_SYMBOL_PREV,  on_transport_prev   },
+        { LV_SYMBOL_PLAY,  on_transport_toggle },
+        { LV_SYMBOL_NEXT,  on_transport_next   },
+    };
+    int group_w = 3 * TKEY_SZ + 2 * TKEY_GAP;
+    int x0      = (SCREEN_W - group_w) / 2;
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *key = lv_button_create(s_screen_np);
+        lv_obj_set_size(key, TKEY_SZ, TKEY_SZ);
+        lv_obj_set_pos(key, x0 + i * (TKEY_SZ + TKEY_GAP), TKEY_Y);
+        lv_obj_set_style_radius(key, 3, 0);
+        lv_obj_set_style_shadow_width(key, 0, 0);
+        lv_obj_set_style_bg_color(key, lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_bg_opa(key, LV_OPA_COVER, 0);
+        style_button_press(key);
+        lv_obj_add_event_cb(key, keys[i].cb, LV_EVENT_CLICKED, NULL);
+
+        lv_obj_t *lbl = lv_label_create(key);
+        lv_label_set_text(lbl, keys[i].sym);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+        lv_obj_center(lbl);
+        if (i == 1) s_np_play_lbl = lbl;   /* centre key reflects play state */
+    }
+    refresh_play_icon();
+
+    /* Faint edge chevrons hinting swipe left/right = next/prev. */
+    lv_obj_t *ch_l = lv_label_create(s_screen_np);
+    lv_label_set_text(ch_l, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(ch_l, lv_color_hex(s_th->dim), 0);
+    lv_obj_set_style_text_font(ch_l, &lv_font_montserrat_20, 0);
+    lv_obj_align(ch_l, LV_ALIGN_LEFT_MID, 6, -20);
+
+    lv_obj_t *ch_r = lv_label_create(s_screen_np);
+    lv_label_set_text(ch_r, LV_SYMBOL_RIGHT);
+    lv_obj_set_style_text_color(ch_r, lv_color_hex(s_th->dim), 0);
+    lv_obj_set_style_text_font(ch_r, &lv_font_montserrat_20, 0);
+    lv_obj_align(ch_r, LV_ALIGN_RIGHT_MID, -6, -20);
 
     s_vol_hud = lv_label_create(s_screen_np);
     lv_label_set_text(s_vol_hud, "");
@@ -612,13 +842,15 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_letter_space(th_section, 2, 0);
     lv_obj_align(th_section, LV_ALIGN_TOP_LEFT, 24, 324);
 
-    /* Dark | Light side by side (a binary choice reads as a segmented pair). */
+    /* Dark | Black | Light -- three buttons in a row (same layout as browser
+     * style below). Black is charcoal-dark with a pure #000 background. */
     for (int i = 0; i < THEME_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(s_screen_settings);
-        lv_obj_set_size(btn, 250, 48);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -134 : 134, 360);
+        lv_obj_set_size(btn, 170, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 176, 360);
         lv_obj_set_style_radius(btn, 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
+        style_button_press(btn);
         lv_obj_add_event_cb(btn, on_theme_option, LV_EVENT_CLICKED,
                             (void *)(uintptr_t)i);
 
@@ -683,10 +915,30 @@ static void build_settings_screen(void)
         s_brstyle_labels[i] = lbl;
     }
 
+    lv_obj_t *ln_section = lv_label_create(s_screen_settings);
+    lv_label_set_text(ln_section, "SELECTION LINE");
+    lv_obj_set_style_text_color(ln_section, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(ln_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_letter_space(ln_section, 2, 0);
+    lv_obj_align(ln_section, LV_ALIGN_TOP_LEFT, 24, 616);
+
+    /* Single ON/OFF toggle for the centred-card underline (label + fill show state). */
+    s_line_toggle_btn = lv_button_create(s_screen_settings);
+    lv_obj_set_size(s_line_toggle_btn, 520, 48);
+    lv_obj_align(s_line_toggle_btn, LV_ALIGN_TOP_MID, 0, 652);
+    lv_obj_set_style_radius(s_line_toggle_btn, 3, 0);
+    lv_obj_set_style_shadow_width(s_line_toggle_btn, 0, 0);
+    style_button_press(s_line_toggle_btn);
+    lv_obj_add_event_cb(s_line_toggle_btn, on_line_toggle, LV_EVENT_CLICKED, NULL);
+    s_line_toggle_lbl = lv_label_create(s_line_toggle_btn);
+    lv_obj_set_style_text_font(s_line_toggle_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_center(s_line_toggle_lbl);
+
     refresh_settings_selection();
     refresh_theme_selection();
     refresh_accent_selection();
     refresh_browser_style_selection();
+    refresh_line_selection();
 }
 
 static void on_open_settings(lv_event_t *e)
@@ -717,7 +969,7 @@ static void on_theme_option(lv_event_t *e)
     uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
     if (idx >= THEME_COUNT || idx == s_theme) return;
     s_theme = idx;
-    s_th    = (idx == THEME_LIGHT_IDX) ? &THEME_LIGHT : &THEME_DARK;
+    s_th    = k_theme_palettes[idx];
     save_theme(idx);
     ESP_LOGI(TAG, "theme -> %s", k_theme_names[idx]);
     /* Re-skin by rebuilding all three screens, but defer it: deleting the
@@ -794,7 +1046,7 @@ static void load_settings(void)
     uint8_t t = THEME_DARK_IDX;
     if (nvs_get_u8(h, NVS_KEY_THEME, &t) == ESP_OK && t < THEME_COUNT) {
         s_theme = t;
-        s_th    = (t == THEME_LIGHT_IDX) ? &THEME_LIGHT : &THEME_DARK;
+        s_th    = k_theme_palettes[t];
     }
     uint8_t ac = ACCENT_ORANGE;
     if (nvs_get_u8(h, NVS_KEY_ACCENT, &ac) == ESP_OK && ac < ACCENT_COUNT) {
@@ -804,6 +1056,8 @@ static void load_settings(void)
     if (nvs_get_u8(h, NVS_KEY_BROWSER_STYLE, &bs) == ESP_OK && bs < BROWSER_STYLE_COUNT) {
         s_browser_style = bs;
     }
+    uint8_t sl = 1;
+    if (nvs_get_u8(h, NVS_KEY_SEL_LINE, &sl) == ESP_OK) s_show_sel_line = (sl != 0);
     nvs_close(h);
 }
 
@@ -839,6 +1093,15 @@ static void save_browser_style(uint8_t idx)
     nvs_handle_t h;
     if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_u8(h, NVS_KEY_BROWSER_STYLE, idx);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void save_sel_line(uint8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_SEL_LINE, v);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -906,11 +1169,30 @@ void ui_set_track_info(const spotify_track_t *info)
          * before any track has been seen (title still empty). */
         s_track.is_playing = false;
     } else {
+        bool same_track = (strncmp(info->title, s_track.title, sizeof s_track.title) == 0);
+        uint32_t keep_progress = info->progress_ms;
+        if (s_seek_guard_until && same_track) {
+            uint32_t now = lv_tick_get();
+            uint32_t expected = s_seek_anchor_ms +
+                (s_track.is_playing ? (now - s_seek_anchor_tick) : 0);
+            uint32_t diff = (info->progress_ms > expected)
+                          ? info->progress_ms - expected
+                          : expected - info->progress_ms;
+            if ((int32_t)(now - s_seek_guard_until) < 0 && diff > SEEK_GUARD_TOL_MS) {
+                keep_progress = s_track.progress_ms;   /* server still stale: hold local */
+            } else {
+                s_seek_guard_until = 0;                /* caught up or expired */
+            }
+        } else {
+            s_seek_guard_until = 0;
+        }
         s_track = *info;
+        s_track.progress_ms = keep_progress;
         if (s_np_title)  lv_label_set_text(s_np_title, info->title);
         if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
     }
     update_progress_bar();
+    refresh_play_icon();
     bsp_display_unlock();
 }
 
@@ -976,8 +1258,31 @@ ui_transition_t ui_get_transition_style(void)
 
 static void on_np_tap(lv_event_t *e) { (void)e; ui_request_toggle_play(); }
 
-static void on_seek_start(lv_event_t *e)        { (void)e; s_seeking = true; }
+/* Hint-pill taps -- same destinations as the swipe gestures. */
+static void on_hint_to_np(lv_event_t *e)      { (void)e; load_screen(s_screen_np, true); }
+static void on_hint_to_browser(lv_event_t *e) { (void)e; load_screen(s_screen_browser, false); }
+
+static void on_seek_start(lv_event_t *e)
+{
+    (void)e;
+    s_seeking = true;
+    if (s_seek_thumb) {
+        int32_t pct = (s_track.duration_ms > 0)
+            ? (int32_t)((uint64_t)s_track.progress_ms * 1000 / s_track.duration_ms) : 0;
+        position_seek_thumb(pct);
+        lv_obj_remove_flag(s_seek_thumb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
 static void on_seek_click_absorb(lv_event_t *e) { lv_event_stop_bubbling(e); }
+
+/* Arm the seek guard so the next few polls don't snap the bar back to the
+ * stale server position. Call right after issuing a seek for `target_ms`. */
+static void arm_seek_guard(uint32_t target_ms)
+{
+    s_seek_anchor_ms   = target_ms;
+    s_seek_anchor_tick = lv_tick_get();
+    s_seek_guard_until = s_seek_anchor_tick + SEEK_GUARD_MAX_MS;
+}
 
 static void on_seek_pressing(lv_event_t *e)
 {
@@ -997,6 +1302,8 @@ static void on_seek_pressing(lv_event_t *e)
     int32_t pct = rel * 1000 / w;
     s_track.progress_ms = (uint32_t)((uint64_t)pct * s_track.duration_ms / 1000);
     lv_bar_set_value(s_np_progress, pct, LV_ANIM_OFF);
+    position_seek_thumb(pct);
+    update_progress_bar();   /* refresh timestamps; bar value is frozen while seeking */
 }
 
 static void on_seek_released(lv_event_t *e)
@@ -1004,10 +1311,52 @@ static void on_seek_released(lv_event_t *e)
     (void)e;
     if (!s_seeking) return;          /* RELEASED + PRESS_LOST can both fire */
     s_seeking = false;
+    if (s_seek_thumb) lv_obj_add_flag(s_seek_thumb, LV_OBJ_FLAG_HIDDEN);
     if (s_track.duration_ms == 0) return;
     /* progress_ms was kept in sync by on_seek_pressing; send the final value. */
     ui_request_seek(s_track.progress_ms);
+    arm_seek_guard(s_track.progress_ms);
 }
+
+static void format_mmss(char *buf, size_t n, uint32_t ms)
+{
+    uint32_t total = ms / 1000;
+    snprintf(buf, n, "%u:%02u", (unsigned)(total / 60), (unsigned)(total % 60));
+}
+
+static void position_seek_thumb(int32_t pct)
+{
+    if (!s_seek_thumb) return;
+    if (pct < 0)    pct = 0;
+    if (pct > 1000) pct = 1000;
+    int32_t cx = PROG_X + (int32_t)((int64_t)pct * PROG_W / 1000);
+    lv_obj_set_pos(s_seek_thumb, cx - THUMB_W / 2, PROG_Y + PROG_H / 2 - THUMB_H / 2);
+}
+
+static void refresh_play_icon(void)
+{
+    if (s_np_play_lbl)
+        lv_label_set_text(s_np_play_lbl,
+                          s_track.is_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+}
+
+/* Spotify-style previous: restart the track if more than 3 s in, else go to the
+ * previous track. Shared by the prev key and the swipe-right gesture. */
+static void prev_or_restart(void)
+{
+    if (s_track.progress_ms > 3000) {
+        ui_request_seek(0);
+        s_track.progress_ms = 0;
+        arm_seek_guard(0);
+        update_progress_bar();
+    } else {
+        ui_request_prev();
+    }
+}
+
+static void on_transport_prev(lv_event_t *e)   { (void)e; prev_or_restart(); }
+static void on_transport_toggle(lv_event_t *e) { (void)e; ui_request_toggle_play(); }
+static void on_transport_next(lv_event_t *e)   { (void)e; ui_request_next(); }
 
 static void on_gesture(lv_event_t *e)
 {
@@ -1030,12 +1379,7 @@ static void on_gesture(lv_event_t *e)
         ui_request_next();
     } else if (dir == LV_DIR_RIGHT && active == s_screen_np) {
         lv_indev_wait_release(indev);
-        /* Spotify-style: restart from the beginning if more than 3 s into the
-         * track; go to previous track if still in the opening few seconds. */
-        if (s_track.progress_ms > 3000)
-            ui_request_seek(0);
-        else
-            ui_request_prev();
+        prev_or_restart();
     }
     (void)e;
 }
@@ -1045,6 +1389,17 @@ static void on_card_clicked(lv_event_t *e)
     size_t idx = (size_t)(uintptr_t)lv_event_get_user_data(e);
     const album_entry_t *a = albums_get(idx);
     if (!a) return;
+
+    /* Tapping an off-centre card just brings it to the middle (select); only a
+     * tap on the already-centred card plays it. Avoids accidental plays from
+     * mis-tapping an edge card, and matches the centre-snap carousel model. */
+    if ((int)idx != s_centered_card) {
+        s_target_card = (int)idx;
+        lv_obj_scroll_to_x(s_browser_scroller,
+                           (int32_t)idx * (cs() + cg()), LV_ANIM_ON);
+        return;
+    }
+
     ESP_LOGI(TAG, "play album: %s -- %s", a->artist, a->title);
     /* Hand the URI off to the Spotify task; ui_request_play() must NOT
      * block (HTTPS PUT runs on the other task). The screen transition
@@ -1090,13 +1445,28 @@ static void on_browser_scroll(lv_event_t *e)
 
 static void update_progress_bar(void)
 {
-    if (!s_np_progress || s_seeking) return;
-    int32_t pct = 0;
-    if (s_track.duration_ms > 0) {
-        uint32_t p = s_track.progress_ms;
-        if (p > s_track.duration_ms) p = s_track.duration_ms;
-        pct = (int32_t)((uint64_t)p * 1000 / s_track.duration_ms);
+    if (!s_np_progress) return;
+    uint32_t p = s_track.progress_ms;
+    if (s_track.duration_ms > 0 && p > s_track.duration_ms) p = s_track.duration_ms;
+    int32_t pct = (s_track.duration_ms > 0)
+                ? (int32_t)((uint64_t)p * 1000 / s_track.duration_ms) : 0;
+
+    /* Timestamps track progress even mid-scrub (on_seek_pressing keeps
+     * progress_ms current); only the bar value is frozen during a drag. */
+    if (s_np_elapsed) {
+        char b[12];
+        format_mmss(b, sizeof b, p);
+        lv_label_set_text(s_np_elapsed, b);
     }
+    if (s_np_remain) {
+        uint32_t rem = (s_track.duration_ms > p) ? (s_track.duration_ms - p) : 0;
+        char t[12], b[14];
+        format_mmss(t, sizeof t, rem);
+        snprintf(b, sizeof b, "-%s", t);
+        lv_label_set_text(s_np_remain, b);
+    }
+
+    if (s_seeking) return;
     lv_bar_set_value(s_np_progress, pct, LV_ANIM_OFF);
 }
 
@@ -1193,6 +1563,31 @@ static void on_browser_style_option(lv_event_t *e)
     ESP_LOGI(TAG, "browser style -> %s", k_browser_style_names[idx]);
     /* Rebuild the browser screen in the background -- user stays in settings. */
     lv_async_call(rebuild_browser_cb, NULL);
+}
+
+static void refresh_line_selection(void)
+{
+    if (!s_line_toggle_btn || !s_line_toggle_lbl) return;
+    lv_obj_set_style_bg_color(s_line_toggle_btn,
+        s_show_sel_line ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_text_color(s_line_toggle_lbl,
+        s_show_sel_line ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+    lv_label_set_text(s_line_toggle_lbl, s_show_sel_line ? "ON" : "OFF");
+}
+
+static void on_line_toggle(lv_event_t *e)
+{
+    (void)e;
+    s_show_sel_line = !s_show_sel_line;
+    save_sel_line(s_show_sel_line ? 1 : 0);
+    /* No rebuild needed -- the browser screen still exists; just toggle the
+     * underline's visibility directly. */
+    if (s_sel_line) {
+        if (s_show_sel_line) lv_obj_remove_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
+        else                 lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
+    }
+    refresh_line_selection();
+    ESP_LOGI(TAG, "selection line -> %s", s_show_sel_line ? "ON" : "OFF");
 }
 
 static void rebuild_browser_cb(void *unused)
