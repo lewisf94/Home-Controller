@@ -453,6 +453,16 @@ bool spotify_fetch_player(spotify_track_t *info)
         const char *progress_v = json_obj_get(buf.data, "progress_ms");
         if (progress_v) info->progress_ms = (uint32_t)atoi(progress_v);
 
+        /* Active device: is_restricted gates whether the Spotify Web API can
+         * control it (Sonos etc. report true -- readable but not controllable). */
+        const char *dev = json_obj_get(buf.data, "device");
+        if (dev && *dev == '{') {
+            const char *restr_v = json_obj_get(dev, "is_restricted");
+            if (restr_v) info->device_restricted = (*restr_v == 't');
+            const char *dname_v = json_obj_get(dev, "name");
+            if (dname_v) json_copy_string(dname_v, info->device_name, sizeof(info->device_name));
+        }
+
         /* Drill into item.{name, duration_ms, album.name, artists[0].name,
          * album.images[0].url} using depth-aware lookups so we don't
          * accidentally match a "name" or "duration_ms" inside a nested
@@ -664,9 +674,12 @@ bool spotify_play_album(const char *context_uri)
                             "{\"context_uri\":\"%s\"}", context_uri);
     if (body_len <= 0 || body_len >= (int)sizeof(body)) return false;
 
+    resp_buf_t resp = {0};
     esp_http_client_config_t cfg = {
         .url               = "https://api.spotify.com/v1/me/player/play",
         .method            = HTTP_METHOD_PUT,
+        .event_handler     = http_event_handler,
+        .user_data         = &resp,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms        = 5000,
     };
@@ -687,9 +700,12 @@ bool spotify_play_album(const char *context_uri)
      * reported on some devices. 404 means no active device. */
     bool ok = (err == ESP_OK && (status == 204 || status == 202));
     if (!ok) {
-        ESP_LOGW(TAG, "play_album(%s) failed err=%d status=%d",
-                 context_uri, (int)err, status);
+        /* Error body is small JSON with no secrets -- log the reason (403 =
+         * PREMIUM_REQUIRED vs a scope error; 404 = no active device). */
+        ESP_LOGW(TAG, "play_album(%s) failed err=%d status=%d: %s",
+                 context_uri, (int)err, status, resp.data ? resp.data : "(no body)");
     }
+    free(resp.data);
     return ok;
 }
 
@@ -699,9 +715,14 @@ static int _do_cmd(esp_http_client_method_t method, const char *url, const char 
 {
     if (!ensure_token()) return -1;
 
+    /* Capture the response body so a failure can log Spotify's reason (e.g. a
+     * 403 reads "PREMIUM_REQUIRED" vs a missing-scope message). */
+    resp_buf_t resp = {0};
     esp_http_client_config_t cfg = {
         .url               = url,
         .method            = method,
+        .event_handler     = http_event_handler,
+        .user_data         = &resp,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms        = 5000,
     };
@@ -719,6 +740,12 @@ static int _do_cmd(esp_http_client_method_t method, const char *url, const char 
     esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+
+    /* The error body is small JSON with no secrets -- safe to log. */
+    if (status >= 400)
+        ESP_LOGW(TAG, "cmd %s -> %d: %s", url, status, resp.data ? resp.data : "(no body)");
+
+    free(resp.data);
     return status;
 }
 

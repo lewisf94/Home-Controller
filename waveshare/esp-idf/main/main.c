@@ -40,9 +40,43 @@
 #include "bsp/display.h"
 #include "secrets.h"
 #include "spotify.h"
+#include "sonos.h"
 #include "ui.h"
 #include "album_art.h"
 #include "littlefs.h"
+
+/* Optional direct Sonos control (Spotify can't drive a Sonos -- it's a
+ * restricted device, so we talk to it over UPnP). Configure in secrets.h:
+ *   - one speaker:  #define SONOS_HOST "192.168.1.50"   (any restricted device
+ *                   routes here)
+ *   - several speakers / multiple Sonos systems: map each speaker's
+ *     Spotify-reported name to its LAN IP --
+ *       #define SONOS_DEVICES { "Living Room", "192.168.1.50" }, \
+ *                             { "Bedroom",     "192.168.1.51" }
+ * Leave both undefined to disable. The active device name is printed in the
+ * "now playing" log so you can see exactly what string to map. */
+typedef struct { const char *name; const char *host; } sonos_dev_t;
+#if defined(SONOS_DEVICES)
+static const sonos_dev_t s_sonos_devices[] = { SONOS_DEVICES };
+#endif
+
+/* Sonos LAN IP for the given active-device name, or NULL if it isn't a Sonos we
+ * know how to control. */
+static const char *sonos_host_for(const char *device_name)
+{
+#if defined(SONOS_DEVICES)
+    for (size_t i = 0; i < sizeof s_sonos_devices / sizeof s_sonos_devices[0]; i++)
+        if (strcmp(s_sonos_devices[i].name, device_name) == 0)
+            return s_sonos_devices[i].host;
+    return NULL;
+#elif defined(SONOS_HOST)
+    (void)device_name;
+    return SONOS_HOST[0] ? SONOS_HOST : NULL;   /* single speaker: any restricted device */
+#else
+    (void)device_name;
+    return NULL;
+#endif
+}
 
 #include <string.h>
 #include <stdlib.h>
@@ -190,42 +224,65 @@ static bool decode_and_publish_art(void)
     return true;
 }
 
+/* Fetch /me/player once and push it to the UI; on a track change download +
+ * decode the new cover. Returns true if playback is active. */
+static bool poll_and_publish(spotify_track_t *info)
+{
+    if (!spotify_fetch_player(info)) {
+        ESP_LOGI(TAG, "no active playback (or fetch failed)");
+        ui_set_track_info(NULL);
+        return false;
+    }
+    ESP_LOGI(TAG, "now playing: %s -- %s [%lu/%lu ms, %s] @%s%s",
+             info->artist, info->title,
+             (unsigned long)info->progress_ms,
+             (unsigned long)info->duration_ms,
+             info->is_playing ? "playing" : "paused",
+             info->device_name[0] ? info->device_name : "?",
+             info->device_restricted ? " (restricted)" : "");
+    ui_set_track_info(info);
+
+    if (info->album_art_url[0] &&
+        strcmp(info->album_art_url, s_art_url_loaded) != 0 &&
+        littlefs_is_mounted()) {
+        size_t bytes = 0;
+        if (spotify_download_to_file(info->album_art_url, ART_JPEG_PATH, &bytes)) {
+            ESP_LOGI(TAG, "downloaded %u bytes -> %s", (unsigned)bytes, ART_JPEG_PATH);
+            if (decode_and_publish_art()) {
+                strncpy(s_art_url_loaded, info->album_art_url, sizeof(s_art_url_loaded) - 1);
+                s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
+            }
+        }
+    }
+    return true;
+}
+
 /* Drains s_cmd_queue and runs the blocking Spotify HTTPS calls off the
- * render/input path. Also polls /me/player every 5 s: pushes track state into
- * ui.c and, when the track's art URL changes, downloads the 640px cover to
- * LittleFS, decodes it to 320x320 and publishes it to the now-playing screen. */
+ * render/input path. Polls /me/player every 5 s. After a track-changing command
+ * (next/prev/play) Spotify's /me/player keeps reporting the OLD track for a
+ * moment, so a single immediate poll would show stale title/artist until the
+ * next 5 s tick (~6 s of lag the user sees). Instead we "settle": re-poll a few
+ * times (~300 ms apart, capped ~2 s) until the title actually changes, so the
+ * on-screen details catch up within ~1 s. Non-track commands just refresh once. */
 static void spotify_task(void *arg)
 {
     (void)arg;
     spotify_init(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
 
-    spotify_track_t info;
-    while (1) {
-        if (spotify_fetch_player(&info)) {
-            ESP_LOGI(TAG, "now playing: %s -- %s [%lu/%lu ms, %s]",
-                     info.artist, info.title,
-                     (unsigned long)info.progress_ms,
-                     (unsigned long)info.duration_ms,
-                     info.is_playing ? "playing" : "paused");
-            ui_set_track_info(&info);
+    spotify_track_t info = {0};
+    bool settle = false;
+    char prev_title[sizeof info.title] = {0};
 
-            if (info.album_art_url[0] &&
-                strcmp(info.album_art_url, s_art_url_loaded) != 0 &&
-                littlefs_is_mounted()) {
-                size_t bytes = 0;
-                if (spotify_download_to_file(info.album_art_url, ART_JPEG_PATH, &bytes)) {
-                    ESP_LOGI(TAG, "downloaded %u bytes -> %s",
-                             (unsigned)bytes, ART_JPEG_PATH);
-                    if (decode_and_publish_art()) {
-                        strncpy(s_art_url_loaded, info.album_art_url,
-                                sizeof(s_art_url_loaded) - 1);
-                        s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
-                    }
-                }
+    while (1) {
+        if (settle) {
+            settle = false;
+            for (int i = 0; i < 5; i++) {
+                poll_and_publish(&info);
+                if (strncmp(info.title, prev_title, sizeof prev_title) != 0) break;
+                vTaskDelay(pdMS_TO_TICKS(300));
             }
         } else {
-            ESP_LOGI(TAG, "no active playback (or fetch failed)");
-            ui_set_track_info(NULL);
+            poll_and_publish(&info);
         }
 
         /* Poll every 5 s, but wake early to service any queued command. */
@@ -236,18 +293,46 @@ static void spotify_task(void *arg)
             TickType_t wait = (now >= deadline) ? 0 : (deadline - now);
             if (xQueueReceive(s_cmd_queue, &cmd, wait) == pdTRUE) {
                 bool ok = false;
+                /* If the active device is restricted (e.g. a Sonos) Spotify will
+                 * 403 every control command, so route transport/volume to that
+                 * speaker directly over UPnP -- picking the right speaker by name.
+                 * Starting a specific album on the Sonos isn't supported yet, so
+                 * SCMD_PLAY_ALBUM always goes via Spotify. */
+                const char *sh = info.device_restricted ? sonos_host_for(info.device_name)
+                                                         : NULL;
                 switch (cmd.type) {
                     case SCMD_PLAY_ALBUM:
                         ok = spotify_play_album(cmd.uri);
                         ESP_LOGI(TAG, "play_album(%s) -> %s", cmd.uri, ok ? "ok" : "FAILED");
                         break;
-                    case SCMD_TOGGLE_PLAY:  ok = spotify_toggle_play_pause();        break;
-                    case SCMD_PREV_TRACK:   ok = spotify_prev_track();               break;
-                    case SCMD_NEXT_TRACK:   ok = spotify_next_track();               break;
-                    case SCMD_SEEK_MS:      ok = spotify_seek_position(cmd.param);   break;
-                    case SCMD_SET_VOLUME:   ok = spotify_set_volume((int)cmd.param); break;
+                    case SCMD_TOGGLE_PLAY:
+                        ok = sh ? (info.is_playing ? sonos_pause(sh) : sonos_play(sh))
+                                : spotify_toggle_play_pause();
+                        break;
+                    case SCMD_PREV_TRACK:
+                        ok = sh ? sonos_previous(sh) : spotify_prev_track();
+                        break;
+                    case SCMD_NEXT_TRACK:
+                        ok = sh ? sonos_next(sh) : spotify_next_track();
+                        break;
+                    case SCMD_SEEK_MS:
+                        ok = sh ? sonos_seek_ms(sh, cmd.param)
+                                : spotify_seek_position(cmd.param);
+                        break;
+                    case SCMD_SET_VOLUME:
+                        ok = sh ? sonos_set_volume(sh, (int)cmd.param)
+                                : spotify_set_volume((int)cmd.param);
+                        break;
                 }
                 (void)ok;
+                /* Arm settle on the commands that change the current track, so the
+                 * loop top re-polls until the new title lands. */
+                if (cmd.type == SCMD_NEXT_TRACK || cmd.type == SCMD_PREV_TRACK ||
+                    cmd.type == SCMD_PLAY_ALBUM) {
+                    strncpy(prev_title, info.title, sizeof prev_title - 1);
+                    prev_title[sizeof prev_title - 1] = '\0';
+                    settle = true;
+                }
                 break;
             }
             if (xTaskGetTickCount() >= deadline) break;

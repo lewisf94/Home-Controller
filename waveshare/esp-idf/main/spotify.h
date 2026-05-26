@@ -27,6 +27,8 @@ typedef struct {
     uint32_t  progress_ms;
     uint32_t  duration_ms;
     char      album_art_url[256];
+    bool      device_restricted;  /* active device won't accept Spotify Web API control (e.g. Sonos) */
+    char      device_name[64];    /* active device name, for routing/UX */
 } spotify_track_t;
 
 void spotify_init(const char *client_id,

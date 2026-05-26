@@ -5,6 +5,7 @@ idf_component_register(
     SRCS
         "main.c"
         "spotify.c"       # cp3: Spotify Web API client (+ esp_http_client/esp-tls/mbedtls)
+        "sonos.c"         # local UPnP control for a (restricted) Sonos -- Spotify can't drive it
         "albums.c"        # cp3: album list / metadata
         "ui.c"            # cp4: ported from cyd, re-laid-out 800x480
         "album_thumbs.c"  # cp4: embedded browser thumbnails (+ EMBED_FILES album_thumbs.bin)
