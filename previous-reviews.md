@@ -10,12 +10,14 @@ instead of repeating. Newest entries at the bottom.
 > Those entries are consolidated here. Future runs: read this file on `main`,
 > and **rotate to a new area** rather than repeating one already covered.
 
-**Coverage so far:** Security ×2 (05-22, 05-23), Performance ×1 (05-24). The
-Security actionable findings have since been fixed on `main` (TLS verification on
-both builds, log redaction, `.cache` gitignored, setup docs +
-`get_spotify_token.py` point at the gitignored `secrets.h`, IDF token-refresh
-`snprintf` guard). **Next runs should cover Code quality, Architecture, Missing
-features, or Testing/reliability** — not Security or Performance.
+**Coverage so far:** Security ×2 (05-22, 05-23), Performance ×1 (05-24),
+Code quality ×1 (05-26). The Security actionable findings have since been fixed
+on `main` (TLS verification on both builds, log redaction, `.cache` gitignored,
+setup docs + `get_spotify_token.py` point at the gitignored `secrets.h`, IDF
+token-refresh `snprintf` guard). Most Performance findings from 05-24 are still
+open (only the poll keep-alive landed; the rest were lower-priority/deferred).
+**Next runs should cover Architecture, Missing features, or Testing/reliability**
+— not Security, Performance, or Code quality.
 
 ---
 
@@ -58,3 +60,21 @@ the top per field; `find_centered_card()` is O(n) per scroll event; LVGL progres
 + WiFi timers run on a fixed cadence regardless of which screen is visible.
 Verified prior run's two fixes are in place (`get_spotify_token.py` -> `secrets.h`,
 IDF refresh `snprintf` guard). Suggestions made: 7.
+
+2026-05-26 - Area covered: Code quality. Key findings: Three of the four build
+folders are near-identical copies maintained by hand -- `cyd/esp-idf` and
+`cyd/esp-idf-ha` share six byte-for-byte-identical files (ui.c, input.c,
+mcp_input.c, album_art.cpp, albums.c, littlefs.c) and `waveshare` differs from
+the lead build by only ~13-15 lines in two files, so every bug fix must be
+copy-pasted N times (CLAUDE.md even says so); a shared ESP-IDF component would
+remove the drift risk. The Arduino `download_album_art()` has ~24 lines of
+unreachable code after an unconditional `return`, and `ui_fancy_backup.cpp` is
+1004 lines of dead file -- both violate the repo's own "delete dead code
+cleanly" rule. The lead IDF build assumes the speaker volume starts at 50 and
+never reads the real device volume (the Arduino build does), so the volume HUD
+and first nudge can be wrong; the IDF command path also silently swallows a 401
+(expired token) that the poll path handles. Plus a stale comment claiming the
+HTTP buffer caps at "16 KB" when `RESP_MAX_CAP` is 256 KB (carried over,
+unfixed), and silent album truncation at `MAX_CARDS` (32 on CYD, 64 on
+waveshare) with no warning log. Verified prior Security fixes still hold; most
+05-24 Performance items remain open by design. Suggestions made: 7.
