@@ -11,13 +11,14 @@ instead of repeating. Newest entries at the bottom.
 > and **rotate to a new area** rather than repeating one already covered.
 
 **Coverage so far:** Security ×2 (05-22, 05-23), Performance ×1 (05-24),
-Code quality ×1 (05-26). The Security actionable findings have since been fixed
-on `main` (TLS verification on both builds, log redaction, `.cache` gitignored,
-setup docs + `get_spotify_token.py` point at the gitignored `secrets.h`, IDF
-token-refresh `snprintf` guard). Most Performance findings from 05-24 are still
-open (only the poll keep-alive landed; the rest were lower-priority/deferred).
-**Next runs should cover Architecture, Missing features, or Testing/reliability**
-— not Security, Performance, or Code quality.
+Code quality ×1 (05-26), Testing/reliability ×1 (05-28). The Security actionable
+findings have since been fixed on `main` (TLS verification on both builds, log
+redaction, `.cache` gitignored, setup docs + `get_spotify_token.py` point at the
+gitignored `secrets.h`, IDF token-refresh `snprintf` guard). Most Performance
+findings from 05-24 are still open (only the poll keep-alive landed; the rest
+were lower-priority/deferred). All seven 05-26 Code-quality findings are still
+open as of 05-28. **Next runs should cover Architecture or Missing features**
+— not Security, Performance, Code quality, or Testing/reliability.
 
 ---
 
@@ -78,3 +79,20 @@ HTTP buffer caps at "16 KB" when `RESP_MAX_CAP` is 256 KB (carried over,
 unfixed), and silent album truncation at `MAX_CARDS` (32 on CYD, 64 on
 waveshare) with no warning log. Verified prior Security fixes still hold; most
 05-24 Performance items remain open by design. Suggestions made: 7.
+
+2026-05-28 - Area covered: Testing & reliability. Key findings: All three
+ESP-IDF builds give up on WiFi permanently after a short burst of back-to-back
+retries (set WIFI_FAIL_BIT and never call esp_wifi_connect again), so an
+ordinary router reboot strands the always-on device offline until a manual
+power-cycle -- the clearest single point of failure in the tree. The lead IDF
+build also regressed several behaviours the Arduino build already had: it can't
+wake an idle Spotify device on a 404 (so "Play" silently does nothing after the
+phone idles), never reads the real device volume (assumes 50), swallows 401s in
+the playback-command path (the poll path handles them), drops all command
+failures with no retry or UI feedback, and leaves the physical controls
+permanently dead with no re-probe or on-screen hint if the MCP23017 isn't found
+at boot. Lower priority: silent album truncation at MAX_CARDS and an unchecked
+esp_littlefs_info return. Verified all seven 05-26 Code-quality findings are
+still open (dead ui_fancy_backup.cpp, Arduino dead code after return, stale
+"16 KB" comment, shared-component duplication, plus the volume-50/401/truncation
+items that overlap with today). Suggestions made: 8.
