@@ -79,6 +79,14 @@ art). Ordered by priority. Update as items land.
   (`settings` / `accent`). Separate from the Dark/Light neutral palette so every
   accent works in both modes. Drives selection highlights and the progress bar.
 
+## 6. Backlight brightness — DONE (needs hardware verify)
+- Settings "Brightness" section: a horizontal slider (10–100%) that live-dims the
+  panel via the BSP LEDC PWM (`bsp_display_brightness_set`) while dragging,
+  persisted to NVS (`settings` / `brightness`) on release and re-applied at boot
+  in `ui_init`. Floored at 10% so it can never be dimmed to a black screen.
+- Benign boot warning `ledc: GPIO 26 is not usable` is the BSP backlight PWM
+  channel double-init; dimming still works (`backlight_on()` == `brightness_set(100)`).
+
 ## Later (existing roadmap)
 - cp6: physical-control seam (encoder/buttons) via `input.c`.
 - WiFi-strength indicator + volume HUD are in `ui.c`; confirm wiring on hardware.
@@ -101,24 +109,27 @@ art). Ordered by priority. Update as items land.
   Remaining OPTIONAL polish: (a) the device switcher below (transfer to a
   controllable device from the controller); (b) on a "Restricted device" 403,
   show an on-screen hint instead of the silent FAILED log.
-- **Sonos direct control — DONE for transport/volume (2026-05-26).** `sonos.c`
-  drives play/pause/next/prev/seek/volume over UPnP/SOAP (port 1400) when the
-  active device is restricted; `main.c` routes by matching the active device
-  name to `SONOS_DEVICES` (name->IP map in secrets.h; single `SONOS_HOST` also
-  works). Verified on two speakers across two Sonos systems. **Still TODO:**
-  start a specific album ON the Sonos — needs UPnP `SetAVTransportURI` with a
-  `x-rincon-cpcontainer:...spotify%3aalbum%3a<id>` URI + DIDL metadata carrying
-  the household's Spotify service id + account serial (undocumented, will need
-  trial/error against the live Sonos). `SCMD_PLAY_ALBUM` still goes via Spotify.
-- **Active-device switching (requested) — build after the 403 is fixed.** Uses
-  the same `user-modify-playback-state` permission, so it can't work until the
-  token above is sorted. Spec: `GET /me/player/devices` → parse the `devices[]`
-  array (id/name/type/is_active/volume_percent); `PUT /me/player` with body
-  `{"device_ids":["<id>"],"play":true}` to transfer. New `spotify_get_devices()`
-  + `spotify_transfer_playback(id)` in `spotify.c` (needs a JSON-array iterator —
-  current scanner only has `json_arr_first_obj`); a "DEVICES" list screen off
-  Settings (tap a device to switch). Bonus: switching to a desktop/Connect
-  speaker also sidesteps the phone-volume limitation.
+- **Sonos direct control — DONE (transport/volume + album start), needs hardware verify.**
+  `sonos.c` drives play/pause/next/prev/seek/volume over UPnP/SOAP (port 1400)
+  when the active device is restricted; `main.c` routes by matching the active
+  device name to `SONOS_DEVICES` (name->IP map in secrets.h; single `SONOS_HOST`
+  also works). Transport/volume verified on two speakers across two Sonos systems.
+  **Album start ON the Sonos is now implemented** (`sonos_play_spotify_album`):
+  `BecomeCoordinatorOfStandaloneGroup` → enqueue the album cpcontainer
+  (`x-rincon-cpcontainer:1004206cspotify%3aalbum%3a<id>` + DIDL whose cdudn carries
+  the household Spotify service id `SONOS_SP_STYPE` / serial `SONOS_SP_SN`) → point
+  the transport at the local queue (`x-rincon-queue:<uuid>#0`) → Play.
+  `SCMD_PLAY_ALBUM` routes here whenever a Sonos is the active/selected target.
+  **Fixed (needs hardware confirm):** the queue transport URI used `:0` instead of
+  `#0`, so `SetAVTransportURI` returned UPnP 714 *after* the album was already
+  enqueued (queue full, transport empty → Play 500). The cpcontainer-direct first
+  attempt still 714s on this firmware — benign, it falls through to the queue path.
+- **Active-device switching — DONE, needs hardware verify.** `spotify_get_devices()`
+  + `spotify_transfer_playback(id)` added to `spotify.c` (with a JSON-array
+  iterator); a DEVICES screen off the browser lists Spotify Connect devices
+  (tap = transfer via `PUT /me/player`) and configured Sonos speakers
+  (tap = drive over UPnP). Bonus: transferring to a desktop/Connect device also
+  sidesteps the phone-volume limitation.
 - **Cover Flow — show more covers either side.** Today only 1 shows each side
   because card slots are 248 px apart (2nd neighbour is off-screen). Needs a
   cover-flow-specific tighter slot spacing AND centre-on-top z-ordering; both

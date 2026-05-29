@@ -224,6 +224,14 @@ enum { BROWSER_CAROUSEL = 0, BROWSER_FOCUS = 1, BROWSER_COVERFLOW = 2,
 static uint8_t s_browser_style = BROWSER_CAROUSEL;
 static bool    s_show_sel_line = true;   /* centred-card underline (Settings toggle) */
 
+/* Backlight brightness (BSP LEDC PWM, 0..100). Floored at BRIGHTNESS_MIN so the
+ * screen can never be dimmed to fully black (which would read as a hang). The
+ * value is NVS-persisted and re-applied at boot. */
+#define BRIGHTNESS_MIN      10
+#define BRIGHTNESS_MAX     100
+#define BRIGHTNESS_DEFAULT 100
+static uint8_t s_brightness = BRIGHTNESS_DEFAULT;
+
 /* True for any style that transforms cards per scroll position (Focus + CF). */
 #define BROWSER_STYLE_TRANSFORMS(s) ((s) == BROWSER_FOCUS || (s) == BROWSER_COVERFLOW)
 
@@ -248,6 +256,8 @@ static ui_device_t s_dev_entries[16];
 static int         s_dev_entry_count = 0;
 static lv_obj_t *s_line_toggle_btn = NULL;   /* Settings ON/OFF toggle for it */
 static lv_obj_t *s_line_toggle_lbl = NULL;
+static lv_obj_t *s_brightness_slider = NULL;   /* Settings backlight slider */
+static lv_obj_t *s_brightness_val    = NULL;   /* "NN%" label beside it */
 
 #define NVS_SETTINGS_NS       "settings"
 #define NVS_KEY_TRANSITION    "transition"
@@ -255,6 +265,7 @@ static lv_obj_t *s_line_toggle_lbl = NULL;
 #define NVS_KEY_ACCENT        "accent"
 #define NVS_KEY_BROWSER_STYLE "browser_style"
 #define NVS_KEY_SEL_LINE      "sel_line"
+#define NVS_KEY_BRIGHTNESS    "brightness"
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
@@ -296,9 +307,12 @@ static void save_theme(uint8_t idx);
 static void save_accent(uint8_t idx);
 static void save_browser_style(uint8_t idx);
 static void save_sel_line(uint8_t v);
+static void save_brightness(uint8_t v);
 static void on_browser_style_option(lv_event_t *e);
 static void on_line_toggle(lv_event_t *e);
 static void refresh_line_selection(void);
+static void on_brightness_changed(lv_event_t *e);
+static void on_brightness_released(lv_event_t *e);
 static void on_hint_to_np(lv_event_t *e);
 static void on_hint_to_browser(lv_event_t *e);
 static void on_open_devices(lv_event_t *e);
@@ -1012,6 +1026,39 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_font(s_line_toggle_lbl, &lv_font_montserrat_24, 0);
     lv_obj_center(s_line_toggle_lbl);
 
+    /* Backlight brightness: section header + live "NN%" readout on one line, a
+     * full-width slider below. Live-applies on drag (VALUE_CHANGED) so the panel
+     * dims as you move it; persists to NVS on release. */
+    lv_obj_t *bl_section = lv_label_create(s_screen_settings);
+    lv_label_set_text(bl_section, "BRIGHTNESS");
+    lv_obj_set_style_text_color(bl_section, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(bl_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_letter_space(bl_section, 2, 0);
+    lv_obj_align(bl_section, LV_ALIGN_TOP_LEFT, 24, 716);
+
+    s_brightness_val = lv_label_create(s_screen_settings);
+    lv_obj_set_style_text_color(s_brightness_val, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(s_brightness_val, &lv_font_montserrat_24, 0);
+    lv_obj_align(s_brightness_val, LV_ALIGN_TOP_RIGHT, -140, 716);
+    {
+        char b[8];
+        snprintf(b, sizeof b, "%d%%", s_brightness);
+        lv_label_set_text(s_brightness_val, b);
+    }
+
+    s_brightness_slider = lv_slider_create(s_screen_settings);
+    lv_obj_set_size(s_brightness_slider, 520, 16);
+    lv_obj_align(s_brightness_slider, LV_ALIGN_TOP_MID, 0, 752);
+    lv_slider_set_range(s_brightness_slider, BRIGHTNESS_MIN, BRIGHTNESS_MAX);
+    lv_slider_set_value(s_brightness_slider, s_brightness, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_brightness_slider, lv_color_hex(s_th->track), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_brightness_slider, lv_color_hex(accent_color()), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_brightness_slider, lv_color_hex(accent_color()), LV_PART_KNOB);
+    lv_obj_set_style_radius(s_brightness_slider, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_brightness_slider, 4, LV_PART_INDICATOR);
+    lv_obj_add_event_cb(s_brightness_slider, on_brightness_changed,  LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(s_brightness_slider, on_brightness_released, LV_EVENT_RELEASED,      NULL);
+
     refresh_settings_selection();
     refresh_theme_selection();
     refresh_accent_selection();
@@ -1217,6 +1264,12 @@ static void load_settings(void)
     }
     uint8_t sl = 1;
     if (nvs_get_u8(h, NVS_KEY_SEL_LINE, &sl) == ESP_OK) s_show_sel_line = (sl != 0);
+    uint8_t br = BRIGHTNESS_DEFAULT;
+    if (nvs_get_u8(h, NVS_KEY_BRIGHTNESS, &br) == ESP_OK) {
+        if (br < BRIGHTNESS_MIN) br = BRIGHTNESS_MIN;
+        if (br > BRIGHTNESS_MAX) br = BRIGHTNESS_MAX;
+        s_brightness = br;
+    }
     nvs_close(h);
 }
 
@@ -1265,6 +1318,15 @@ static void save_sel_line(uint8_t v)
     nvs_close(h);
 }
 
+static void save_brightness(uint8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_BRIGHTNESS, v);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 void ui_init(lv_image_dsc_t *art_dsc)
 {
     s_art_dsc = art_dsc;
@@ -1303,6 +1365,7 @@ void ui_init(lv_image_dsc_t *art_dsc)
     bsp_display_lock(-1);
 
     load_settings();   /* restore saved transition style (default NONE if unset) */
+    bsp_display_brightness_set(s_brightness);   /* restore saved backlight level */
     build_browser_screen();
     build_np_screen();
     build_settings_screen();
@@ -1834,6 +1897,26 @@ static void on_line_toggle(lv_event_t *e)
     }
     refresh_line_selection();
     ESP_LOGI(TAG, "selection line -> %s", s_show_sel_line ? "ON" : "OFF");
+}
+
+static void on_brightness_changed(lv_event_t *e)
+{
+    (void)e;
+    if (!s_brightness_slider) return;
+    s_brightness = (uint8_t)lv_slider_get_value(s_brightness_slider);
+    bsp_display_brightness_set(s_brightness);   /* live dim while dragging */
+    if (s_brightness_val) {
+        char b[8];
+        snprintf(b, sizeof b, "%d%%", s_brightness);
+        lv_label_set_text(s_brightness_val, b);
+    }
+}
+
+static void on_brightness_released(lv_event_t *e)
+{
+    (void)e;
+    save_brightness(s_brightness);              /* persist once, on release */
+    ESP_LOGI(TAG, "brightness -> %d%%", s_brightness);
 }
 
 static void rebuild_browser_cb(void *unused)
