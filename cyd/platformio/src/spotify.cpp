@@ -151,8 +151,13 @@ void spotify_update() {
         }
     }
 
+    // Adaptive poll: fast (2 s) while playing, back off to 15 s when paused or
+    // idle. Each poll is a TLS round-trip, so hammering a paused device every
+    // 2 s just burns heap/CPU. Button presses act immediately via the command
+    // path, not this poll, so control responsiveness is unaffected.
     static unsigned long last_fetch = 0;
-    if (access_token != "" && millis() - last_fetch > 2000) {
+    unsigned long poll_interval = current_track_info.is_playing ? 2000UL : 15000UL;
+    if (access_token != "" && millis() - last_fetch > poll_interval) {
         last_fetch = millis();
         spotify_fetch_player_state();
     }
@@ -161,22 +166,56 @@ void spotify_update() {
 // ── Player state poll ──────────────────────────────────────────────────────
 // Uses /v1/me/player (superset of /currently-playing) — includes shuffle_state
 // and device.volume_percent which are not available on the /currently-playing endpoint.
+//
+// Persistent keep-alive client for this hot path (polled every 2-15 s): reusing
+// one WiFiClientSecure + HTTPClient keeps the TLS session open instead of
+// re-handshaking (~0.5-2 s + ~30 KB heap) on every poll. Commands and token
+// refresh stay one-shot — they're infrequent. Only this function touches these,
+// and the Spotify task runs poll + commands serially, so no locking is needed.
+static WiFiClientSecure *s_poll_client = nullptr;
+static HTTPClient        s_poll_https;
+
+static void poll_client_close() {
+    s_poll_https.end();
+    if (s_poll_client) { delete s_poll_client; s_poll_client = nullptr; }
+}
+
 void spotify_fetch_player_state() {
     if (access_token == "" || WiFi.status() != WL_CONNECTED) return;
 
     ui_suspend_sprite();
-    WiFiClientSecure *client = new WiFiClientSecure;
-    client->setCACertBundle(rootca_crt_bundle_start);
+    if (!s_poll_client) {
+        s_poll_client = new WiFiClientSecure;
+        s_poll_client->setCACertBundle(rootca_crt_bundle_start);
+        s_poll_https.setReuse(true);   // keep the TCP+TLS socket alive between polls
+        s_poll_https.setTimeout(2000);
+    }
 
-    HTTPClient https;
-    https.setTimeout(2000);
-    if (https.begin(*client, "https://api.spotify.com/v1/me/player")) {
-        https.addHeader("Authorization", "Bearer " + access_token);
-        int httpCode = https.GET();
+    int httpCode = 0;
+    if (s_poll_https.begin(*s_poll_client, "https://api.spotify.com/v1/me/player")) {
+        s_poll_https.addHeader("Authorization", "Bearer " + access_token);
+        httpCode = s_poll_https.GET();
 
         if (httpCode == HTTP_CODE_OK) {
+            // Filter: parse only the fields we read, so ArduinoJson skips the
+            // rest of the large /me/player response (device/context/
+            // available_actions/...) instead of building a tree for all of it.
+            JsonDocument filter;
+            filter["is_playing"]    = true;
+            filter["shuffle_state"] = true;
+            filter["progress_ms"]   = true;
+            filter["device"]["id"]              = true;
+            filter["device"]["volume_percent"] = true;
+            filter["item"]["name"]                      = true;
+            filter["item"]["duration_ms"]               = true;
+            filter["item"]["artists"][0]["name"]        = true;
+            filter["item"]["album"]["name"]             = true;
+            filter["item"]["album"]["images"][0]["url"] = true;
+
             JsonDocument doc;
-            DeserializationError error = deserializeJson(doc, https.getStream());
+            DeserializationError error = deserializeJson(
+                doc, s_poll_https.getStream(),
+                DeserializationOption::Filter(filter));
             if (!error && doc["item"]) {
                 current_track_info.is_playing   = doc["is_playing"].as<bool>();
                 current_track_info.shuffle_state = doc["shuffle_state"].as<bool>();
@@ -221,9 +260,14 @@ void spotify_fetch_player_state() {
         } else {
             Serial.printf("Player state error: %d\n", httpCode);
         }
+        s_poll_https.end();   // with setReuse(true), keeps the socket for the next poll
     }
-    https.end();
-    delete client;
+
+    // A connection-level failure (httpCode <= 0) means the kept-alive socket is
+    // dead (server closed it, or a WiFi blip). Drop it so the next poll opens a
+    // fresh connection instead of reusing a broken handle.
+    if (httpCode <= 0) poll_client_close();
+
     ui_resume_sprite();
 }
 

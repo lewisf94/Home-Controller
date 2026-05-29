@@ -508,7 +508,12 @@ bool spotify_fetch_player(spotify_track_t *info)
         ESP_LOGE(TAG, "/me/player failed (err=%d status=%d)", (int)err, status);
     }
 
-    if (status == 0) poll_client_close();
+    /* Keep the connection alive for the next poll on HTTP-layer errors (401,
+     * 204, etc.). On transport failure (err != ESP_OK) the TLS session is
+     * broken -- drop the client so the next poll opens a fresh connection.
+     * (Was gated on status==0, which missed timeouts/conn-resets that report a
+     * non-zero status, leaving a dead keep-alive handle for the next poll.) */
+    if (err != ESP_OK) poll_client_close();
     free(buf.data);
     return ok;
 }
@@ -537,11 +542,12 @@ unsigned char *spotify_download_bytes(const char *url, size_t *out_len)
     if (!url || url[0] == '\0' || !out_len) return NULL;
     *out_len = 0;
 
-    /* Album JPEGs are typically 30-120 KB. The growing-buffer in
-     * http_event_handler caps at RESP_MAX_CAP (16 KB) which is too
-     * small -- pre-allocate a larger buffer here so we don't trip
-     * that ceiling. The handler will realloc up if needed, but its
-     * own MAX still applies; we therefore set buf.cap up front. */
+    /* Album JPEGs are typically 30-120 KB and fit under RESP_MAX_CAP
+     * (262144 = 256 KB). Pre-allocate 8 KB so the growing buffer in
+     * http_event_handler doesn't realloc from scratch over the first chunks.
+     * NOTE: this RAM-decode path (with album_art_decode) is the intended art
+     * path on a PSRAM board; the current builds decode via a LittleFS file
+     * instead, so spotify_download_bytes is presently unused. */
     resp_buf_t buf = {0};
     buf.cap  = 8 * 1024;
     buf.data = malloc(buf.cap);

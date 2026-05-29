@@ -559,11 +559,12 @@ unsigned char *spotify_download_bytes(const char *url, size_t *out_len)
     if (!url || url[0] == '\0' || !out_len) return NULL;
     *out_len = 0;
 
-    /* Album JPEGs are typically 30-120 KB. The growing-buffer in
-     * http_event_handler caps at RESP_MAX_CAP (16 KB) which is too
-     * small -- pre-allocate a larger buffer here so we don't trip
-     * that ceiling. The handler will realloc up if needed, but its
-     * own MAX still applies; we therefore set buf.cap up front. */
+    /* Album JPEGs are typically 30-120 KB and fit under RESP_MAX_CAP
+     * (262144 = 256 KB). Pre-allocate 8 KB so the growing buffer in
+     * http_event_handler doesn't realloc from scratch over the first chunks.
+     * NOTE: this RAM-decode path (with album_art_decode) is the intended art
+     * path on this PSRAM board; the build currently decodes via a LittleFS
+     * file instead, so spotify_download_bytes is presently unused. */
     resp_buf_t buf = {0};
     buf.cap  = 8 * 1024;
     buf.data = malloc(buf.cap);

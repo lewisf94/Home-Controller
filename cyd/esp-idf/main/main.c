@@ -206,7 +206,9 @@ static void spotify_task(void *arg)
 
     spotify_track_t info;
     while (1) {
+        bool playing = false;
         if (spotify_fetch_player(&info)) {
+            playing = info.is_playing;
             ESP_LOGI(TAG, "now playing: %s -- %s [%lu/%lu ms, %s]",
                      info.artist, info.title,
                      (unsigned long)info.progress_ms,
@@ -232,8 +234,11 @@ static void spotify_task(void *arg)
             ui_set_track_info(NULL);
         }
 
-        /* Poll every 5 s, but wake up early for any queued command. */
-        TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
+        /* Adaptive poll: 5 s while playing, back off to 15 s when paused or
+         * idle (each poll is a TLS round-trip). A queued command still wakes
+         * the task early, so control stays responsive. */
+        TickType_t deadline = xTaskGetTickCount() +
+                              pdMS_TO_TICKS(playing ? 5000 : 15000);
         for (;;) {
             scmd_t cmd = {0};
             TickType_t now  = xTaskGetTickCount();

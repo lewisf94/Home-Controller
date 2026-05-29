@@ -421,8 +421,11 @@ static void spotify_task(void *arg)
             poll_and_publish(&info);
         }
 
-        /* Poll every 5 s, but wake early to service any queued command. */
-        TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
+        /* Adaptive poll: 5 s while playing, back off to 15 s when paused or
+         * idle (each poll is a TLS round-trip). A queued command still wakes
+         * the task early, so control stays responsive. */
+        TickType_t deadline = xTaskGetTickCount() +
+                              pdMS_TO_TICKS(info.is_playing ? 5000 : 15000);
         for (;;) {
             scmd_t cmd = {0};
             TickType_t now  = xTaskGetTickCount();
