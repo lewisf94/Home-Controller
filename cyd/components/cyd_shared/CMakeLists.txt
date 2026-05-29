@@ -1,0 +1,21 @@
+idf_component_register(
+    SRCS
+        "ui.c"
+        "input.c"
+        "mcp_input.c"
+        "album_art.cpp"
+        "littlefs.c"
+    INCLUDE_DIRS "include"
+    REQUIRES
+        lvgl
+        esp_lvgl_port
+    PRIV_REQUIRES
+        esp_timer
+        esp_wifi
+        nvs_flash
+        joltwallet__littlefs
+        vfs
+        esp_driver_i2c
+        esp_driver_gpio
+        bitbank2__jpegdec
+)
