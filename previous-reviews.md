@@ -11,14 +11,17 @@ instead of repeating. Newest entries at the bottom.
 > and **rotate to a new area** rather than repeating one already covered.
 
 **Coverage so far:** Security ×2 (05-22, 05-23), Performance ×1 (05-24),
-Code quality ×1 (05-26), Testing/reliability ×1 (05-28). The Security actionable
+Code quality ×1 (05-26), Testing/reliability ×1 (05-28), Architecture ×1 (05-29).
+The Security actionable
 findings have since been fixed on `main` (TLS verification on both builds, log
 redaction, `.cache` gitignored, setup docs + `get_spotify_token.py` point at the
 gitignored `secrets.h`, IDF token-refresh `snprintf` guard). Most Performance
 findings from 05-24 are still open (only the poll keep-alive landed; the rest
 were lower-priority/deferred). All seven 05-26 Code-quality findings are still
-open as of 05-28. **Next runs should cover Architecture or Missing features**
-— not Security, Performance, Code quality, or Testing/reliability.
+open as of 05-28. All eight 05-28 Testing/reliability findings are still open as
+of 05-29. **Next run should cover Missing features / edge cases** — the only
+rotation area not yet visited. After that, restart the rotation, preferring the
+least-recently-covered area.
 
 ---
 
@@ -96,3 +99,24 @@ esp_littlefs_info return. Verified all seven 05-26 Code-quality findings are
 still open (dead ui_fancy_backup.cpp, Arduino dead code after return, stale
 "16 KB" comment, shared-component duplication, plus the volume-50/401/truncation
 items that overlap with today). Suggestions made: 8.
+
+2026-05-29 - Area covered: Architecture. Key findings: The per-board "wiring"
+layer is copy-pasted, not shared -- the three ESP-IDF `main.c` files (soon four
+with the planned P4-HA build) each re-implement the same ~290 lines of WiFi
+state machine, SPI/LCD/touch bring-up, NVS init, the `scmd_t` command-queue type,
+`_post_cmd`, and the six `ui_request_*()` posters; the two CYD `main.c` files
+differ by only ~50 non-comment lines (the backend task body) yet share zero code,
+so the queue contract and bring-up must be hand-synced N ways. The backend
+abstraction itself is sound (`ui_request_*()` + `spotify_track_t` +
+`ui_set_track_info()` cleanly decouple UI from Spotify-vs-HA), but it is informal:
+the HA build keeps a file literally named `spotify.h` that contains no Spotify
+client at all, purely so `ui.c`'s `#include "spotify.h"` still compiles -- a
+fragile naming hack where a neutral `player.h`/`track_info.h` + a documented
+backend contract belongs. `input.c` also owns playback state (`s_current_vol`,
+`s_is_muted`) that conceptually belongs to the player model, which is the root of
+the "assumes volume 50" bug. And there is no connectivity-supervisor layer: WiFi
+recovery is inlined in an event handler that has a dead-end (WIFI_FAIL_BIT, never
+retries again) -- the single biggest structural point of failure, carried over
+from 05-28. Verified all eight 05-28 Testing/reliability findings are still open
+(WiFi give-up, 404 wake, volume-50, 401-in-command-path, no command retry/feedback,
+MCP no re-probe, album truncation, unchecked esp_littlefs_info). Suggestions made: 6.
