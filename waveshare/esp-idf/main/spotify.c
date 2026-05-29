@@ -455,12 +455,15 @@ bool spotify_fetch_player(spotify_track_t *info)
 
         /* Active device: is_restricted gates whether the Spotify Web API can
          * control it (Sonos etc. report true -- readable but not controllable). */
+        info->volume_pct = -1;
         const char *dev = json_obj_get(buf.data, "device");
         if (dev && *dev == '{') {
             const char *restr_v = json_obj_get(dev, "is_restricted");
             if (restr_v) info->device_restricted = (*restr_v == 't');
             const char *dname_v = json_obj_get(dev, "name");
             if (dname_v) json_copy_string(dname_v, info->device_name, sizeof(info->device_name));
+            const char *vol_v = json_obj_get(dev, "volume_percent");
+            if (vol_v) info->volume_pct = atoi(vol_v);
         }
 
         /* Drill into item.{name, duration_ms, album.name, artists[0].name,
@@ -794,4 +797,67 @@ bool spotify_set_volume(int pct)
     snprintf(url, sizeof(url),
              "https://api.spotify.com/v1/me/player/volume?volume_percent=%d", pct);
     return _cmd_ok(_do_cmd(HTTP_METHOD_PUT, url, NULL));
+}
+
+bool spotify_transfer_playback(const char *device_id)
+{
+    if (!device_id || !device_id[0]) return false;
+    char body[128];
+    int n = snprintf(body, sizeof body,
+                     "{\"device_ids\":[\"%s\"],\"play\":true}", device_id);
+    if (n <= 0 || n >= (int)sizeof body) return false;
+    return _cmd_ok(_do_cmd(HTTP_METHOD_PUT,
+                           "https://api.spotify.com/v1/me/player", body));
+}
+
+bool spotify_get_devices(spotify_device_t *out, int max, int *count)
+{
+    if (count) *count = 0;
+    if (!out || max <= 0) return false;
+    if (!ensure_token()) return false;
+
+    resp_buf_t resp = {0};
+    esp_http_client_config_t cfg = {
+        .url               = "https://api.spotify.com/v1/me/player/devices",
+        .method            = HTTP_METHOD_GET,
+        .event_handler     = http_event_handler,
+        .user_data         = &resp,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 5000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+
+    char bearer[320];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
+    esp_http_client_set_header(client, "Authorization", bearer);
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status   = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    int n = 0;
+    if (err == ESP_OK && status == 200 && resp.data) {
+        const char *obj = json_arr_first_obj(json_obj_get(resp.data, "devices"));
+        while (obj && n < max) {
+            spotify_device_t *d = &out[n];
+            memset(d, 0, sizeof *d);
+            const char *v;
+            if ((v = json_obj_get(obj, "id")))   json_copy_string(v, d->id,   sizeof d->id);
+            if ((v = json_obj_get(obj, "name"))) json_copy_string(v, d->name, sizeof d->name);
+            if ((v = json_obj_get(obj, "type"))) json_copy_string(v, d->type, sizeof d->type);
+            v = json_obj_get(obj, "is_active");
+            d->is_active = (v && *v == 't');
+            if (d->id[0] && d->name[0]) n++;        /* skip id-less / nameless rows */
+
+            const char *after = json_skip_value(obj);
+            while (*after==' '||*after=='\t'||*after=='\n'||*after=='\r'||*after==',') after++;
+            obj = (*after == '{') ? after : NULL;
+        }
+    } else {
+        ESP_LOGW(TAG, "get_devices err=%d status=%d", (int)err, status);
+    }
+    free(resp.data);
+    if (count) *count = n;
+    return (err == ESP_OK && status == 200);
 }

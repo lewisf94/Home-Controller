@@ -93,6 +93,7 @@ static const char *TAG = "ui";
 
 #define NP_TITLE_Y    308
 #define NP_ARTIST_Y   348
+#define NP_DEVICE_Y   374   /* small device-name text below artist */
 
 #define BR_TITLE_Y    298
 #define BR_ARTIST_Y   340
@@ -117,9 +118,13 @@ static lv_obj_t *s_np_remain   = NULL;   /* -M:SS right of the bar */
 static lv_obj_t *s_seek_thumb  = NULL;   /* drag knob, shown only while scrubbing */
 static lv_obj_t *s_np_play_lbl = NULL;   /* centre transport-key icon (play/pause) */
 static lv_obj_t *s_vol_hud     = NULL;
+static lv_obj_t *s_np_volume   = NULL;     /* now-playing volume fader */
+static lv_obj_t *s_np_device   = NULL;     /* small device-name label below artist */
+static uint32_t  s_vol_hold_until = 0;     /* suppress poll-driven fader updates while the user adjusts it */
 
 static lv_timer_t *s_vol_hud_timer = NULL;
 static bool        s_seeking        = false;
+static bool        s_vol_dragging   = false; /* guard: vertical slider drag must not fire swipe-to-browser */
 static bool        s_hint_bounced   = false;   /* browser hint bounces once, first boot only */
 
 /* Seek reconciliation. After a local seek the /me/player poll keeps reporting
@@ -233,6 +238,14 @@ static lv_obj_t *s_accent_labels[ACCENT_COUNT]           = {0};
 static lv_obj_t *s_brstyle_btns[BROWSER_STYLE_COUNT]      = {0};
 static lv_obj_t *s_brstyle_labels[BROWSER_STYLE_COUNT]    = {0};
 static lv_obj_t *s_sel_line        = NULL;   /* the centred-card underline object */
+
+/* Device selector screen: a scrollable list rebuilt by ui_set_devices().
+ * s_dev_entries caches the current rows so a row's click handler can look up its
+ * id/host + kind by index (the button user_data is that index). */
+static lv_obj_t   *s_screen_devices  = NULL;
+static lv_obj_t   *s_dev_list        = NULL;
+static ui_device_t s_dev_entries[16];
+static int         s_dev_entry_count = 0;
 static lv_obj_t *s_line_toggle_btn = NULL;   /* Settings ON/OFF toggle for it */
 static lv_obj_t *s_line_toggle_lbl = NULL;
 
@@ -288,9 +301,17 @@ static void on_line_toggle(lv_event_t *e);
 static void refresh_line_selection(void);
 static void on_hint_to_np(lv_event_t *e);
 static void on_hint_to_browser(lv_event_t *e);
+static void on_open_devices(lv_event_t *e);
+static void on_devices_back(lv_event_t *e);
+static void on_device_tap(lv_event_t *e);
+static void build_devices_screen(void);
 static void on_transport_prev(lv_event_t *e);
 static void on_transport_toggle(lv_event_t *e);
 static void on_transport_next(lv_event_t *e);
+static void on_vol_changed(lv_event_t *e);
+static void on_vol_released(lv_event_t *e);
+static void on_vol_press(lv_event_t *e);
+static void on_vol_press_lost(lv_event_t *e);
 static void refresh_play_icon(void);
 static void position_seek_thumb(int32_t pct);
 
@@ -576,6 +597,25 @@ static void build_browser_screen(void)
     lv_obj_set_style_bg_opa(gear, LV_OPA_40, LV_PART_MAIN | LV_STATE_PRESSED);
     lv_obj_add_event_cb(gear, on_open_settings, LV_EVENT_CLICKED, NULL);
     make_faders_icon(gear);
+
+    /* Devices button (left of the gear) -> the device selector. Same flat,
+     * transparent-at-rest treatment as the gear. */
+    lv_obj_t *devbtn = lv_button_create(s_screen_browser);
+    lv_obj_set_size(devbtn, 44, 28);
+    lv_obj_align(devbtn, LV_ALIGN_TOP_RIGHT, -56, 0);
+    lv_obj_set_style_pad_all(devbtn, 0, 0);
+    lv_obj_set_style_bg_opa(devbtn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(devbtn, 3, 0);
+    lv_obj_set_style_shadow_width(devbtn, 0, 0);
+    lv_obj_set_style_bg_color(devbtn, lv_color_hex(accent_color()),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(devbtn, LV_OPA_40, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_add_event_cb(devbtn, on_open_devices, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *devlbl = lv_label_create(devbtn);
+    lv_label_set_text(devlbl, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_color(devlbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(devlbl, &lv_font_montserrat_24, 0);
+    lv_obj_center(devlbl);
 }
 
 static void build_np_screen(void)
@@ -600,11 +640,11 @@ static void build_np_screen(void)
     lv_obj_set_size(s_np_art, ART_W, ART_H);
     lv_obj_set_pos(s_np_art, ART_X, ART_Y);
     lv_obj_remove_flag(s_np_art, LV_OBJ_FLAG_CLICKABLE);
-    /* Thin accent-tinted frame, square corners to match the browser cards. */
+    /* Fit any cover (Spotify art decodes to ~320) into the box, centered and
+     * aspect-preserved, no crop. CONTAIN re-applies on every src change. */
+    lv_image_set_inner_align(s_np_art, LV_IMAGE_ALIGN_CONTAIN);
     lv_obj_set_style_radius(s_np_art, 0, 0);
-    lv_obj_set_style_border_width(s_np_art, 2, 0);
-    lv_obj_set_style_border_color(s_np_art, lv_color_hex(accent_color()), 0);
-    lv_obj_set_style_border_opa(s_np_art, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(s_np_art, 0, 0);
     if (s_art_dsc && s_art_dsc->data) {
         lv_image_set_src(s_np_art, s_art_dsc);
     }
@@ -618,6 +658,14 @@ static void build_np_screen(void)
     style_label(s_np_artist,
                 s_font_24 ? s_font_24 : &lv_font_montserrat_24,
                 lv_color_hex(s_th->text2), NP_ARTIST_Y);
+
+    s_np_device = lv_label_create(s_screen_np);
+    lv_label_set_text(s_np_device, "");
+    lv_obj_set_width(s_np_device, SCREEN_W - 32);
+    lv_obj_set_style_text_align(s_np_device, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(s_np_device, lv_color_hex(s_th->dim), 0);
+    lv_obj_set_style_text_font(s_np_device, &lv_font_montserrat_20, 0);
+    lv_obj_set_pos(s_np_device, 16, NP_DEVICE_Y);
 
     s_np_progress = lv_bar_create(s_screen_np);
     lv_obj_set_size(s_np_progress, PROG_W, PROG_H);
@@ -731,6 +779,36 @@ static void build_np_screen(void)
     lv_obj_set_style_text_font(s_vol_hud, &lv_font_montserrat_24, 0);
     lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -8, 6);
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
+
+    /* Vertical volume fader in the open right column (clear of the art, the
+     * remaining-time label below, and the swipe chevron to its right). It
+     * reflects the active device's level; the command fires on release (one per
+     * drag, not per pixel) with the HUD giving live feedback during the drag. */
+    lv_obj_t *vol_ico = lv_label_create(s_screen_np);
+    lv_label_set_text(vol_ico, LV_SYMBOL_VOLUME_MAX);
+    lv_obj_set_style_text_color(vol_ico, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(vol_ico, &lv_font_montserrat_20, 0);
+    lv_obj_set_pos(vol_ico, 715, 40);
+
+    s_np_volume = lv_slider_create(s_screen_np);
+    lv_obj_set_size(s_np_volume, 44, 236);          /* h > w -> vertical slider; 44px wide for touch */
+    lv_obj_set_pos(s_np_volume, 708, 66);
+    lv_slider_set_range(s_np_volume, 0, 100);
+    lv_slider_set_value(s_np_volume, 50, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(s_th->track), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(accent_color()), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(accent_color()), LV_PART_KNOB);
+    lv_obj_set_style_radius(s_np_volume, 6, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_np_volume, 6, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_np_volume, 22, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s_np_volume, 4, LV_PART_KNOB);
+    /* PRESSED sets s_vol_dragging so on_gesture won't misread the drag as a
+     * swipe-to-browser. PRESS_LOST handles the case where LVGL reclassifies the
+     * touch mid-drag. Both RELEASED paths clear the flag. */
+    lv_obj_add_event_cb(s_np_volume, on_vol_press,    LV_EVENT_PRESSED,       NULL);
+    lv_obj_add_event_cb(s_np_volume, on_vol_changed,  LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(s_np_volume, on_vol_released, LV_EVENT_RELEASED,      NULL);
+    lv_obj_add_event_cb(s_np_volume, on_vol_press_lost, LV_EVENT_PRESS_LOST,  NULL);
 }
 
 /* Highlight the active row by accent fill + black text (no checkmark -- the
@@ -955,6 +1033,79 @@ static void on_settings_back(lv_event_t *e)
     if (s_screen_browser) lv_screen_load(s_screen_browser);
 }
 
+static void build_devices_screen(void)
+{
+    s_screen_devices = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_devices, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(s_screen_devices, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_devices, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_button_create(s_screen_devices);
+    lv_obj_set_size(back, 120, 44);
+    lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
+    lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_radius(back, 3, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_add_event_cb(back, on_devices_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(back_lbl);
+
+    lv_obj_t *title = lv_label_create(s_screen_devices);
+    lv_label_set_text(title, "DEVICES");
+    lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_letter_space(title, 3, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+
+    /* Scrollable list container; ui_set_devices() fills it with one row per
+     * device. Starts empty (on_open_devices shows a placeholder). */
+    s_dev_list = lv_obj_create(s_screen_devices);
+    lv_obj_set_size(s_dev_list, 760, 384);
+    lv_obj_align(s_dev_list, LV_ALIGN_TOP_MID, 0, 66);
+    lv_obj_set_style_bg_opa(s_dev_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_dev_list, 0, 0);
+    lv_obj_set_style_pad_all(s_dev_list, 4, 0);
+    lv_obj_set_style_pad_row(s_dev_list, 8, 0);
+    lv_obj_set_flex_flow(s_dev_list, LV_FLEX_FLOW_COLUMN);
+}
+
+static void on_open_devices(lv_event_t *e)
+{
+    (void)e;
+    if (!s_screen_devices) return;
+    /* Placeholder while the blocking device fetch runs on the Spotify task. */
+    if (s_dev_list) {
+        lv_obj_clean(s_dev_list);
+        s_dev_entry_count = 0;
+        lv_obj_t *lbl = lv_label_create(s_dev_list);
+        lv_label_set_text(lbl, "Scanning...");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+    }
+    lv_screen_load(s_screen_devices);   /* instant, like settings */
+    ui_request_get_devices();
+}
+
+static void on_devices_back(lv_event_t *e)
+{
+    (void)e;
+    if (s_screen_browser) lv_screen_load(s_screen_browser);
+}
+
+static void on_device_tap(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_dev_entry_count) return;
+    const ui_device_t *d = &s_dev_entries[i];
+    if (d->is_sonos) ui_request_select_sonos(d->id);
+    else             ui_request_transfer(d->id);
+    /* Jump to now-playing; the settle re-poll populates it. */
+    if (s_screen_np) lv_screen_load(s_screen_np);
+}
+
 static void on_transition_option(lv_event_t *e)
 {
     ui_transition_t style = (ui_transition_t)(uintptr_t)lv_event_get_user_data(e);
@@ -995,15 +1146,18 @@ static void apply_theme_cb(void *unused)
     lv_obj_t *active      = lv_screen_active();
     bool      was_np      = (active == s_screen_np);
     bool      was_setting = (active == s_screen_settings);
+    bool      was_devices = (active == s_screen_devices);
     int       saved_card  = s_centered_card;   /* preserve carousel position */
 
     lv_obj_t *old_browser  = s_screen_browser;
     lv_obj_t *old_np       = s_screen_np;
     lv_obj_t *old_settings = s_screen_settings;
+    lv_obj_t *old_devices  = s_screen_devices;
 
     build_browser_screen();
     build_np_screen();
     build_settings_screen();
+    build_devices_screen();
 
     /* Restore carousel position -- build always starts at card 0. Force the
      * layout so scroll bounds are computed before we set the offset. */
@@ -1025,14 +1179,19 @@ static void apply_theme_cb(void *unused)
     /* Restore now-playing labels from cached track state. */
     if (s_track.title[0]  && s_np_title)  lv_label_set_text(s_np_title,  s_track.title);
     if (s_track.artist[0] && s_np_artist) lv_label_set_text(s_np_artist, s_track.artist);
+    if (s_np_device) lv_label_set_text(s_np_device, s_track.device_name[0] ? s_track.device_name : "");
+    if (s_track.volume_pct >= 0 && s_np_volume)
+        lv_slider_set_value(s_np_volume, s_track.volume_pct, LV_ANIM_OFF);
     update_progress_bar();
 
     /* Activate the equivalent new screen first -- the active screen can't be
      * deleted -- then drop the old ones. */
-    lv_screen_load(was_np ? s_screen_np : was_setting ? s_screen_settings : s_screen_browser);
+    lv_screen_load(was_np ? s_screen_np : was_setting ? s_screen_settings
+                 : was_devices ? s_screen_devices : s_screen_browser);
     lv_obj_delete(old_browser);
     lv_obj_delete(old_np);
     lv_obj_delete(old_settings);
+    if (old_devices) lv_obj_delete(old_devices);
 }
 
 static void load_settings(void)
@@ -1147,6 +1306,7 @@ void ui_init(lv_image_dsc_t *art_dsc)
     build_browser_screen();
     build_np_screen();
     build_settings_screen();
+    build_devices_screen();
     lv_screen_load(s_screen_browser);
 
     /* Local-progress simulation -- ticks 200 ms of progress every 200 ms
@@ -1190,9 +1350,15 @@ void ui_set_track_info(const spotify_track_t *info)
         s_track.progress_ms = keep_progress;
         if (s_np_title)  lv_label_set_text(s_np_title, info->title);
         if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
+        if (s_np_device) lv_label_set_text(s_np_device, info->device_name[0] ? info->device_name : "");
     }
     update_progress_bar();
     refresh_play_icon();
+    /* Reflect the device's real level, but not while the user is dragging the
+     * fader (the hold window) -- programmatic set doesn't fire VALUE_CHANGED. */
+    if (info && info->volume_pct >= 0 && s_np_volume &&
+        (int32_t)(lv_tick_get() - s_vol_hold_until) >= 0)
+        lv_slider_set_value(s_np_volume, info->volume_pct, LV_ANIM_OFF);
     bsp_display_unlock();
 }
 
@@ -1208,6 +1374,56 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
     if (s_np_art) {
         lv_image_set_src(s_np_art, s_art_dsc);
         lv_obj_invalidate(s_np_art);
+    }
+    bsp_display_unlock();
+}
+
+void ui_set_devices(const ui_device_t *list, int count)
+{
+    if (count > 16) count = 16;
+    if (count < 0)  count = 0;
+    bsp_display_lock(-1);
+    s_dev_entry_count = 0;
+    if (s_dev_list) {
+        lv_obj_clean(s_dev_list);
+        if (count == 0) {
+            lv_obj_t *lbl = lv_label_create(s_dev_list);
+            lv_label_set_text(lbl, "No devices found");
+            lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        }
+        for (int i = 0; i < count; i++) {
+            s_dev_entries[i] = list[i];
+
+            lv_obj_t *row = lv_button_create(s_dev_list);
+            lv_obj_set_size(row, lv_pct(100), 64);
+            lv_obj_set_style_radius(row, 3, 0);
+            lv_obj_set_style_shadow_width(row, 0, 0);
+            lv_obj_set_style_bg_color(row, lv_color_hex(s_th->surface), 0);
+            if (list[i].is_active) {
+                lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
+                lv_obj_set_style_border_width(row, 4, 0);
+                lv_obj_set_style_border_color(row, lv_color_hex(accent_color()), 0);
+            } else {
+                lv_obj_set_style_border_width(row, 0, 0);
+            }
+            lv_obj_add_event_cb(row, on_device_tap, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)i);
+
+            lv_obj_t *nm = lv_label_create(row);
+            lv_label_set_text(nm, list[i].name);
+            lv_obj_set_style_text_color(nm,
+                lv_color_hex(list[i].is_active ? accent_color() : s_th->text), 0);
+            lv_obj_set_style_text_font(nm, &lv_font_montserrat_24, 0);
+            lv_obj_align(nm, LV_ALIGN_LEFT_MID, 12, -10);
+
+            lv_obj_t *dt = lv_label_create(row);
+            lv_label_set_text(dt, list[i].detail);
+            lv_obj_set_style_text_color(dt, lv_color_hex(s_th->text2), 0);
+            lv_obj_set_style_text_font(dt, &lv_font_montserrat_20, 0);
+            lv_obj_align(dt, LV_ALIGN_LEFT_MID, 12, 14);
+        }
+        s_dev_entry_count = count;
     }
     bsp_display_unlock();
 }
@@ -1358,11 +1574,41 @@ static void on_transport_prev(lv_event_t *e)   { (void)e; prev_or_restart(); }
 static void on_transport_toggle(lv_event_t *e) { (void)e; ui_request_toggle_play(); }
 static void on_transport_next(lv_event_t *e)   { (void)e; ui_request_next(); }
 
+static void on_vol_press(lv_event_t *e)
+{
+    (void)e;
+    s_vol_dragging = true;
+}
+
+static void on_vol_press_lost(lv_event_t *e)
+{
+    (void)e;
+    s_vol_dragging = false;
+}
+
+static void on_vol_changed(lv_event_t *e)
+{
+    (void)e;
+    if (!s_np_volume) return;
+    s_vol_dragging = true;  /* ensure flag stays set during dragging */
+    ui_show_volume_hud(lv_slider_get_value(s_np_volume), false);  /* live feedback */
+    s_vol_hold_until = lv_tick_get() + 4000;   /* keep polls from snapping it back */
+}
+
+static void on_vol_released(lv_event_t *e)
+{
+    (void)e;
+    s_vol_dragging = false;
+    if (!s_np_volume) return;
+    ui_request_volume(lv_slider_get_value(s_np_volume));          /* apply once, on release */
+    s_vol_hold_until = lv_tick_get() + 4000;
+}
+
 static void on_gesture(lv_event_t *e)
 {
-    /* A drag that began on the progress bar is a scrub, not a swipe. on_seek_start
-     * (PRESSED) runs before the gesture is detected, so s_seeking is already set. */
-    if (s_seeking) return;
+    /* A drag that began on the progress bar or the volume slider must not be
+     * reclassified as a screen swipe. */
+    if (s_seeking || s_vol_dragging) return;
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
     lv_dir_t dir = lv_indev_get_gesture_dir(indev);

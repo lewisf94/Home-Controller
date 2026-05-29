@@ -29,6 +29,7 @@ typedef struct {
     char      album_art_url[256];
     bool      device_restricted;  /* active device won't accept Spotify Web API control (e.g. Sonos) */
     char      device_name[64];    /* active device name, for routing/UX */
+    int       volume_pct;         /* active device volume 0..100, or -1 if unknown */
 } spotify_track_t;
 
 void spotify_init(const char *client_id,
@@ -62,3 +63,18 @@ bool spotify_prev_track(void);
 bool spotify_next_track(void);
 bool spotify_seek_position(uint32_t position_ms);
 bool spotify_set_volume(int pct);
+
+/* A Spotify Connect device from GET /me/player/devices. */
+typedef struct {
+    char id[64];
+    char name[40];
+    char type[20];      /* "Computer", "Smartphone", "Speaker", ... */
+    bool is_active;
+} spotify_device_t;
+
+/* List available Spotify Connect devices into out[0..max-1]; *count gets the
+ * number written. Returns true on HTTP 200. Blocking HTTPS -- Spotify task. */
+bool spotify_get_devices(spotify_device_t *out, int max, int *count);
+
+/* Transfer playback to device_id (PUT /me/player, play=true). Blocking HTTPS. */
+bool spotify_transfer_playback(const char *device_id);

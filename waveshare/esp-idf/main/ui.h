@@ -56,6 +56,28 @@ void ui_request_next(void);
 void ui_request_seek(uint32_t ms);
 void ui_request_volume(int pct);
 
+/* Device selector. ui_request_get_devices() asks the Spotify task to fetch the
+ * current device list and hand it back via ui_set_devices(). Tapping a row then
+ * calls ui_request_transfer() (Spotify Connect device id) or
+ * ui_request_select_sonos() (Sonos LAN IP) to switch the active target. */
+void ui_request_get_devices(void);
+void ui_request_transfer(const char *device_id);
+void ui_request_select_sonos(const char *host);
+
+/* One row in the device selector: a Spotify Connect device (is_sonos=false,
+ * id = Spotify device id) or a configured Sonos speaker (is_sonos=true,
+ * id = LAN IP). `detail` is the device type / "Sonos". */
+typedef struct {
+    char name[40];
+    char detail[24];
+    char id[64];
+    bool is_active;
+    bool is_sonos;
+} ui_device_t;
+
+/* Populate the DEVICES screen list (copies the rows). Safe from any task. */
+void ui_set_devices(const ui_device_t *list, int count);
+
 /* UI state queries and actions -- must be called under the LVGL lock. */
 bool     ui_is_now_playing(void);
 void     ui_toggle_view(void);

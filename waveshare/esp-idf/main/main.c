@@ -45,6 +45,8 @@
 #include "album_art.h"
 #include "littlefs.h"
 
+static const char *TAG = "main";
+
 /* Optional direct Sonos control (Spotify can't drive a Sonos -- it's a
  * restricted device, so we talk to it over UPnP). Configure in secrets.h:
  *   - one speaker:  #define SONOS_HOST "192.168.1.50"   (any restricted device
@@ -78,8 +80,39 @@ static const char *sonos_host_for(const char *device_name)
 #endif
 }
 
+/* First configured Sonos that is currently PLAYING, or NULL if none is. Used to
+ * find the speaker for now-playing when Spotify's /me/player can't see it
+ * (Sonos-native playback is invisible to the Web API). */
+static const char *sonos_playing_host(void)
+{
+#if defined(SONOS_DEVICES)
+    for (size_t i = 0; i < sizeof s_sonos_devices / sizeof s_sonos_devices[0]; i++)
+        if (sonos_is_playing(s_sonos_devices[i].host)) return s_sonos_devices[i].host;
+    return NULL;
+#elif defined(SONOS_HOST)
+    return (SONOS_HOST[0] && sonos_is_playing(SONOS_HOST)) ? SONOS_HOST : NULL;
+#else
+    return NULL;
+#endif
+}
+
+/* Which Sonos to start an album on: the one playing, else the first configured
+ * (so a cold album-start still has a target). NULL if none is configured. */
+static const char *sonos_target_host(void)
+{
+#if defined(SONOS_DEVICES)
+    const char *p = sonos_playing_host();
+    return p ? p : s_sonos_devices[0].host;
+#elif defined(SONOS_HOST)
+    return SONOS_HOST[0] ? SONOS_HOST : NULL;
+#else
+    return NULL;
+#endif
+}
+
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #define WIFI_MAX_RETRY     5
 #define WIFI_CONNECTED_BIT BIT0
@@ -93,7 +126,6 @@ static const char *sonos_host_for(const char *device_name)
 #define ART_RGB_BYTES  (ART_W * ART_H * 2)
 #define ART_JPEG_PATH  "/littlefs/nowplaying.jpg"
 
-static const char *TAG = "main";
 static EventGroupHandle_t s_wifi_event_group;
 static int s_wifi_retry_count = 0;
 
@@ -108,12 +140,15 @@ typedef enum {
     SCMD_NEXT_TRACK,
     SCMD_SEEK_MS,
     SCMD_SET_VOLUME,
+    SCMD_GET_DEVICES,    /* fetch device list -> ui_set_devices */
+    SCMD_TRANSFER,       /* str = Spotify device id to transfer playback to */
+    SCMD_SELECT_SONOS,   /* str = Sonos LAN IP to drive over UPnP */
 } scmd_type_t;
 
 typedef struct {
     scmd_type_t  type;
-    uint32_t     param;  /* seek_ms (SCMD_SEEK_MS) or volume_pct (SCMD_SET_VOLUME) */
-    const char  *uri;    /* SCMD_PLAY_ALBUM only; points into .rodata, always valid */
+    uint32_t     param;     /* seek_ms (SCMD_SEEK_MS) or volume_pct (SCMD_SET_VOLUME) */
+    char         str[64];   /* album URI / device id / Sonos host -- copied, self-contained */
 } scmd_t;
 
 static QueueHandle_t s_cmd_queue = NULL;
@@ -128,10 +163,44 @@ static int             s_art_buf    = 0;
 static lv_image_dsc_t  s_art_dsc = {0};
 static char            s_art_url_loaded[256] = {0};
 
-static void _post_cmd(scmd_type_t type, uint32_t param, const char *uri)
+/* LAN IP of the Sonos the controller is currently driving (album started on it,
+ * or /me/player named it as a restricted device), or "" for none. Drives both
+ * command routing and the now-playing fallback when Spotify can't see playback.
+ * Only the spotify_task touches it. */
+static char            s_sonos_active[24] = {0};
+/* True when the user explicitly chose a Sonos from the device selector. Prevents
+ * the Spotify poll from auto-clearing s_sonos_active just because a Spotify
+ * device is also active. Cleared when the user transfers to a Spotify device. */
+static bool            s_sonos_explicit   = false;
+/* True when the Sonos at s_sonos_active is confirmed to have audio: either
+ * sonos_fetch_now_playing() returned a real track, or /me/player says the active
+ * device is restricted (Sonos in Spotify Connect). Only when this is true do
+ * transport commands (play/pause/next/prev/seek/volume) route over UPnP.
+ * Without this guard, selecting a Sonos with an empty queue would silently break
+ * play/pause for whatever was actually playing on the laptop. */
+static bool            s_sonos_has_audio  = false;
+/* Earliest tick at which to re-probe configured speakers for one playing
+ * natively (when Spotify is 204 and we aren't already driving a Sonos). Backoff
+ * keeps a powered-off speaker from being hammered with connect attempts. */
+static TickType_t      s_sonos_probe_next = 0;
+
+/* Bounded, always-NUL-terminating copy via an explicit loop. Hand-rolled (not
+ * snprintf/strncpy) so GCC's -Werror=format-truncation / -Werror=stringop-
+ * truncation -- which can't bound array/struct sources and reject any
+ * potentially-truncating copy -- don't fail the build. Intentional truncation. */
+static void copy_str(char *dst, size_t dstsz, const char *src)
+{
+    if (dstsz == 0) return;
+    size_t i = 0;
+    if (src) for (; i + 1 < dstsz && src[i] != '\0'; i++) dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+static void _post_cmd(scmd_type_t type, uint32_t param, const char *str)
 {
     if (!s_cmd_queue) return;
-    scmd_t cmd = { .type = type, .param = param, .uri = uri };
+    scmd_t cmd = { .type = type, .param = param };
+    if (str) { strncpy(cmd.str, str, sizeof cmd.str - 1); cmd.str[sizeof cmd.str - 1] = '\0'; }
     (void)xQueueSend(s_cmd_queue, &cmd, 0);
 }
 
@@ -141,6 +210,9 @@ void ui_request_prev(void)             { _post_cmd(SCMD_PREV_TRACK,  0,         
 void ui_request_next(void)             { _post_cmd(SCMD_NEXT_TRACK,  0,             NULL); }
 void ui_request_seek(uint32_t ms)      { _post_cmd(SCMD_SEEK_MS,     ms,            NULL); }
 void ui_request_volume(int pct)        { _post_cmd(SCMD_SET_VOLUME,  (uint32_t)pct, NULL); }
+void ui_request_get_devices(void)              { _post_cmd(SCMD_GET_DEVICES,   0, NULL); }
+void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
+void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t event_id, void *event_data)
@@ -225,36 +297,100 @@ static bool decode_and_publish_art(void)
 }
 
 /* Fetch /me/player once and push it to the UI; on a track change download +
- * decode the new cover. Returns true if playback is active. */
+ * decode the new cover. If Spotify can't see playback (204) but we're driving a
+ * Sonos, fall back to the Sonos's own now-playing over UPnP. Returns true if
+ * any playback is active. */
 static bool poll_and_publish(spotify_track_t *info)
 {
-    if (!spotify_fetch_player(info)) {
-        ESP_LOGI(TAG, "no active playback (or fetch failed)");
-        ui_set_track_info(NULL);
-        return false;
-    }
-    ESP_LOGI(TAG, "now playing: %s -- %s [%lu/%lu ms, %s] @%s%s",
-             info->artist, info->title,
-             (unsigned long)info->progress_ms,
-             (unsigned long)info->duration_ms,
-             info->is_playing ? "playing" : "paused",
-             info->device_name[0] ? info->device_name : "?",
-             info->device_restricted ? " (restricted)" : "");
-    ui_set_track_info(info);
+    bool spotify_ok = spotify_fetch_player(info);
 
-    if (info->album_art_url[0] &&
-        strcmp(info->album_art_url, s_art_url_loaded) != 0 &&
-        littlefs_is_mounted()) {
-        size_t bytes = 0;
-        if (spotify_download_to_file(info->album_art_url, ART_JPEG_PATH, &bytes)) {
-            ESP_LOGI(TAG, "downloaded %u bytes -> %s", (unsigned)bytes, ART_JPEG_PATH);
-            if (decode_and_publish_art()) {
-                strncpy(s_art_url_loaded, info->album_art_url, sizeof(s_art_url_loaded) - 1);
-                s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
-            }
+    if (spotify_ok) {
+        /* Track which Sonos to drive: a restricted Connect device we have a
+         * name->IP mapping for sets it; a controllable phone/laptop clears it
+         * UNLESS the user explicitly chose a Sonos (s_sonos_explicit). */
+        if (info->device_restricted) {
+            const char *h = sonos_host_for(info->device_name);
+            if (h) snprintf(s_sonos_active, sizeof s_sonos_active, "%s", h);
+        } else if (!s_sonos_explicit) {
+            s_sonos_active[0] = '\0';
+        }
+        ESP_LOGI(TAG, "now playing: %s -- %s [%lu/%lu ms, %s] @%s%s",
+                 info->artist, info->title,
+                 (unsigned long)info->progress_ms,
+                 (unsigned long)info->duration_ms,
+                 info->is_playing ? "playing" : "paused",
+                 info->device_name[0] ? info->device_name : "?",
+                 info->device_restricted ? " (restricted)" : "");
+    }
+
+    /* Spotify 204: probe for a Sonos playing natively (e.g. started from the
+     * Spotify app or Sonos app). Backoff avoids hammering powered-off speakers. */
+    if (!spotify_ok && !s_sonos_active[0] &&
+        (int32_t)(xTaskGetTickCount() - s_sonos_probe_next) >= 0) {
+        const char *h = sonos_playing_host();
+        if (h) snprintf(s_sonos_active, sizeof s_sonos_active, "%s", h);
+        else   s_sonos_probe_next = xTaskGetTickCount() + pdMS_TO_TICKS(10000);
+    }
+
+    /* If we have a Sonos target (restricted Connect, explicit user pick, or
+     * native probe), read its now-playing over UPnP. This takes priority over
+     * the Spotify desktop view so the screen reflects what the Sonos is doing. */
+    if (s_sonos_active[0]) {
+        sonos_np_t np;
+        if (sonos_fetch_now_playing(s_sonos_active, &np)) {
+            s_sonos_has_audio = true;
+            memset(info, 0, sizeof *info);
+            snprintf(info->title,  sizeof info->title,  "%s", np.title);
+            snprintf(info->artist, sizeof info->artist, "%s", np.artist);
+            snprintf(info->album,  sizeof info->album,  "%s", np.album);
+            info->progress_ms       = np.progress_ms;
+            info->duration_ms       = np.duration_ms;
+            info->is_playing        = np.is_playing;
+            info->volume_pct        = np.volume;
+            info->device_restricted = true;
+            snprintf(info->device_name, sizeof info->device_name, "Sonos");
+            ESP_LOGI(TAG, "now playing (Sonos %s): %s -- %s [%lu/%lu ms, %s]",
+                     s_sonos_active, info->artist, info->title,
+                     (unsigned long)info->progress_ms,
+                     (unsigned long)info->duration_ms,
+                     info->is_playing ? "playing" : "paused");
+            ui_set_track_info(info);
+            return true;
+        }
+        /* Sonos unreachable or stopped (NOT_IMPLEMENTED in Connect passthrough
+         * counts as stopped -- we fall back to Spotify for track display). */
+        s_sonos_has_audio = false;
+        if (!s_sonos_explicit) {
+            s_sonos_active[0] = '\0';
+            s_sonos_probe_next = xTaskGetTickCount() + pdMS_TO_TICKS(10000);
         }
     }
-    return true;
+
+    if (spotify_ok) {
+        /* Restricted device = Sonos in Spotify Connect: audio IS on the Sonos,
+         * UPnP transport commands will work. Non-restricted = laptop/phone,
+         * route commands via Spotify API even if s_sonos_active is set. */
+        s_sonos_has_audio = info->device_restricted && s_sonos_active[0];
+        ui_set_track_info(info);
+        if (info->album_art_url[0] &&
+            strcmp(info->album_art_url, s_art_url_loaded) != 0 &&
+            littlefs_is_mounted()) {
+            size_t bytes = 0;
+            if (spotify_download_to_file(info->album_art_url, ART_JPEG_PATH, &bytes)) {
+                ESP_LOGI(TAG, "downloaded %u bytes -> %s", (unsigned)bytes, ART_JPEG_PATH);
+                if (decode_and_publish_art()) {
+                    strncpy(s_art_url_loaded, info->album_art_url, sizeof(s_art_url_loaded) - 1);
+                    s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
+                }
+            }
+        }
+        return true;
+    }
+
+    s_sonos_has_audio = false;
+    ESP_LOGI(TAG, "no active playback (or fetch failed)");
+    ui_set_track_info(NULL);
+    return false;
 }
 
 /* Drains s_cmd_queue and runs the blocking Spotify HTTPS calls off the
@@ -293,18 +429,34 @@ static void spotify_task(void *arg)
             TickType_t wait = (now >= deadline) ? 0 : (deadline - now);
             if (xQueueReceive(s_cmd_queue, &cmd, wait) == pdTRUE) {
                 bool ok = false;
-                /* If the active device is restricted (e.g. a Sonos) Spotify will
-                 * 403 every control command, so route transport/volume to that
-                 * speaker directly over UPnP -- picking the right speaker by name.
-                 * Starting a specific album on the Sonos isn't supported yet, so
-                 * SCMD_PLAY_ALBUM always goes via Spotify. */
-                const char *sh = info.device_restricted ? sonos_host_for(info.device_name)
-                                                         : NULL;
+                /* Route transport commands to the Sonos ONLY when it is confirmed
+                 * to have audio (s_sonos_has_audio). Without this guard, selecting
+                 * a Sonos with an empty queue silently breaks play/pause for
+                 * whatever is actually playing on the laptop/phone. */
+                const char *sh = (s_sonos_active[0] && s_sonos_has_audio)
+                                 ? s_sonos_active : NULL;
                 switch (cmd.type) {
-                    case SCMD_PLAY_ALBUM:
-                        ok = spotify_play_album(cmd.uri);
-                        ESP_LOGI(TAG, "play_album(%s) -> %s", cmd.uri, ok ? "ok" : "FAILED");
+                    case SCMD_PLAY_ALBUM: {
+                        /* If the user has selected (or auto-detected) a Sonos,
+                         * always start the album on it via UPnP regardless of
+                         * whether a controllable Spotify device is also active.
+                         * Otherwise use the Spotify Web API on the active device,
+                         * or fall back to any configured Sonos target. */
+                        const char *target = s_sonos_active[0] ? s_sonos_active
+                                           : ((!info.device_restricted && info.device_name[0])
+                                              ? NULL : sonos_target_host());
+                        if (target) {
+                            ok = sonos_play_spotify_album(target, cmd.str);
+                            ESP_LOGI(TAG, "album-on-Sonos[%s] %s -> %s",
+                                     target, cmd.str, ok ? "ok" : "FAILED");
+                            if (ok) snprintf(s_sonos_active, sizeof s_sonos_active, "%s", target);
+                            else    sonos_log_diag(target);  /* dump state to debug */
+                        } else {
+                            ok = spotify_play_album(cmd.str);
+                            ESP_LOGI(TAG, "play_album(%s) -> %s", cmd.str, ok ? "ok" : "FAILED");
+                        }
                         break;
+                    }
                     case SCMD_TOGGLE_PLAY:
                         ok = sh ? (info.is_playing ? sonos_pause(sh) : sonos_play(sh))
                                 : spotify_toggle_play_pause();
@@ -323,12 +475,73 @@ static void spotify_task(void *arg)
                         ok = sh ? sonos_set_volume(sh, (int)cmd.param)
                                 : spotify_set_volume((int)cmd.param);
                         break;
+                    case SCMD_GET_DEVICES: {
+                        /* Combined picker: Spotify Connect devices (transfer
+                         * targets) + configured Sonos speakers (UPnP targets).
+                         * Static locals keep these arrays off the TLS stack. */
+                        static ui_device_t      list[16];
+                        static spotify_device_t sp[8];
+                        int n = 0, sc = 0;
+                        if (spotify_get_devices(sp, 8, &sc)) {
+                            for (int i = 0; i < sc && n < 16; i++, n++) {
+                                copy_str(list[n].name,   sizeof list[n].name,   sp[i].name);
+                                copy_str(list[n].detail, sizeof list[n].detail, sp[i].type);
+                                copy_str(list[n].id,     sizeof list[n].id,     sp[i].id);
+                                list[n].is_active = sp[i].is_active;
+                                list[n].is_sonos  = false;
+                            }
+                        }
+#if defined(SONOS_DEVICES)
+                        for (size_t i = 0;
+                             i < sizeof s_sonos_devices / sizeof s_sonos_devices[0] && n < 16;
+                             i++, n++) {
+                            snprintf(list[n].name,   sizeof list[n].name,   "%s", s_sonos_devices[i].name);
+                            snprintf(list[n].detail, sizeof list[n].detail, "Sonos");
+                            snprintf(list[n].id,     sizeof list[n].id,     "%s", s_sonos_devices[i].host);
+                            list[n].is_active = (strcmp(s_sonos_devices[i].host, s_sonos_active) == 0);
+                            list[n].is_sonos  = true;
+                        }
+#elif defined(SONOS_HOST)
+                        if (SONOS_HOST[0] && n < 16) {
+                            snprintf(list[n].name,   sizeof list[n].name,   "Sonos");
+                            snprintf(list[n].detail, sizeof list[n].detail, "Sonos");
+                            snprintf(list[n].id,     sizeof list[n].id,     "%s", SONOS_HOST);
+                            list[n].is_active = (strcmp(SONOS_HOST, s_sonos_active) == 0);
+                            list[n].is_sonos  = true;
+                            n++;
+                        }
+#endif
+                        ui_set_devices(list, n);
+                        ESP_LOGI(TAG, "devices: %d spotify + sonos -> %d total", sc, n);
+                        break;
+                    }
+                    case SCMD_TRANSFER:
+                        ok = spotify_transfer_playback(cmd.str);
+                        if (ok) {
+                            s_sonos_active[0] = '\0';
+                            s_sonos_explicit  = false;  /* back on a Spotify device */
+                        }
+                        ESP_LOGI(TAG, "transfer -> %s: %s", cmd.str, ok ? "ok" : "FAILED");
+                        break;
+                    case SCMD_SELECT_SONOS:
+                        copy_str(s_sonos_active, sizeof s_sonos_active, cmd.str);
+                        s_sonos_explicit   = true;   /* user chose this -- poll won't clear it */
+                        s_sonos_probe_next = 0;      /* fetch its now-playing now */
+                        /* Resume the Sonos queue if something was previously loaded on it.
+                         * If nothing is queued, sonos_play() returns false silently; the
+                         * user can start an album from the browser. */
+                        ok = sonos_play(cmd.str);
+                        ESP_LOGI(TAG, "select sonos -> %s (resume: %s)",
+                                 cmd.str, ok ? "ok" : "nothing queued");
+                        ok = true;  /* selection itself always succeeds */
+                        break;
                 }
                 (void)ok;
                 /* Arm settle on the commands that change the current track, so the
                  * loop top re-polls until the new title lands. */
                 if (cmd.type == SCMD_NEXT_TRACK || cmd.type == SCMD_PREV_TRACK ||
-                    cmd.type == SCMD_PLAY_ALBUM) {
+                    cmd.type == SCMD_PLAY_ALBUM  || cmd.type == SCMD_TRANSFER ||
+                    cmd.type == SCMD_SELECT_SONOS) {
                     strncpy(prev_title, info.title, sizeof prev_title - 1);
                     prev_title[sizeof prev_title - 1] = '\0';
                     settle = true;
