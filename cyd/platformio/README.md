@@ -85,7 +85,6 @@ src/                         Main application source
   input.cpp                  High-level dispatcher: encoder/button -> Spotify calls
   mcp_input.cpp              Low-level MCP23017 driver: encoders, buttons, debounce
   spotify.cpp                Spotify Web API client over HTTPS
-  ui_fancy_backup.{cpp,h}    Unused legacy UI variant; safe to ignore
 include/
   secrets.h                  WiFi + Spotify credentials (gitignored)
   pins.h                     Pin defines pulled from CLAUDE.md

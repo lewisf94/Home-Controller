@@ -69,6 +69,10 @@ static lv_obj_t *s_np_title    = NULL;
 static lv_obj_t *s_np_artist   = NULL;
 static lv_obj_t *s_np_progress = NULL;
 static lv_obj_t *s_vol_hud     = NULL;
+/* Last device volume reported by the poll (-1 = unknown). Published here under
+ * the LVGL lock so input_update (which also runs under it) can adopt it as the
+ * encoder/HUD base without a cross-task race. */
+static int       s_device_vol  = -1;
 
 static lv_timer_t *s_vol_hud_timer = NULL;
 
@@ -163,7 +167,11 @@ static void build_browser_screen(void)
     lv_obj_add_event_cb(s_browser_scroller, on_browser_scroll, LV_EVENT_SCROLL, NULL);
 
     s_card_count = albums_count();
-    if (s_card_count > MAX_CARDS) s_card_count = MAX_CARDS;
+    if (s_card_count > MAX_CARDS) {
+        ESP_LOGW(TAG, "album list has %u entries but MAX_CARDS is %d; showing first %d",
+                 (unsigned)albums_count(), MAX_CARDS, MAX_CARDS);
+        s_card_count = MAX_CARDS;
+    }
 
     for (size_t i = 0; i < s_card_count; i++) {
         const album_entry_t *a    = albums_get(i);
@@ -325,11 +333,17 @@ void ui_set_track_info(const spotify_track_t *info)
         s_track.is_playing = false;
     } else {
         s_track = *info;
+        if (info->volume_pct >= 0) s_device_vol = info->volume_pct;
         if (s_np_title)  lv_label_set_text(s_np_title, info->title);
         if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
     }
     update_progress_bar();
     lvgl_port_unlock();
+}
+
+int ui_get_device_volume(void)
+{
+    return s_device_vol;
 }
 
 void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)

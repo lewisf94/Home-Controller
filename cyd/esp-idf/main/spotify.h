@@ -27,6 +27,7 @@ typedef struct {
     uint32_t  progress_ms;
     uint32_t  duration_ms;
     char      album_art_url[256];
+    int       volume_pct;         /* active device volume 0..100, or -1 if unknown */
 } spotify_track_t;
 
 void spotify_init(const char *client_id,

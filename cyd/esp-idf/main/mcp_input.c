@@ -23,6 +23,13 @@
  *   SW1=GPA0  SW2=GPA1  SW3=GPA2  SW4=GPA3
  *   RE1_CLK=GPA4  RE1_DT=GPA5  RE1_SW=GPA6 */
 #define BTN_DEBOUNCE_MS 30
+/* Minimum gap between Port A reads. Faster is wasted I2C bus traffic -- the
+ * encoder gray-code state machine only needs one read per real transition
+ * (~8 ms even on fast spins). */
+#define MCP_MIN_READ_MS 2
+/* If the encoder hasn't moved for this long, drop it back to rest so any
+ * partial gray-code state can't carry into the next turn as a stale glitch. */
+#define ENC_REST_TIMEOUT_MS 1000
 
 static const char *TAG = "mcp";
 
@@ -189,7 +196,7 @@ void mcp_input_update(void)
     if (!s_ok) return;
 
     static uint32_t s_last_read_ms = 0;
-    if (_millis() - s_last_read_ms < 2) return;
+    if (_millis() - s_last_read_ms < MCP_MIN_READ_MS) return;
 
     int p = _read_porta();
     s_last_read_ms = _millis();
@@ -203,7 +210,7 @@ void mcp_input_update(void)
         _update_btn(&s_btns[i], !((porta >> i) & 1));
     _update_btn(&s_re1_sw, !((porta >> 6) & 1));
 
-    if (s_re1.state != S_REST && (_millis() - s_re1.last_change_ms) > 1000)
+    if (s_re1.state != S_REST && (_millis() - s_re1.last_change_ms) > ENC_REST_TIMEOUT_MS)
         s_re1.state = S_REST;
 }
 

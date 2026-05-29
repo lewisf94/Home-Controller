@@ -66,6 +66,19 @@ void input_update(void)
     static uint32_t s_last_vol_ms = 0;
     static bool     s_vol_pending = false;
 
+    /* Adopt the device's real volume as the encoder/HUD base whenever the poll
+     * reports a new level, so the first nudge moves from the actual volume, not
+     * an assumed 50%. Edge-triggered (only on change) and skipped while a local
+     * change is pending or muted, so it never fights the user. The value is
+     * published by ui_set_track_info under the LVGL lock, which input_update
+     * also holds, so this read is race-free. */
+    static int s_last_dev_vol = -1;
+    int dev_vol = ui_get_device_volume();
+    if (dev_vol >= 0 && dev_vol != s_last_dev_vol) {
+        s_last_dev_vol = dev_vol;
+        if (!s_vol_pending && !s_is_muted) s_current_vol = dev_vol;
+    }
+
     int32_t delta = re1_get_delta();
     if (delta != 0) {
         if (now_playing) {

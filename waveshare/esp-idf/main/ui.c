@@ -462,7 +462,11 @@ static void build_browser_screen(void)
     lv_obj_add_event_cb(s_browser_scroller, on_browser_scroll, LV_EVENT_SCROLL, NULL);
 
     s_card_count = albums_count();
-    if (s_card_count > MAX_CARDS) s_card_count = MAX_CARDS;
+    if (s_card_count > MAX_CARDS) {
+        ESP_LOGW(TAG, "album list has %u entries but MAX_CARDS is %d; showing first %d",
+                 (unsigned)albums_count(), MAX_CARDS, MAX_CARDS);
+        s_card_count = MAX_CARDS;
+    }
 
     /* Debug: print thumbnail / album counts and a few thumb pointers to help
      * diagnose missing/corrupt embedded blobs when Cover Flow shows blank cards. */

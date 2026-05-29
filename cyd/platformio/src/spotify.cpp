@@ -40,39 +40,14 @@ static String base64_encode(String text) {
     return String((char*)output, olen);
 }
 
+// Stage 1 of the LVGL port: now-playing art is drawn from the embedded album
+// thumbnail (set by ui on play), so the dynamic SD-cached JPEG path is disabled
+// -- it also shared the VSPI bus with the LVGL display flush across tasks.
+// Dynamic art returns in a later stage that decodes to an RGB565 RAM buffer
+// (no SD) and publishes via ui_art_refresh(); this stub marks where it plugs
+// back in.
 static void download_album_art(const char* url) {
-    // Stage 1 of the LVGL port: now-playing art is drawn from the embedded
-    // album thumbnail (set by ui on play), so the dynamic SD-cached JPEG path
-    // is disabled. It also shared the VSPI bus with the LVGL display flush
-    // across tasks; dynamic art will return in a later stage that decodes to
-    // an RGB565 RAM buffer (no SD) and publishes via ui_art_refresh().
     (void)url;
-    return;
-
-    if (WiFi.status() != WL_CONNECTED) return;
-
-    ui_suspend_sprite();
-    WiFiClientSecure *client = new WiFiClientSecure;
-    client->setCACertBundle(rootca_crt_bundle_start);
-    HTTPClient https;
-    https.setTimeout(2000);
-    if (https.begin(*client, url)) {
-        int httpCode = https.GET();
-        if (httpCode == HTTP_CODE_OK) {
-            SD.remove("/sd_card_albums/nowplaying.jpg");
-            File f = SD.open("/sd_card_albums/nowplaying.jpg", FILE_WRITE);
-            if (f) {
-                https.writeToStream(&f);
-                f.close();
-                Serial.println("Album art downloaded to /sd_card_albums/nowplaying.jpg");
-            } else {
-                Serial.println("Failed to open /sd_card_albums/nowplaying.jpg for writing");
-            }
-        }
-    }
-    https.end();
-    delete client;
-    ui_resume_sprite();
 }
 
 // ── Auth ───────────────────────────────────────────────────────────────────

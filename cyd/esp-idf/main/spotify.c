@@ -447,6 +447,15 @@ bool spotify_fetch_player(spotify_track_t *info)
         const char *progress_v = json_obj_get(buf.data, "progress_ms");
         if (progress_v) info->progress_ms = (uint32_t)atoi(progress_v);
 
+        /* Active device volume so the encoder/HUD start from the real level
+         * instead of assuming 50%. -1 = unknown (consumer leaves its base as-is). */
+        info->volume_pct = -1;
+        const char *dev = json_obj_get(buf.data, "device");
+        if (dev && *dev == '{') {
+            const char *vol_v = json_obj_get(dev, "volume_percent");
+            if (vol_v) info->volume_pct = atoi(vol_v);
+        }
+
         /* Drill into item.{name, duration_ms, album.name, artists[0].name,
          * album.images[0].url} using depth-aware lookups so we don't
          * accidentally match a "name" or "duration_ms" inside a nested
@@ -716,6 +725,18 @@ static int _do_cmd(esp_http_client_method_t method, const char *url, const char 
     esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+
+    /* Mirror the poll's 401 handling: a server-side token invalidation would
+     * otherwise make a button press fail silently until the next poll happens
+     * to refresh. Clear the token so the next command/poll refreshes at once. */
+    if (status == 401) {
+        ESP_LOGW(TAG, "cmd %s got 401, invalidating cached token", url);
+        s_token_expiry_us = 0;
+        s_access_token[0]  = '\0';
+    } else if (status < 200 || status >= 300) {
+        /* Log unexpected results so a failed press is debuggable later. */
+        ESP_LOGW(TAG, "cmd %s -> %d", url, status);
+    }
     return status;
 }
 

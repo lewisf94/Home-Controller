@@ -221,8 +221,6 @@ driver's own statics, never `current_track_info`. SD is no longer used by the UI
 kept so `ui.cpp` can call it without knowing about the MCP driver. This is a
 deliberate compatibility shim from the MCP migration.
 
-`ui_fancy_backup.cpp/h` are unused legacy files — safe to ignore.
-
 ### CYD — ESP-IDF HA build (Phase 3) — `cyd/esp-idf-ha/` — NOT hardware-tested
 
 **First HA build exists but is unverified.** A self-contained copy of
