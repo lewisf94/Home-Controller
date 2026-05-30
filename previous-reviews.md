@@ -120,3 +120,25 @@ retries again) -- the single biggest structural point of failure, carried over
 from 05-28. Verified all eight 05-28 Testing/reliability findings are still open
 (WiFi give-up, 404 wake, volume-50, 401-in-command-path, no command retry/feedback,
 MCP no re-probe, album truncation, unchecked esp_littlefs_info). Suggestions made: 6.
+
+2026-05-30 - Area covered: Missing features / edge cases. Key findings: The lead
+CYD ESP-IDF build is BROKEN at HEAD -- the 05-29 shared-component extraction
+(commit 2f7accd) moved ui.c/input.c/mcp_input.c/album_art.cpp/littlefs.c to
+cyd/components/cyd_shared/ but never updated the two main/CMakeLists.txt (still
+list the moved files as SRCS) or the top-level CMakeLists.txt (no
+EXTRA_COMPONENT_DIRS). `idf.py build` fails configure for both cyd/esp-idf and
+cyd/esp-idf-ha. Feature regressions vs the shipped Arduino build: shuffle
+toggle gone (spotify_toggle_shuffle/shuffle_state both removed), the wake-idle
+-device 404->PUT /me/player rescue in play/pause gone (also covered as 05-28
+finding #2), and the SW4 + RE1 "seek preview" gesture documented as "shipped"
+in CLAUDE.md was never ported -- SW4 just toggles the view. Edge-case gaps:
+empty album list shows a blank carousel with no message, MAX_CARDS truncation
+only logs to serial, WiFi/Spotify outages keep the last track on screen
+indefinitely with no "offline" cue, volume HUD falsely shows "VOL 50%" before
+the first poll fills the real device volume, tapping a card with no active
+Spotify device silently fails, the browser never auto-scrolls to the album of
+the currently-playing track, and spotify_download_to_file accepts any
+response body as JPEG (no FFD8 magic check). Status updates on prior findings:
+05-28 #3 (volume-50) and #4 (401-in-command-path) ARE NOW FIXED on lead;
+adaptive poll backoff (5s/15s) shipped on lead too. The other six 05-28
+findings remain open. Suggestions made: 9.
