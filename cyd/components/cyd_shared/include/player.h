@@ -30,4 +30,5 @@ typedef struct {
     uint32_t  duration_ms;
     char      album_art_url[256];
     int       volume_pct;         /* active device volume 0..100, or -1 if unknown */
+    char      album_uri[64];      /* "spotify:album:..." -- empty if unknown; used to auto-snap the carousel */
 } spotify_track_t;

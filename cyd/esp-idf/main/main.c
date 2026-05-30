@@ -291,6 +291,13 @@ static void spotify_task(void *arg)
                     case SCMD_PLAY_ALBUM:
                         ok = spotify_play_album(cmd.uri);
                         ESP_LOGI(TAG, "play_album(%s) -> %s", cmd.uri, ok ? "ok" : "FAILED");
+                        if (!ok) {
+                            /* Most common cause: no active Spotify device. The
+                             * toast surfaces this on-screen so the press isn't
+                             * a silent no-op. (1B's 404-wake catches the
+                             * idled-phone case before we get here.) */
+                            ui_show_toast("No active Spotify device", 3000);
+                        }
                         break;
                     case SCMD_TOGGLE_PLAY:  ok = spotify_toggle_play_pause();         break;
                     case SCMD_PREV_TRACK:   ok = spotify_prev_track();                break;

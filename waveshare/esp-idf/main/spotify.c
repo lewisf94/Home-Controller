@@ -491,6 +491,11 @@ bool spotify_fetch_player(spotify_track_t *info)
                 const char *album_name_v = json_obj_get(album_obj, "name");
                 if (album_name_v) json_copy_string(album_name_v, info->album, sizeof(info->album));
 
+                /* album.uri ("spotify:album:...") -- used by the UI to auto-snap
+                 * the browser carousel to the currently playing album. */
+                const char *album_uri_v = json_obj_get(album_obj, "uri");
+                if (album_uri_v) json_copy_string(album_uri_v, info->album_uri, sizeof(info->album_uri));
+
                 /* Spotify orders images widest-first, so [0] is the 640x640
                  * variant. The openFile decode path in album_art.cpp handles
                  * it. */

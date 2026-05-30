@@ -86,6 +86,11 @@ void     ui_scroll_browser(int32_t delta);
 uint32_t ui_get_progress_ms(void);
 void     ui_show_volume_hud(int pct, bool muted);
 
+/* Brief auto-hiding notification on the now-playing screen. Safe to call from
+ * any task (takes the LVGL lock). Used to surface failures the user would
+ * otherwise see as silent inaction (e.g. play failed -- no active device). */
+void     ui_show_toast(const char *msg, uint32_t ms_dur);
+
 /* Browser <-> now-playing transition style. Every screen switch (swipe,
  * tap-to-play, encoder) routes through one helper that honours this, so the
  * choice is a single source of truth (a future settings screen flips it).

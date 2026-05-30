@@ -63,6 +63,11 @@ void     ui_scroll_browser(int32_t delta);
 uint32_t ui_get_progress_ms(void);
 void     ui_show_volume_hud(int pct, bool muted);
 
+/* Brief auto-hiding notification on the now-playing screen. Safe to call from
+ * any task (takes the LVGL lock). Used to surface failures the user would
+ * otherwise see as silent inaction (e.g. play failed -- no active device). */
+void     ui_show_toast(const char *msg, uint32_t ms_dur);
+
 /* Last device volume reported by the Spotify poll (0..100, or -1 if unknown).
  * Published by ui_set_track_info under the LVGL lock; input_update reads it
  * (also under the lock) to seed the encoder/HUD base from the real level. */

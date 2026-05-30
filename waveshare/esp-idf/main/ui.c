@@ -154,6 +154,19 @@ static int             s_centered_card       = -1;
  * live (possibly mid-animation) scroll position so fast spins don't lose
  * detents. Re-synced to the visually centered card on touch-driven scrolls. */
 static int             s_target_card         = 0;
+/* Index of the currently playing album in the carousel, -1 if not matched.
+ * Drives the accent border + auto-snap in ui_set_track_info (3C). */
+static int             s_playing_card_idx    = -1;
+
+/* True when WiFi has dropped (bars == 0). wifi_timer_cb replaces s_np_title
+ * with "OFFLINE" on transition in so the user isn't lied to with a stale
+ * track, and restores the cached title on transition out. */
+static bool            s_offline             = false;
+
+/* Generic auto-hiding toast on the now-playing screen ("No active device",
+ * etc). Uses the same hide-via-timer pattern as the volume HUD. */
+static lv_obj_t       *s_toast               = NULL;
+static lv_timer_t     *s_toast_timer         = NULL;
 
 static lv_image_dsc_t *s_art_dsc = NULL;
 
@@ -463,9 +476,20 @@ static void build_browser_screen(void)
 
     s_card_count = albums_count();
     if (s_card_count > MAX_CARDS) {
+        size_t total = albums_count();
         ESP_LOGW(TAG, "album list has %u entries but MAX_CARDS is %d; showing first %d",
-                 (unsigned)albums_count(), MAX_CARDS, MAX_CARDS);
+                 (unsigned)total, MAX_CARDS, MAX_CARDS);
         s_card_count = MAX_CARDS;
+        /* Surface the silent truncation on-screen (top-left, below the WiFi
+         * bars and clear of the gear/devices buttons on the right). */
+        char warn[40];
+        snprintf(warn, sizeof warn, "+%u more (raise MAX_CARDS)",
+                 (unsigned)(total - MAX_CARDS));
+        lv_obj_t *wlbl = lv_label_create(s_screen_browser);
+        lv_label_set_text(wlbl, warn);
+        lv_obj_set_style_text_color(wlbl, lv_color_hex(0xFFA000), 0);
+        lv_obj_set_style_text_font(wlbl, &lv_font_montserrat_20, 0);
+        lv_obj_align(wlbl, LV_ALIGN_TOP_LEFT, 60, 4);
     }
 
     /* Debug: print thumbnail / album counts and a few thumb pointers to help
@@ -802,6 +826,18 @@ static void build_np_screen(void)
     lv_obj_set_style_text_font(s_vol_hud, &lv_font_montserrat_24, 0);
     lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -8, 6);
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
+
+    /* Toast: brief auto-hide notification at the bottom of the screen. Used
+     * by ui_show_toast to surface async failures (e.g. play returned 404).
+     * Same hide-via-timer pattern as the volume HUD. */
+    s_toast = lv_label_create(s_screen_np);
+    lv_label_set_text(s_toast, "");
+    lv_obj_set_width(s_toast, SCREEN_W - 40);
+    lv_obj_set_style_text_align(s_toast, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(s_toast, lv_color_hex(0xFFA000), 0);
+    lv_obj_set_style_text_font(s_toast, &lv_font_montserrat_24, 0);
+    lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
 
     /* Vertical volume fader in the open right column (clear of the art, the
      * remaining-time label below, and the swipe chevron to its right). It
@@ -1423,6 +1459,42 @@ void ui_set_track_info(const spotify_track_t *info)
         if (s_np_title)  lv_label_set_text(s_np_title, info->title);
         if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
         if (s_np_device) lv_label_set_text(s_np_device, info->device_name[0] ? info->device_name : "");
+
+        /* 3C: auto-scroll the browser carousel to the playing album and accent
+         * its border. Match by album URI (track.album.uri from /me/player).
+         * Snap is safe even when the browser isn't visible -- it just updates
+         * the scroller's internal position, ready for the next browser open. */
+        if (info->album_uri[0]) {
+            int new_idx = -1;
+            for (size_t i = 0; i < s_card_count; i++) {
+                const album_entry_t *a = albums_get(i);
+                if (a && strcmp(a->uri, info->album_uri) == 0) {
+                    new_idx = (int)i;
+                    break;
+                }
+            }
+            if (new_idx != s_playing_card_idx) {
+                s_playing_card_idx = new_idx;
+                /* Refresh tint on all cards. Border goes on the card object
+                 * (safe under the rotated DSI flush -- not a transform/opa). */
+                for (size_t i = 0; i < s_card_count; i++) {
+                    if (!s_cards[i]) continue;
+                    if ((int)i == s_playing_card_idx) {
+                        lv_obj_set_style_border_color(s_cards[i],
+                                                      lv_color_hex(accent_color()), 0);
+                        lv_obj_set_style_border_width(s_cards[i], 3, 0);
+                    } else {
+                        lv_obj_set_style_border_width(s_cards[i], 0, 0);
+                    }
+                }
+                if (new_idx >= 0 && s_browser_scroller) {
+                    s_target_card = new_idx;
+                    lv_obj_scroll_to_x(s_browser_scroller,
+                                       (int32_t)new_idx * (cs() + cg()),
+                                       LV_ANIM_ON);
+                }
+            }
+        }
     }
     update_progress_bar();
     refresh_play_icon();
@@ -1971,6 +2043,17 @@ static void wifi_timer_cb(lv_timer_t *t)
             : lv_color_hex(s_th->track);
         lv_obj_set_style_bg_color(s_wifi_bars[i], c, 0);
     }
+    /* Don't lie to the user with a stale track when WiFi is gone. On the
+     * transition into offline, replace the title with "OFFLINE"; on the way
+     * back, restore from the cached track (next successful poll overwrites it). */
+    bool now_offline = (bars == 0);
+    if (now_offline != s_offline) {
+        s_offline = now_offline;
+        if (s_np_title) {
+            if (s_offline) lv_label_set_text(s_np_title, "OFFLINE");
+            else           lv_label_set_text(s_np_title, s_track.title);
+        }
+    }
 }
 
 bool ui_is_now_playing(void)
@@ -2026,6 +2109,31 @@ static void vol_hud_hide_cb(lv_timer_t *t)
     (void)t;
     if (s_vol_hud) lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
     s_vol_hud_timer = NULL;
+}
+
+static void toast_hide_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_toast) lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    s_toast_timer = NULL;
+}
+
+void ui_show_toast(const char *msg, uint32_t ms_dur)
+{
+    if (!msg) return;
+    /* Called from spotify_task (no LVGL lock held), so we must take it. */
+    bsp_display_lock(-1);
+    if (s_toast) {
+        lv_label_set_text(s_toast, msg);
+        lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+        if (s_toast_timer) {
+            lv_timer_reset(s_toast_timer);
+        } else {
+            s_toast_timer = lv_timer_create(toast_hide_cb, ms_dur, NULL);
+            lv_timer_set_repeat_count(s_toast_timer, 1);
+        }
+    }
+    bsp_display_unlock();
 }
 
 void ui_show_volume_hud(int pct, bool muted)

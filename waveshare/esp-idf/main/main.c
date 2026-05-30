@@ -494,10 +494,14 @@ static void spotify_task(void *arg)
                             ESP_LOGI(TAG, "album-on-Sonos[%s] %s -> %s",
                                      target, cmd.str, ok ? "ok" : "FAILED");
                             if (ok) snprintf(s_sonos_active, sizeof s_sonos_active, "%s", target);
-                            else    sonos_log_diag(target);  /* dump state to debug */
+                            else {
+                                sonos_log_diag(target);  /* dump state to debug */
+                                ui_show_toast("Sonos play failed", 3000);
+                            }
                         } else {
                             ok = spotify_play_album(cmd.str);
                             ESP_LOGI(TAG, "play_album(%s) -> %s", cmd.str, ok ? "ok" : "FAILED");
+                            if (!ok) ui_show_toast("No active Spotify device", 3000);
                         }
                         break;
                     }

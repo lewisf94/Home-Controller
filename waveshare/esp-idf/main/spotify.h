@@ -30,6 +30,7 @@ typedef struct {
     bool      device_restricted;  /* active device won't accept Spotify Web API control (e.g. Sonos) */
     char      device_name[64];    /* active device name, for routing/UX */
     int       volume_pct;         /* active device volume 0..100, or -1 if unknown */
+    char      album_uri[64];      /* "spotify:album:..." -- empty if unknown; used to auto-snap the carousel */
 } spotify_track_t;
 
 void spotify_init(const char *client_id,
