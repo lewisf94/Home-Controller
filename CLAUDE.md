@@ -178,8 +178,9 @@ app_main (main.c) ── init NVS/WiFi/LittleFS, bring up LVGL port + display + 
 Files tagged **[shared]** live in `cyd/components/cyd_shared/` (with their headers
 in `cyd/components/cyd_shared/include/`) and are linked into both this build and
 `cyd/esp-idf-ha/` via `EXTRA_COMPONENT_DIRS`. Per-build `spotify.h` is a thin
-wrapper around `spotify_track.h` (also shared) so the track-info struct stays
-defined exactly once. Edit a shared file once, both CYD builds pick it up.
+wrapper around `player.h` (the shared backend-neutral track-info contract) so
+the struct stays defined exactly once. Edit a shared file once, both CYD builds
+pick it up.
 
 
 Threading rule: LVGL is single-threaded — only the lvgl task and code holding

@@ -31,7 +31,7 @@
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_wifi.h"
-#include "spotify_track.h"
+#include "player.h"
 
 #include <string.h>
 

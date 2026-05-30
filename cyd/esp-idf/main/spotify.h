@@ -19,10 +19,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The track-info struct itself lives in the shared component so the HA build
- * (which doesn't link this Spotify Web API client) can use the same struct via
- * its own thin spotify.h wrapper. */
-#include "spotify_track.h"
+/* The track-info struct itself lives in the shared component (player.h) so the
+ * HA build (which doesn't link this Spotify Web API client) can use the same
+ * struct via its own thin spotify.h wrapper. */
+#include "player.h"
 
 void spotify_init(const char *client_id,
                   const char *client_secret,
