@@ -580,7 +580,28 @@ static void spotify_task(void *arg)
                         ok = true;  /* selection itself always succeeds */
                         break;
                 }
-                (void)ok;
+                /* Surface silent transport failures so a "button did nothing"
+                 * complaint is debuggable from the serial log. Cases that
+                 * already log both outcomes (PLAY_ALBUM, GET_DEVICES, TRANSFER,
+                 * SELECT_SONOS) are skipped here to avoid double-logging. */
+                if (!ok && cmd.type != SCMD_PLAY_ALBUM &&
+                           cmd.type != SCMD_GET_DEVICES &&
+                           cmd.type != SCMD_TRANSFER &&
+                           cmd.type != SCMD_SELECT_SONOS) {
+                    static const char *const names[] = {
+                        [SCMD_PLAY_ALBUM]    = "play_album",
+                        [SCMD_TOGGLE_PLAY]   = "toggle_play_pause",
+                        [SCMD_PREV_TRACK]    = "prev_track",
+                        [SCMD_NEXT_TRACK]    = "next_track",
+                        [SCMD_SEEK_MS]       = "seek",
+                        [SCMD_SET_VOLUME]    = "set_volume",
+                        [SCMD_GET_DEVICES]   = "get_devices",
+                        [SCMD_TRANSFER]      = "transfer",
+                        [SCMD_SELECT_SONOS]  = "select_sonos",
+                    };
+                    ESP_LOGW(TAG, "cmd %s FAILED (route=%s)",
+                             names[cmd.type], sh ? "sonos" : "spotify");
+                }
                 /* Arm settle on the commands that change the current track, so the
                  * loop top re-polls until the new title lands. */
                 if (cmd.type == SCMD_NEXT_TRACK || cmd.type == SCMD_PREV_TRACK ||

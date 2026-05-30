@@ -409,6 +409,10 @@ next steps are PPA hardware acceleration, then TLS keep-alive. A future
 ## Coding conventions for this codebase
 
 - **No emojis in code or commit messages** (Lewis preference)
+- **Create dynamic workflows when the task warrants it** — use TodoWrite (or
+  similar live task lists) for any multi-step job, and adapt the plan as scope
+  shifts rather than grinding through a fixed sequence. Triage first, group
+  related edits, batch tool calls, and update the plan when new info lands.
 - **No `// removed comments` / dead-code stubs** — delete cleanly
 - **Magic-number layout values** are gathered at the top of `ui.cpp`; prefer
   reusing existing `#define`s over inlining new ones. New layout values should

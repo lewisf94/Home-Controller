@@ -298,7 +298,20 @@ static void spotify_task(void *arg)
                     case SCMD_SEEK_MS:      ok = spotify_seek_position(cmd.param);    break;
                     case SCMD_SET_VOLUME:   ok = spotify_set_volume((int)cmd.param);  break;
                 }
-                (void)ok;
+                /* Surface failed presses so a "the button did nothing" complaint
+                 * is debuggable from the serial log. _do_cmd already logs the
+                 * underlying HTTP status; this names the high-level command. */
+                if (!ok && cmd.type != SCMD_PLAY_ALBUM) {
+                    static const char *const names[] = {
+                        [SCMD_PLAY_ALBUM]  = "play_album",
+                        [SCMD_TOGGLE_PLAY] = "toggle_play_pause",
+                        [SCMD_PREV_TRACK]  = "prev_track",
+                        [SCMD_NEXT_TRACK]  = "next_track",
+                        [SCMD_SEEK_MS]     = "seek",
+                        [SCMD_SET_VOLUME]  = "set_volume",
+                    };
+                    ESP_LOGW(TAG, "spotify cmd %s FAILED", names[cmd.type]);
+                }
                 break;
             }
             if (xTaskGetTickCount() >= deadline) break;

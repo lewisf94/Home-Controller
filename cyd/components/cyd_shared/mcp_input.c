@@ -143,6 +143,22 @@ static void _update_btn(btn_state_t *b, bool raw_active)
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
+/* Probe the chip + write its config registers. Split out of mcp_input_init so
+ * mcp_input_update can retry it if the chip wasn't responsive at boot
+ * (transient I2C glitch, slow-rising pull-ups, momentary unplug, etc.) without
+ * re-doing the one-time bus/GPIO setup. Idempotent: all writes are absolute. */
+static bool _configure_mcp(void)
+{
+    /* Probe: write IOCON (0x00 = default, push-pull active-LOW) */
+    uint8_t probe[2] = {REG_IOCON, 0x00};
+    if (i2c_master_transmit(s_dev, probe, 2, 50) != ESP_OK) return false;
+    _write_reg(REG_IODIRA,   0xFF);  /* all inputs */
+    _write_reg(REG_GPPUA,    0x7F);  /* pullups on bits 0-6 */
+    _write_reg(REG_GPINTENA, 0x7F);  /* interrupt-on-change bits 0-6 */
+    _read_porta();                   /* clear any pending interrupt */
+    return true;
+}
+
 void mcp_input_init(void)
 {
     gpio_config_t io_cfg = {
@@ -163,7 +179,7 @@ void mcp_input_init(void)
         .flags.enable_internal_pullup = false,
     };
     if (i2c_new_master_bus(&bus_cfg, &s_bus) != ESP_OK) {
-        ESP_LOGE(TAG, "I2C bus init failed");
+        ESP_LOGE(TAG, "I2C bus init failed -- mcp inputs disabled");
         return;
     }
 
@@ -173,31 +189,40 @@ void mcp_input_init(void)
         .scl_speed_hz    = I2C_FREQ_HZ,
     };
     if (i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev) != ESP_OK) {
-        ESP_LOGE(TAG, "MCP23017 add device failed");
+        ESP_LOGE(TAG, "MCP23017 add device failed -- mcp inputs disabled");
         return;
     }
 
-    /* Probe: write IOCON (0x00 = default, push-pull active-LOW) */
-    uint8_t probe[2] = {REG_IOCON, 0x00};
-    if (i2c_master_transmit(s_dev, probe, 2, 50) != ESP_OK) {
-        ESP_LOGE(TAG, "MCP23017 not found at 0x%02X -- check wiring", MCP_ADDR);
-        return;
+    if (_configure_mcp()) {
+        s_ok = true;
+        ESP_LOGI(TAG, "MCP23017 ready (SDA=%d SCL=%d INTA=%d)",
+                 (int)MCP_SDA, (int)MCP_SCL, (int)MCP_INTA_PIN);
+    } else {
+        /* Not a hard failure -- mcp_input_update keeps retrying so a chip that
+         * comes online late (or after a transient bus issue) is picked up
+         * without needing a reboot. */
+        ESP_LOGW(TAG, "MCP23017 not responding at 0x%02X -- will keep retrying",
+                 MCP_ADDR);
     }
-
-    _write_reg(REG_IODIRA,   0xFF);  /* all inputs */
-    _write_reg(REG_GPPUA,    0x7F);  /* pullups on bits 0-6 */
-    _write_reg(REG_GPINTENA, 0x7F);  /* interrupt-on-change bits 0-6 */
-
-    _read_porta();  /* clear any pending interrupt */
-
-    s_ok = true;
-    ESP_LOGI(TAG, "MCP23017 ready (SDA=%d SCL=%d INTA=%d)",
-             (int)MCP_SDA, (int)MCP_SCL, (int)MCP_INTA_PIN);
 }
 
 void mcp_input_update(void)
 {
-    if (!s_ok) return;
+    if (!s_ok) {
+        /* Retry the config every 5 s so a chip absent / unresponsive at boot
+         * (loose wire, brown-out during init) doesn't leave physical controls
+         * permanently dead. Re-doing _configure_mcp is safe: it's idempotent. */
+        if (!s_dev) return;   /* bus/dev setup failed -- nothing to retry against */
+        static uint32_t s_last_reinit_ms = 0;
+        uint32_t now = _millis();
+        if (now - s_last_reinit_ms < 5000) return;
+        s_last_reinit_ms = now;
+        if (_configure_mcp()) {
+            s_ok = true;
+            ESP_LOGI(TAG, "MCP23017 came online on retry");
+        }
+        if (!s_ok) return;
+    }
 
     static uint32_t s_last_read_ms = 0;
     if (_millis() - s_last_read_ms < MCP_MIN_READ_MS) return;

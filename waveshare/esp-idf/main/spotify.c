@@ -42,6 +42,10 @@ static char     s_access_token[256]   = {0};
 static int64_t  s_token_expiry_us     = 0;
 static char     s_album_art_url[256]  = {0};
 static bool     s_is_playing          = false;
+/* Most-recent device id seen in /me/player. Spotify drops the active-device
+ * association after a phone/speaker idles and returns 404 to the next play
+ * command; we use this to wake it back up (PUT /me/player device_ids+play). */
+static char     s_last_device_id[64]  = {0};
 
 #define NVS_NAMESPACE   "spotify"
 #define NVS_KEY_TOKEN   "access_token"
@@ -464,6 +468,10 @@ bool spotify_fetch_player(spotify_track_t *info)
             if (dname_v) json_copy_string(dname_v, info->device_name, sizeof(info->device_name));
             const char *vol_v = json_obj_get(dev, "volume_percent");
             if (vol_v) info->volume_pct = atoi(vol_v);
+            /* Cache the device id so toggle_play_pause can wake an idle
+             * device (Spotify returns 404 after the phone times out). */
+            const char *id_v = json_obj_get(dev, "id");
+            if (id_v) json_copy_string(id_v, s_last_device_id, sizeof(s_last_device_id));
         }
 
         /* Drill into item.{name, duration_ms, album.name, artists[0].name,
@@ -764,6 +772,19 @@ bool spotify_toggle_play_pause(void)
         ? "https://api.spotify.com/v1/me/player/pause"
         : "https://api.spotify.com/v1/me/player/play";
     int st = _do_cmd(HTTP_METHOD_PUT, url, NULL);
+    /* Spotify drops the active-device association after the phone/speaker
+     * idles and returns 404 "No active device found" on the next play. Wake
+     * the last known device by transferring playback to it (also starts it). */
+    if (st == 404 && !s_is_playing && s_last_device_id[0]) {
+        char body[128];
+        int n = snprintf(body, sizeof body,
+                         "{\"device_ids\":[\"%s\"],\"play\":true}", s_last_device_id);
+        if (n > 0 && n < (int)sizeof body) {
+            ESP_LOGI(TAG, "play returned 404 -- waking last device");
+            st = _do_cmd(HTTP_METHOD_PUT,
+                         "https://api.spotify.com/v1/me/player", body);
+        }
+    }
     bool ok = _cmd_ok(st);
     if (ok) s_is_playing = !s_is_playing;
     return ok;
