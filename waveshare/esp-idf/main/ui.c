@@ -168,6 +168,15 @@ static bool            s_offline             = false;
 static lv_obj_t       *s_toast               = NULL;
 static lv_timer_t     *s_toast_timer         = NULL;
 
+/* Auto-dim state: ramp the backlight down from s_brightness when the user
+ * hasn't touched the screen for a while, so the always-on IPS panel doesn't
+ * waste ~150 mA of backlight 24/7. lv_disp_get_inactive_time() resets on any
+ * input, so any touch / button event snaps brightness back to s_brightness.
+ * 0 = awake (full s_brightness), 1 = dimmed (30%), 2 = very-dim (10%). */
+#define AUTO_DIM_AFTER_MS     60000UL    /* 1 min */
+#define AUTO_DIM_DEEP_AFTER_MS 300000UL  /* 5 min */
+static uint8_t s_dim_state = 0;
+
 static lv_image_dsc_t *s_art_dsc = NULL;
 
 /* Default to instant: the animated full-screen composite (lv_screen_load_anim)
@@ -326,6 +335,7 @@ static void on_line_toggle(lv_event_t *e);
 static void refresh_line_selection(void);
 static void on_brightness_changed(lv_event_t *e);
 static void on_brightness_released(lv_event_t *e);
+static void idle_timer_cb(lv_timer_t *t);
 static void on_hint_to_np(lv_event_t *e);
 static void on_hint_to_browser(lv_event_t *e);
 static void on_open_devices(lv_event_t *e);
@@ -1424,6 +1434,10 @@ void ui_init(lv_image_dsc_t *art_dsc)
     /* WiFi-strength indicator: poll RSSI every 5 s. */
     lv_timer_create(wifi_timer_cb, 5000, NULL);
 
+    /* Auto-dim: 1 s tick gives a snappy "wake on touch" while the dim/restore
+     * itself is cheap (one LEDC duty update on state change only). */
+    lv_timer_create(idle_timer_cb, 1000, NULL);
+
     bsp_display_unlock();
 }
 
@@ -2116,6 +2130,27 @@ static void toast_hide_cb(lv_timer_t *t)
     (void)t;
     if (s_toast) lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
     s_toast_timer = NULL;
+}
+
+static void idle_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    /* lv_display_get_inactive_time() resets to 0 on any touch / button event,
+     * so this also serves as the "wake" trigger -- next tick after touch,
+     * inactive < AUTO_DIM_AFTER_MS and we restore s_brightness. */
+    uint32_t inactive = lv_display_get_inactive_time(NULL);
+    uint8_t want = 0;
+    if      (inactive >= AUTO_DIM_DEEP_AFTER_MS) want = 2;
+    else if (inactive >= AUTO_DIM_AFTER_MS)      want = 1;
+
+    if (want == s_dim_state) return;   /* no transition, skip the LEDC write */
+    s_dim_state = want;
+
+    int level = s_brightness;
+    if      (want == 1) level = (s_brightness * 30) / 100;
+    else if (want == 2) level = (s_brightness * 10) / 100;
+    if (level < 2) level = 2;   /* keep a faint glow so the device doesn't look dead */
+    bsp_display_brightness_set(level);
 }
 
 void ui_show_toast(const char *msg, uint32_t ms_dur)
