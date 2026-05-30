@@ -599,14 +599,17 @@ unsigned char *spotify_download_bytes(const char *url, size_t *out_len)
     return (unsigned char *)buf.data;
 }
 
-/* Per-request state for the download-to-file event handler. We track
- * the total bytes written so the caller can surface it, and the first
- * fwrite failure so a short-write error can abort the request rather
- * than silently producing a truncated file. */
+/* Per-request state for the download-to-file event handler. We track the total
+ * bytes written so the caller can surface it, the first fwrite failure so a
+ * short-write error can abort the request rather than silently producing a
+ * truncated file, and the first two bytes seen so the caller can reject a body
+ * that isn't a JPEG (CDN error page, truncated stream) before feeding it to
+ * the decoder. */
 typedef struct {
     FILE   *fp;
     size_t  written;
     bool    write_failed;
+    uint8_t magic[2];     /* first two bytes of the body, for JPEG SOI check */
 } file_sink_t;
 
 static esp_err_t http_file_event_handler(esp_http_client_event_t *evt)
@@ -614,6 +617,14 @@ static esp_err_t http_file_event_handler(esp_http_client_event_t *evt)
     if (evt->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
     file_sink_t *sink = (file_sink_t *)evt->user_data;
     if (!sink || !sink->fp || sink->write_failed) return ESP_OK;
+
+    /* Capture the first two bytes of the body (regardless of chunk boundary)
+     * so the caller can reject non-JPEG responses without re-reading the file. */
+    size_t already = sink->written;
+    const uint8_t *src = (const uint8_t *)evt->data;
+    for (size_t i = 0; i < (size_t)evt->data_len && already + i < 2; i++) {
+        sink->magic[already + i] = src[i];
+    }
 
     size_t want = (size_t)evt->data_len;
     size_t got  = fwrite(evt->data, 1, want, sink->fp);
@@ -637,7 +648,7 @@ bool spotify_download_to_file(const char *url, const char *path, size_t *out_len
         ESP_LOGE(TAG, "fopen(%s, wb) failed", path);
         return false;
     }
-    file_sink_t sink = { .fp = fp, .written = 0, .write_failed = false };
+    file_sink_t sink = { .fp = fp, .written = 0, .write_failed = false, .magic = {0,0} };
 
     esp_http_client_config_t cfg = {
         .url               = url,
@@ -661,6 +672,18 @@ bool spotify_download_to_file(const char *url, const char *path, size_t *out_len
     if (err != ESP_OK || status != 200 || sink.write_failed || sink.written == 0) {
         ESP_LOGW(TAG, "download-to-file failed (err=%d status=%d wrote=%u write_failed=%d)",
                  (int)err, status, (unsigned)sink.written, (int)sink.write_failed);
+        return false;
+    }
+
+    /* Reject anything that doesn't start with the JPEG Start-Of-Image marker
+     * (FF D8). A CDN error page, truncated stream, or wrong-Content-Type body
+     * would otherwise be saved + fed to the decoder + cached as "loaded",
+     * leaving last-track art on screen forever. Discard the file so the next
+     * poll can retry. */
+    if (sink.written < 2 || sink.magic[0] != 0xFF || sink.magic[1] != 0xD8) {
+        ESP_LOGW(TAG, "downloaded bytes are not JPEG (magic %02X %02X, %u bytes) -- discarding",
+                 sink.magic[0], sink.magic[1], (unsigned)sink.written);
+        remove(path);
         return false;
     }
 

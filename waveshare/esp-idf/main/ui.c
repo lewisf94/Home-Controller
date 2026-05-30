@@ -546,6 +546,11 @@ static void build_browser_screen(void)
         lv_label_set_text(s_browser_title, a->title);
         lv_label_set_text(s_browser_artist, a->artist);
         s_centered_card = 0;
+    } else {
+        /* No albums configured -- explain rather than show a blank carousel. */
+        lv_label_set_text(s_browser_title, "No albums configured");
+        lv_label_set_text(s_browser_artist,
+                          "edit spotify-albums-list.txt + reflash");
     }
 
     /* Apply initial cover flow scales (index-based, scroll_x=0 = card 0 centred). */

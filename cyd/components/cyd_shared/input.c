@@ -5,7 +5,11 @@
 
 static int  s_pre_mute_vol = 50;
 static bool s_is_muted     = false;
-static int  s_current_vol  = 50;
+/* -1 = volume not yet known (no successful poll yet). The encoder / mute
+ * toggle no-op until the first poll lands so a first nudge can't jump the
+ * speaker by computing from a guessed 50%. ui_get_device_volume() seeds this
+ * edge-triggered once the poll arrives. */
+static int  s_current_vol  = -1;
 
 static uint32_t _millis(void)
 {
@@ -23,15 +27,19 @@ void input_update(void)
     /* RE1 push-switch: mute toggle (now-playing) or play centred album (browser) */
     if (re1_sw_get_event()) {
         if (now_playing) {
-            if (!s_is_muted) {
+            if (s_current_vol < 0) {
+                /* No volume known yet -- skip rather than mute into an unknown
+                 * state (we'd restore to whatever stale value we'd guessed). */
+            } else if (!s_is_muted) {
                 s_pre_mute_vol = s_current_vol;
                 ui_request_volume(0);
                 s_is_muted = true;
+                ui_show_volume_hud(s_current_vol, s_is_muted);
             } else {
                 ui_request_volume(s_pre_mute_vol);
                 s_is_muted = false;
+                ui_show_volume_hud(s_current_vol, s_is_muted);
             }
-            ui_show_volume_hud(s_current_vol, s_is_muted);
         } else {
             ui_play_centered_album();
         }
@@ -82,13 +90,26 @@ void input_update(void)
     int32_t delta = re1_get_delta();
     if (delta != 0) {
         if (now_playing) {
-            int new_vol = s_current_vol - (int)(delta * 5);
-            if (new_vol < 0)   new_vol = 0;
-            if (new_vol > 100) new_vol = 100;
-            s_current_vol = new_vol;
-            s_vol_pending = true;
-            s_last_vol_ms = _millis();
-            ui_show_volume_hud(new_vol, s_is_muted);
+            if (s_current_vol < 0) {
+                /* No volume known yet -- swallow the turn rather than nudge
+                 * from a guessed 50% (would visibly jump the speaker by ~30%
+                 * once the real value arrives). Next turn after first poll
+                 * works normally. */
+                static bool s_warned_no_vol = false;
+                if (!s_warned_no_vol) {
+                    s_warned_no_vol = true;
+                    /* one log is plenty -- no ESP_LOG include here, the
+                     * silent skip is debuggable from the missing HUD */
+                }
+            } else {
+                int new_vol = s_current_vol - (int)(delta * 5);
+                if (new_vol < 0)   new_vol = 0;
+                if (new_vol > 100) new_vol = 100;
+                s_current_vol = new_vol;
+                s_vol_pending = true;
+                s_last_vol_ms = _millis();
+                ui_show_volume_hud(new_vol, s_is_muted);
+            }
         } else {
             ui_scroll_browser(delta);
         }
