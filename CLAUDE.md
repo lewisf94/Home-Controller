@@ -157,10 +157,10 @@ app_main (main.c) ── init NVS/WiFi/LittleFS, bring up LVGL port + display + 
    │
    ├── input_task (main.c) ── 2 ms loop: mcp_input_update() then, under the LVGL
    │     │                    lock, input_update(). Never blocks on the network.
-   │     ├── mcp_input.c ── low-level MCP23017 driver (new IDF i2c_master API):
-   │     │                  gray-code encoder state machine, button debounce
-   │     └── input.c ── dispatcher: encoder/button events → ui_request_*() which
-   │                    post typed scmd_t commands onto s_cmd_queue
+   │     ├── mcp_input.c [shared] ── low-level MCP23017 driver (new IDF i2c_master
+   │     │                  API): gray-code encoder state machine, button debounce
+   │     └── input.c [shared] ── dispatcher: encoder/button events →
+   │                    ui_request_*() which post scmd_t onto s_cmd_queue
    │
    └── spotify_task (main.c) ── drains s_cmd_queue (scmd_t) and runs the blocking
          │                      HTTPS calls off the LVGL/input path; also polls
@@ -168,12 +168,19 @@ app_main (main.c) ── init NVS/WiFi/LittleFS, bring up LVGL port + display + 
          ├── spotify.c ── Web API client (token refresh persisted to NVS, GET
          │                /me/player, POST /next /previous, PUT /play /pause
          │                /seek, volume); JSON via a small purpose-built scanner
-         ├── ui.c ── LVGL album browser + now-playing + volume HUD
-         ├── album_art.cpp ── JPEGDEC decode of now-playing art → LittleFS
+         ├── ui.c [shared] ── LVGL album browser + now-playing + volume HUD
+         ├── album_art.cpp [shared] ── JPEGDEC decode of now-playing art → LittleFS
          ├── album_thumbs.c ── embedded RGB565 browser thumbnails (EMBED_FILES)
          ├── albums.c ── album list / metadata
-         └── littlefs.c ── internal-flash storage mount (album art)
+         └── littlefs.c [shared] ── internal-flash storage mount (album art)
 ```
+
+Files tagged **[shared]** live in `cyd/components/cyd_shared/` (with their headers
+in `cyd/components/cyd_shared/include/`) and are linked into both this build and
+`cyd/esp-idf-ha/` via `EXTRA_COMPONENT_DIRS`. Per-build `spotify.h` is a thin
+wrapper around `spotify_track.h` (also shared) so the track-info struct stays
+defined exactly once. Edit a shared file once, both CYD builds pick it up.
+
 
 Threading rule: LVGL is single-threaded — only the lvgl task and code holding
 `lvgl_port_lock()` may touch LVGL objects. Cross-task work flows one way:
@@ -227,9 +234,11 @@ deliberate compatibility shim from the MCP migration.
 `cyd/esp-idf/` with the Spotify Web API backend replaced by a Home Assistant
 WebSocket client (`ha_client.c`) talking to a Music Assistant `media_player`
 entity. HA OS on a Pi 5 owns the Spotify integration, eliminating on-device
-OAuth refresh, fixing phone volume, and enabling real-time push state. The UI /
-input / album code is a copy of `cyd/esp-idf/` — a fix to one must be applied to
-the other. Secrets are `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` in
+OAuth refresh, fixing phone volume, and enabling real-time push state. The UI,
+input, and album-helper code (`ui.c`, `input.c`, `mcp_input.c`, `album_art.cpp`,
+`littlefs.c`) lives in the shared `cyd/components/cyd_shared/` component, so a
+single fix lands in both CYD-IDF builds at once. Secrets are `HA_HOST` /
+`HA_PORT` / `HA_TOKEN` / `HA_ENTITY` in
 `include/secrets.h`. See `docs/ROADMAP.md` Phase 3 for the handshake and HA
 setup. The backend is kept behind the `ui_request_*()` seam — swap the backend,
 don't entangle it with the UI.

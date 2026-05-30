@@ -2,28 +2,18 @@ idf_component_register(
     SRCS
         "main.c"
         "ha_client.c"
-        "album_art.cpp"
         "album_thumbs.c"
-        "littlefs.c"
         "albums.c"
-        "ui.c"
-        "mcp_input.c"
-        "input.c"
     INCLUDE_DIRS "." "../include"
     EMBED_FILES
         "album_thumbs.bin"
+    REQUIRES
+        cyd_shared
     PRIV_REQUIRES
-        esp_http_client
-        esp-tls
-        mbedtls
         esp_timer
         nvs_flash
         esp_wifi
         esp_event
         esp_netif
-        joltwallet__littlefs
-        vfs
-        esp_driver_i2c
-        esp_driver_gpio
         esp_websocket_client
 )

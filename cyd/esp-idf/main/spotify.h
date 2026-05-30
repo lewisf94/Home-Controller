@@ -19,16 +19,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct {
-    bool      is_playing;
-    char      title[64];
-    char      artist[64];
-    char      album[64];
-    uint32_t  progress_ms;
-    uint32_t  duration_ms;
-    char      album_art_url[256];
-    int       volume_pct;         /* active device volume 0..100, or -1 if unknown */
-} spotify_track_t;
+/* The track-info struct itself lives in the shared component so the HA build
+ * (which doesn't link this Spotify Web API client) can use the same struct via
+ * its own thin spotify.h wrapper. */
+#include "spotify_track.h"
 
 void spotify_init(const char *client_id,
                   const char *client_secret,

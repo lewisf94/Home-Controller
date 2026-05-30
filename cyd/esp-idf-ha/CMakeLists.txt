@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
+
+# Pull in the shared CYD component (ui, input, mcp_input, album_art, littlefs)
+# that lives one level up so both this build and cyd/esp-idf link the same
+# code instead of hand-maintaining duplicate copies.
+list(APPEND EXTRA_COMPONENT_DIRS ../components)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(music_controller)
 
