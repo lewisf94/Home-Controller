@@ -42,9 +42,17 @@ bool littlefs_mount(void)
     s_mounted = true;
 
     size_t total = 0, used = 0;
-    esp_littlefs_info(PARTITION_LABEL, &total, &used);
-    ESP_LOGI(TAG, "mounted at %s (%u KB total, %u KB used)",
-             MOUNT_POINT, (unsigned)(total / 1024), (unsigned)(used / 1024));
+    esp_err_t info_err = esp_littlefs_info(PARTITION_LABEL, &total, &used);
+    if (info_err == ESP_OK) {
+        ESP_LOGI(TAG, "mounted at %s (%u KB total, %u KB used)",
+                 MOUNT_POINT, (unsigned)(total / 1024), (unsigned)(used / 1024));
+    } else {
+        /* Distinguish "info call failed" from a real empty filesystem (which
+         * would also print 0/0) so storage problems don't masquerade as a
+         * freshly-mounted partition. */
+        ESP_LOGW(TAG, "mounted at %s, but esp_littlefs_info failed: %s",
+                 MOUNT_POINT, esp_err_to_name(info_err));
+    }
     return true;
 }
 

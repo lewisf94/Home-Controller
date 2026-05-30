@@ -32,6 +32,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_heap_caps.h"
@@ -162,6 +163,10 @@ static uint8_t        *s_art_rgb[2] = { NULL, NULL };
 static int             s_art_buf    = 0;
 static lv_image_dsc_t  s_art_dsc = {0};
 static char            s_art_url_loaded[256] = {0};
+/* URLs whose JPEG decode failed deterministically. Without this, a malformed /
+ * unsupported cover gets re-downloaded + re-decoded every 5 s for the whole
+ * track (wasted bandwidth, flash writes, log spam). */
+static char            s_art_url_failed[256] = {0};
 
 /* LAN IP of the Sonos the controller is currently driving (album started on it,
  * or /me/player named it as a restricted device), or "" for none. Drives both
@@ -214,6 +219,19 @@ void ui_request_get_devices(void)              { _post_cmd(SCMD_GET_DEVICES,   0
 void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
 void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
 
+/* Slow background reconnect timer, armed after the fast retries are exhausted.
+ * Without it the device would give up forever on any network blip (router
+ * reboot, brief out-of-range) and need a power cycle to recover. */
+static esp_timer_handle_t s_wifi_reconnect_timer = NULL;
+#define WIFI_RECONNECT_PERIOD_US (20ULL * 1000 * 1000)   /* every 20 s */
+
+static void wifi_reconnect_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "wifi: background reconnect attempt");
+    esp_wifi_connect();
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t event_id, void *event_data)
 {
@@ -227,13 +245,27 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                      s_wifi_retry_count, WIFI_MAX_RETRY);
             esp_wifi_connect();
         } else {
-            ESP_LOGE(TAG, "wifi failed after %d retries", WIFI_MAX_RETRY);
+            ESP_LOGE(TAG, "wifi failed after %d retries -- arming background reconnect every %llu s",
+                     WIFI_MAX_RETRY, WIFI_RECONNECT_PERIOD_US / 1000000);
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            if (s_wifi_reconnect_timer == NULL) {
+                const esp_timer_create_args_t args = {
+                    .callback = wifi_reconnect_cb,
+                    .name     = "wifi_reconnect",
+                };
+                esp_timer_create(&args, &s_wifi_reconnect_timer);
+            }
+            if (s_wifi_reconnect_timer && !esp_timer_is_active(s_wifi_reconnect_timer)) {
+                esp_timer_start_periodic(s_wifi_reconnect_timer, WIFI_RECONNECT_PERIOD_US);
+            }
         }
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         (void)event_data;  /* IP intentionally not logged (keeps logs shareable) */
         ESP_LOGI(TAG, "wifi connected (DHCP lease acquired)");
         s_wifi_retry_count = 0;
+        if (s_wifi_reconnect_timer && esp_timer_is_active(s_wifi_reconnect_timer)) {
+            esp_timer_stop(s_wifi_reconnect_timer);
+        }
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -374,6 +406,7 @@ static bool poll_and_publish(spotify_track_t *info)
         ui_set_track_info(info);
         if (info->album_art_url[0] &&
             strcmp(info->album_art_url, s_art_url_loaded) != 0 &&
+            strcmp(info->album_art_url, s_art_url_failed) != 0 &&
             littlefs_is_mounted()) {
             size_t bytes = 0;
             if (spotify_download_to_file(info->album_art_url, ART_JPEG_PATH, &bytes)) {
@@ -381,8 +414,16 @@ static bool poll_and_publish(spotify_track_t *info)
                 if (decode_and_publish_art()) {
                     strncpy(s_art_url_loaded, info->album_art_url, sizeof(s_art_url_loaded) - 1);
                     s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
+                } else {
+                    /* Decode is deterministic -- a malformed JPEG fails the
+                     * same way every time. Record so the next poll doesn't
+                     * re-download the same broken file every 5 s. */
+                    strncpy(s_art_url_failed, info->album_art_url, sizeof(s_art_url_failed) - 1);
+                    s_art_url_failed[sizeof(s_art_url_failed) - 1] = '\0';
+                    ESP_LOGW(TAG, "art decode failed, not retrying this url");
                 }
             }
+            /* Download failure left unrecorded (transient -- retry next poll). */
         }
         return true;
     }

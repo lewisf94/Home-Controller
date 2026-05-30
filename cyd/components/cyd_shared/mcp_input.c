@@ -124,7 +124,11 @@ static void _update_encoder(enc_state_t *enc, uint8_t porta,
 
 static void _update_btn(btn_state_t *b, bool raw_active)
 {
-    b->event_pending = false;
+    /* event_pending is a consume-on-read latch (cleared by btn_get_event /
+     * re1_sw_get_event). Do NOT clear it per tick here -- the consumer runs
+     * under the LVGL lock (which can time out mid-animation), and clearing
+     * here would silently drop a press confirmed on a tick where the consumer
+     * didn't get the lock. Matches the Arduino driver's documented semantics. */
     if (raw_active != b->last_raw) {
         b->last_raw = raw_active;
         b->last_change_ms = _millis();

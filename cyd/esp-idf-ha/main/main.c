@@ -38,6 +38,7 @@
 #include "esp_lcd_touch_xpt2046.h"
 #include "esp_lvgl_port.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
@@ -152,6 +153,19 @@ static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
     }
 }
 
+/* Slow background reconnect timer, armed after the fast retries are exhausted.
+ * Without it the device would give up forever on any network blip (router
+ * reboot, brief out-of-range) and need a power cycle to recover. */
+static esp_timer_handle_t s_wifi_reconnect_timer = NULL;
+#define WIFI_RECONNECT_PERIOD_US (20ULL * 1000 * 1000)   /* every 20 s */
+
+static void wifi_reconnect_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "wifi: background reconnect attempt");
+    esp_wifi_connect();
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t event_id, void *event_data)
 {
@@ -165,13 +179,27 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                      s_wifi_retry_count, WIFI_MAX_RETRY);
             esp_wifi_connect();
         } else {
-            ESP_LOGE(TAG, "wifi failed to connect after %d retries", WIFI_MAX_RETRY);
+            ESP_LOGE(TAG, "wifi failed after %d retries -- arming background reconnect every %llu s",
+                     WIFI_MAX_RETRY, WIFI_RECONNECT_PERIOD_US / 1000000);
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            if (s_wifi_reconnect_timer == NULL) {
+                const esp_timer_create_args_t args = {
+                    .callback = wifi_reconnect_cb,
+                    .name     = "wifi_reconnect",
+                };
+                esp_timer_create(&args, &s_wifi_reconnect_timer);
+            }
+            if (s_wifi_reconnect_timer && !esp_timer_is_active(s_wifi_reconnect_timer)) {
+                esp_timer_start_periodic(s_wifi_reconnect_timer, WIFI_RECONNECT_PERIOD_US);
+            }
         }
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "wifi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_wifi_retry_count = 0;
+        if (s_wifi_reconnect_timer && esp_timer_is_active(s_wifi_reconnect_timer)) {
+            esp_timer_stop(s_wifi_reconnect_timer);
+        }
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -423,7 +451,11 @@ void app_main(void)
 
     s_cmd_queue = xQueueCreate(8, sizeof(scmd_t));
     if (!s_cmd_queue) {
-        ESP_LOGE(TAG, "cmd queue alloc failed");
+        /* ha_task / input_task would both feed this queue; starting them with
+         * a NULL handle panics on xQueueReceive. Halt clean instead so the log
+         * line above stays the last (visible) thing we said. */
+        ESP_LOGE(TAG, "cmd queue alloc failed -- not starting HA/input tasks");
+        return;
     }
 
     xTaskCreate(ha_task,    "ha",    8192, NULL, 5, NULL);
