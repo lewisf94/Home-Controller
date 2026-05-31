@@ -36,6 +36,7 @@ Input runs in its own 2 ms FreeRTOS task and posts commands to the Spotify task 
 | Spotify command path | 401 mirrors the poll's token-clear (no more silent press loss right after token expiry). |
 | Architecture | `ui.c` / `input.c` / `mcp_input.c` / `album_art.cpp` / `littlefs.c` extracted into [`../components/cyd_shared/`](../components/cyd_shared/) so the HA build picks them up for free. `spotify_track_t` lives in the backend-neutral `player.h` there. |
 | UX | Empty album list message (no more blank carousel); volume HUD gated until first poll; JPEG SOI marker check (rejects non-JPEG bodies); on-screen MAX_CARDS warning; OFFLINE title on WiFi drop; `ui_show_toast` + "No active Spotify device" toast on play failure; auto-snap browser to playing album + accent border. |
+| Code review 2026-05-31 (`25d2ab8`) | 401 token-clear extended to `spotify_play_album` (was only in `_do_cmd`, so a token-expiry boundary lost the press); dead `s_warned_no_vol` removed from shared `input.c`. |
 
 Album art is stored in a 256 KB LittleFS partition on internal flash (avoids SD/SPI/DMA conflicts). **Known hardware limit:** browser scroll tearing — the CYD's ILI9341 TE pin isn't wired, so there's no vsync to sync redraws to; accepted as unfixable without hardware TE wiring. **Deferred:** auto-dim/sleep (needs LEDC PWM init on BL pin — see [`../../docs/PENDING.md`](../../docs/PENDING.md)). Next active work: Phase 3 (Home Assistant — see [`../esp-idf-ha/`](../esp-idf-ha/)).
 

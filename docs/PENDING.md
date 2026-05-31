@@ -32,6 +32,7 @@ is "done":
 | UX — bucket A | Empty album list message; volume HUD guard before first poll; JPEG SOI marker check | `49732e1` |
 | UX — bucket B | On-screen `MAX_CARDS` warning; OFFLINE indicator on WiFi drop; generic `ui_show_toast` + play-failure toast; auto-snap browser to playing album + accent border | `aa7405b` |
 | UX — bucket C | Auto-dim/sleep (waveshare only — CYD deferred); ramps `bsp_display_brightness_set` down at 60 s / 300 s idle, snaps back on touch | `434d3ea` |
+| Reliability — code review (2026-05-31) | WiFi init-fail no longer early-returns (UI + reconnect timer come up regardless of initial connect failure); 401 token-clear in `_do_cmd`, `spotify_play_album`, `spotify_get_devices` (consistency with the poll path) | `25d2ab8` |
 
 Sanity-check menu for next flash (waveshare):
 1. **Sonos album-start** — pick a Sonos in device selector, tap an album from
@@ -48,6 +49,15 @@ Sanity-check menu for next flash (waveshare):
    (next wifi-timer tick); restore WiFi, title comes back.
 6. **Auto-snap** — change track from the phone, open the browser, carousel
    should land on the album currently playing with an accent-coloured border.
+7. **WiFi init-fail UI** (`25d2ab8`) — boot with a wrong password in
+   `secrets.h`; the browser should still come up, serial log shows "wifi did
+   not connect -- continuing; background reconnect will keep trying". Fix the
+   password, reflash; "wifi connected" should appear within ~20 s with the UI
+   already live, no power-cycle.
+8. **401 token-clear** (`25d2ab8`) — corrupt `s_access_token` just before a
+   `perform` in `_do_cmd` / `spotify_play_album` / `spotify_get_devices`,
+   confirm the log line `got 401, invalidating cached token` and that the next
+   press of the same control works. Remove the corruption afterwards.
 
 ### CYD (board not available 2026-05-30)
 
@@ -68,6 +78,11 @@ when the CYD is back:
 - **Volume HUD before first poll** — boot, immediately turn RE1 before the
   first poll lands; HUD should not appear (no nudging the speaker from a
   guessed 50 %); after the poll lands, encoder works normally.
+- **2026-05-31 code-review batch** (commit `25d2ab8`) — 401 token-clear now
+  also covers `spotify_play_album` (was only in `_do_cmd`); dead
+  `s_warned_no_vol` removed from shared `input.c`. The 401 path is hard to
+  trigger naturally; the same forced-corruption test as the waveshare item #8
+  applies.
 
 ### CYD-IDF builds may not compile until verified
 
