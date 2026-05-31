@@ -54,7 +54,31 @@ void input_update()
         if (now_playing) ui_request_next();
         else             ui_scroll_browser(1);        // scroll one album right
     }
-    if (btn_get_event(3)) ui_toggle_view();
+    // SW4: short press = toggle view; long hold (>500 ms, now-playing) = shuffle
+    {
+        static bool          s_sw4_was_held  = false;
+        static bool          s_sw4_long_done = false;
+        static unsigned long s_sw4_press_ms  = 0;
+
+        bool sw4_event = btn_get_event(3);
+        bool sw4_held  = btn_is_held(3);
+
+        if (sw4_event) {
+            s_sw4_press_ms  = millis();
+            s_sw4_long_done = false;
+        }
+
+        if (sw4_held && !s_sw4_long_done && now_playing &&
+            millis() - s_sw4_press_ms > 500) {
+            ui_request_shuffle();
+            s_sw4_long_done = true;
+        }
+
+        if (s_sw4_was_held && !sw4_held && !s_sw4_long_done)
+            ui_toggle_view();
+
+        s_sw4_was_held = sw4_held;
+    }
 
     // RE1 turn: scroll carousel (browser) or adjust volume (now-playing).
     static unsigned long s_last_vol_ms = 0;

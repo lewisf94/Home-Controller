@@ -30,6 +30,7 @@ typedef struct {
     bool      device_restricted;  /* active device won't accept Spotify Web API control (e.g. Sonos) */
     char      device_name[64];    /* active device name, for routing/UX */
     int       volume_pct;         /* active device volume 0..100, or -1 if unknown */
+    bool      shuffle_state;      /* true when shuffle is active */
     char      album_uri[64];      /* "spotify:album:..." -- empty if unknown; used to auto-snap the carousel */
 } spotify_track_t;
 
@@ -64,6 +65,7 @@ bool spotify_prev_track(void);
 bool spotify_next_track(void);
 bool spotify_seek_position(uint32_t position_ms);
 bool spotify_set_volume(int pct);
+bool spotify_toggle_shuffle(void);
 
 /* A Spotify Connect device from GET /me/player/devices. */
 typedef struct {

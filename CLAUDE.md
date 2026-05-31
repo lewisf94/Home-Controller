@@ -69,8 +69,10 @@ CS = GPIO 5 (`SD.begin(5)` in `main.cpp`). Default VSPI bus. Holds:
 
 ### I2C bus summary
 
-The Wire bus runs on GPIO 27 (SDA) and GPIO 22 (SCL) at 400 kHz.
-External 4.7 kΩ pull-ups to 3.3V on both lines are recommended.
+The Wire bus runs on GPIO 27 (SDA) and GPIO 22 (SCL) at 100 kHz
+(`I2C_FREQ_HZ 100000` in `mcp_input.c` and `I2C_FREQ 100000` in
+`mcp_input.cpp`). External 4.7 kΩ pull-ups to 3.3V on both lines are
+recommended.
 
 | Component | Breakout | I2C address | Address pins |
 |---|---|---|---|
@@ -107,7 +109,7 @@ Button functions are context-dependent on the active view (handled in the
 | SW1     | GPA0 (pin 0) | `PIN_SW1`     = 0 | Scroll one album left   | Previous track (restart if >5 s in) |
 | SW2     | GPA1 (pin 1) | `PIN_SW2`     = 1 | Select centred album    | Play / Pause |
 | SW3     | GPA2 (pin 2) | `PIN_SW3`     = 2 | Scroll one album right  | Next track |
-| SW4     | GPA3 (pin 3) | `PIN_SW4`     = 3 | Toggle view ↔           | Toggle view ↔ |
+| SW4     | GPA3 (pin 3) | `PIN_SW4`     = 3 | Toggle view ↔           | Short press: toggle view; long hold (>500 ms): shuffle toggle |
 | RE1 CLK | GPA4 (pin 4) | `PIN_RE1_CLK` = 4 | Browser scroll encoder A | (volume A) |
 | RE1 DT  | GPA5 (pin 5) | `PIN_RE1_DT`  = 5 | Browser scroll encoder B | (volume B) |
 | RE1 SW  | GPA6 (pin 6) | `PIN_RE1_SW`  = 6 | Select centred album     | Mute toggle |
@@ -325,61 +327,39 @@ not start until the P4 direct-Spotify build is verified on hardware.
 
 ---
 
-## What's been shipped (Phase 1 + 1.5)
+## Phase 1 + 1.5 — original TFT_eSPI Arduino features (historical reference)
 
-All on `main`. Latest commit: `Add WiFi signal indicator; stop reloading static
-art every frame`.
+These features were written against the original TFT_eSPI direct-draw Arduino
+build (commits `86cde31`, `2256078`). The Arduino build was later rewritten to
+LVGL 9.5, and the IDF build was written fresh from scratch. **Not all Phase 1
+features survived the TFT_eSPI → LVGL transition:**
 
-### Phase 1 (commit `86cde31`)
+| Feature | Arduino (LVGL) | IDF builds | Notes |
+|---|---|---|---|
+| 1A debounced volume | yes | yes | `s_vol_pending` / 300 ms guard in `input.c` / `input.cpp` |
+| 1B volume HUD | yes | yes | `ui_show_volume_hud()` in `ui.c` / `ui.cpp`; shows "MUTED" transiently |
+| 1C SW4 seek preview | **no** | **no** | SW4 is view-toggle (short) / shuffle (long hold, now-playing) in all current builds; seek preview was TFT_eSPI only |
+| 1D persistent mute badge | **no** | **no** | Mute toggle exists (RE1-SW) but only the transient HUD says "MUTED"; no persistent badge |
+| 1E play/pause flash | **no** | **no** | Used `fillTriangle`/`fillRect`; not ported to LVGL |
+| 1.5 WiFi bars | yes | yes | LVGL bar objects, 2 s refresh, `esp_wifi_sta_get_rssi()` on IDF / `WiFi.RSSI()` on Arduino |
 
-1. **Debounced volume (1A)** — RE2 turns no longer block the UI. The local
-   `current_volume_pct` updates instantly; the HTTP PUT fires once after 300 ms
-   of encoder inactivity. See `input.cpp` static vars `last_vol_change_ms` /
-   `vol_pending`.
-2. **Volume HUD (1B)** — `ui_show_volume_hud(pct, muted)` in `ui.cpp`. Top-strip
-   overlay (y=0–26), 200×6 px bar + percentage, auto-hides after 2 s. Shows
-   "MUTED" red text when muted. HUD expiry triggers `np_needs_full_redraw` (now
-   playing) or a strip clear + WiFi-icon repaint (browser).
-3. **SW4 seek preview (1C)** — While SW4 is held > 500 ms and RE1 turns,
-   `SEEK +M:SS` is drawn above the progress bar. Getters `input_sw4_seek_active()`
-   and `input_sw4_seek_offset_ms()` are called from `draw_now_playing()`.
-4. **Mute badge (1D)** — Persistent small "MUTED" label in red top-right of
-   now-playing. Tracked separately from the transient HUD via
-   `input_is_muted()`. State change triggers a one-shot redraw of a 60×14 px
-   region.
-5. **Play/pause flash (1E)** — `ui_update()` watches `current_track_info.is_playing`;
-   on change, sets `play_flash_ms = millis()`. `draw_now_playing()` overlays a
-   ▶ triangle or ⏸ pair of bars (filled via `fillTriangle` / `fillRect`) over
-   the art for 1.5 s.
+If 1C, 1D, or 1E are wanted on a current build, treat them as new work.
 
-### Phase 1.5 (commit `2256078`)
+### Open bugs in the Arduino (PlatformIO) build
 
-1. **WiFi signal indicator** — 4-bar icon top-left (x=3, y=2 to y=14). Polled
-   every 5 s via `WiFi.RSSI()`; only redraws when bar count changes
-   (thresholds: -55/-65/-75/-85 dBm). Disconnected = 0 bars.
-2. **JPEG fallback gate** — In vinyl mode without local cache, the JPEG was
-   re-decoded from SD ~30×/sec for zero visual benefit (it can't rotate). Now
-   gated on `initial_draw || last_square_state != np_show_square_art` only.
-
-### Known bugs open (as of latest commit)
-
-Hardware-verified but not yet fixed. See `docs/ROADMAP.md` Phase 1 for
-full analysis and fix options.
+See `docs/ROADMAP.md` Phase 1 for full analysis.
 
 1. **Album art blank on second now-playing visit** — JPEGDEC library
-   state-corruption bug on consecutive `open()`/`decode()` calls on the
-   same instance. Fix: make `jpeg_np` a local variable inside the decode
-   block (2-line change).
-2. **Encoder less responsive than the IDF build (Arduino only)** — RESOLVED in
-   code (pending hardware verification). `mcp_input_update()` now runs in its own
-   `mcp_input_task` pinned to core 0, decoupled from the blocking
-   `loop()` (Spotify HTTPS / redraws on core 1), so fast spins no longer drop
-   quadrature steps. Required two supporting changes: button `event_pending`
-   became a consume-on-read latch (was cleared every tick), and the shared state
-   is guarded by a `portMUX` spinlock. See the Arduino architecture section.
+   state-corruption bug on consecutive `open()`/`decode()` calls. Fix: heap-allocate
+   a fresh `JPEGDEC` per call (`new`/`delete`).
+2. **Encoder less responsive (Arduino only)** — RESOLVED in code (pending hardware
+   verification). `mcp_input_update()` runs in its own `mcp_input_task` on core 0,
+   decoupled from the blocking `loop()` (Spotify HTTPS on core 1). Button
+   `event_pending` is a consume-on-read latch (was cleared every tick); shared
+   state is guarded by a `portMUX` spinlock.
 3. **Volume PUT doesn't change phone volume** — Spotify API limitation on
-   Android/iOS. Works on desktop / Spotify Connect speakers. Fix comes in
-   Phase 3 (HA integration).
+   Android/iOS. Works on desktop / Spotify Connect speakers. Fix in Phase 3
+   (HA integration).
 
 ---
 
@@ -402,7 +382,7 @@ ESP32-P4 migration: ACTIVE — `waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5
 has checkpoints 1–3 hardware-verified (display, WiFi, Spotify). The UI (cp4+)
 including Cover Flow, colour themes, and the tiny_ttf kerning crash fix is
 committed but needs a hardware verification pass. After stability is confirmed,
-next steps are PPA hardware acceleration, then TLS keep-alive. A future
+next steps are PPA hardware acceleration. A future
 `waveshare/esp-idf-ha/` carries the Phase 3 HA client over untouched.
 
 ---
@@ -574,9 +554,7 @@ git log --oneline -10          # recent history
   - **Generated build inputs (committed):** `src/album_thumbs_data.c` (from the
     IDF `album_thumbs.bin`) and `certs/x509_crt_bundle` (from the IDF
     `cacrt_all.pem` via `gen_crt_bundle.py`).
-- **Security (this session):** PlatformIO TLS now verifies against the embedded
-  CA bundle (was `setInsecure()`); token-endpoint bodies no longer logged on
-  either build; `SPOTIFY_SETUP.md` points at gitignored `secrets.h`; `.cache`
-  gitignored. Verified no credentials were ever committed/pushed. The IDF-side
-  changes (WiFi bars in `ui.c`, log redaction in `spotify.c`, browser button
-  remap in `input.c`) are also **not yet rebuilt/flashed**.
+- **Security posture:** PlatformIO TLS verifies against an embedded CA bundle
+  (not `setInsecure()`); token-endpoint bodies are not logged on either build;
+  all credential files (`secrets.h`, `.cache`) are gitignored. No credentials
+  have ever been committed/pushed.

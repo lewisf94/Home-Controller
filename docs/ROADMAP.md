@@ -1,21 +1,26 @@
 # Roadmap
 
-Three active phases. Arduino/CYD build is the live product while IDF port and
-HA integration are the target end-state.
+**Lead build: `cyd/esp-idf/`** — feature-complete and hardware-verified on the
+CYD. All other builds (PlatformIO, CYD-IDF-HA, Waveshare) are either in progress
+or awaiting hardware verification. See the build matrix below.
 
 ---
 
-## Current state (Arduino / PlatformIO on CYD)
+## Current state (lead build: CYD ESP-IDF)
 
-Shipped and working on hardware (`main` branch):
-- Album browser (SD thumbnails, encoder scroll, tap-to-play)
-- Now-playing screen (JPEG album art, title/artist/album, progress bar)
-- Spotify Web API: auth refresh, player state poll every 2 s, play/pause/next/prev/seek/shuffle/volume
-- MCP23017 IO expander: RE1 encoder (scroll + mute), 4 buttons (prev/play/next/view-toggle)
-- INTA interrupt on GPIO35 for button responsiveness
-- Volume HUD, mute badge, WiFi signal indicator
+`cyd/esp-idf/` is the live product. Shipped and hardware-verified:
+- Album browser (embedded RGB565 thumbnails, encoder scroll, touch scroll, tap-to-play)
+- Now-playing screen (JPEG album art via LittleFS, title/artist/album, progress bar)
+- Spotify Web API: auth/token refresh persisted to NVS, GET `/me/player`, play/pause/next/prev/seek/volume
+- MCP23017 IO expander: RE1 encoder (scroll in browser, volume in now-playing), RE1-SW (mute/select), SW1–SW4 (prev/play/next/view-toggle)
+- INTA interrupt on GPIO35 for button responsiveness; 30 ms debounce; latch-on-read event model
+- Volume HUD (transient, shows "MUTED" when muted), WiFi bars (4-bar, 2 s refresh)
+- OFFLINE indicator, empty-album message, MAX_CARDS warning, auto-snap to playing album, play-failure toast
 
-Known issues still open (see below, Phase 1):
+Accepted hardware limits:
+- Browser scroll tearing: ILI9341 TE pin not wired; no vsync available.
+
+Known issues still open in the Arduino PlatformIO build (see Phase 1):
 
 ---
 
@@ -164,13 +169,15 @@ Recommended: bump poll to 4 s first. If encoder still lags, do FreeRTOS split.
 
 **Status: cp0-11 complete and verified on hardware (the original port).** The
 build then absorbed a substantial perf / reliability / UX / arch backlog from
-the 05-24 / 05-26 / 05-27 / 05-28 / 05-30 daily reviews — TLS keep-alive,
+the 05-24 / 05-26 / 05-27 / 05-28 / 05-30 / 05-31 daily reviews — TLS keep-alive,
 adaptive poll backoff, 404 wake-on-play, WiFi background reconnect, MCP
 re-probe, `_do_cmd` 401 handling, volume sync from device, MAX_CARDS log,
 OFFLINE indicator, toast on play failure, auto-snap-to-playing-album, empty
-list message, JPEG SOI check, etc. None of that has been re-flashed yet
-(CYD board has been out of reach). See [`PENDING.md`](PENDING.md) for the
-verify-pending list and [`TESTING.md`](TESTING.md) for the sanity-check menu.
+list message, JPEG SOI check, shuffle toggle (SW4 long-hold in now-playing,
+all four builds), "Nothing playing" initial UI state, HA build volume/shuffle
+state parsing, HA command bool return + offline toast, etc. None of that has been
+re-flashed yet (CYD board has been out of reach). See [`PENDING.md`](PENDING.md)
+for the verify-pending list and [`TESTING.md`](TESTING.md) for the sanity-check menu.
 
 **Architecture update:** the two CYD IDF builds (`cyd/esp-idf/` direct
 Spotify and `cyd/esp-idf-ha/` Home Assistant backend) now share their UI /
@@ -287,7 +294,7 @@ No PSRAM — `CONFIG_SPIRAM` stays disabled.
 | 8 | LVGL scrollable container + snap; tap → spotify_play_album | Tap plays album |
 | 9 | MCP23017 I2C driver; LVGL encoder input device | Encoder scrolls browser |
 | 10 | Button dispatch; volume debounce; mute toggle | All controls working |
-| 11 | Feature parity: WiFi indicator, mute badge, play/pause flash, volume HUD | Matches Arduino build |
+| 11 | Feature parity: WiFi bars, volume HUD (with mute), OFFLINE indicator, empty-album message, auto-snap, toast | Matches Arduino LVGL build |
 
 ---
 

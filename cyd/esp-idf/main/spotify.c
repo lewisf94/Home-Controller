@@ -403,6 +403,22 @@ static void poll_client_close(void)
     }
 }
 
+/* Persistent keep-alive client for playback commands. Same principle as
+ * s_poll_client: reusing one TLS session across consecutive button presses
+ * skips the handshake (~0.5-2 s) that would otherwise block the UI. Commands
+ * always go to api.spotify.com so the connection stays eligible for reuse.
+ * Cleared on any transport error or 401 so the next call opens a fresh handle. */
+static esp_http_client_handle_t s_cmd_client = NULL;
+static bool                     s_shuffle_state = false;
+
+static void cmd_client_close(void)
+{
+    if (s_cmd_client) {
+        esp_http_client_cleanup(s_cmd_client);
+        s_cmd_client = NULL;
+    }
+}
+
 static esp_http_client_handle_t poll_client_get(resp_buf_t *buf)
 {
     if (s_poll_client) {
@@ -443,10 +459,16 @@ bool spotify_fetch_player(spotify_track_t *info)
     int status = esp_http_client_get_status_code(client);
 
     if (err == ESP_OK && status == 200 && buf.data) {
-        /* Top-level scalars: is_playing and progress_ms appear only at
-         * the root of the response so flat strstr is safe. */
+        /* Top-level scalars: is_playing, shuffle_state, and progress_ms appear
+         * only at the root of the response so flat strstr is safe. */
         const char *is_playing_v = json_obj_get(buf.data, "is_playing");
         if (is_playing_v) info->is_playing = (*is_playing_v == 't');
+
+        const char *shuffle_v = json_obj_get(buf.data, "shuffle_state");
+        if (shuffle_v) {
+            info->shuffle_state = (*shuffle_v == 't');
+            s_shuffle_state = info->shuffle_state;
+        }
 
         const char *progress_v = json_obj_get(buf.data, "progress_ms");
         if (progress_v) info->progress_ms = (uint32_t)atoi(progress_v);
@@ -699,46 +721,14 @@ bool spotify_download_to_file(const char *url, const char *path, size_t *out_len
 bool spotify_play_album(const char *context_uri)
 {
     if (!context_uri || context_uri[0] == '\0') return false;
-    if (!ensure_token()) return false;
-
     char body[160];
     int body_len = snprintf(body, sizeof(body),
                             "{\"context_uri\":\"%s\"}", context_uri);
     if (body_len <= 0 || body_len >= (int)sizeof(body)) return false;
-
-    esp_http_client_config_t cfg = {
-        .url               = "https://api.spotify.com/v1/me/player/play",
-        .method            = HTTP_METHOD_PUT,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms        = 5000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return false;
-
-    char bearer[320];
-    snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
-    esp_http_client_set_header(client, "Authorization", bearer);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_post_field(client, body, body_len);
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    /* Spotify returns 204 No Content on success. 202 Accepted is also
-     * reported on some devices. 404 means no active device. */
-    bool ok = (err == ESP_OK && (status == 204 || status == 202));
-    if (status == 401) {
-        /* Mirror _do_cmd's 401 handling -- without it the press fails silently
-         * until the next poll happens to refresh the token. */
-        ESP_LOGW(TAG, "play_album(%s) got 401, invalidating cached token",
-                 context_uri);
-        s_token_expiry_us = 0;
-        s_access_token[0]  = '\0';
-    } else if (!ok) {
-        ESP_LOGW(TAG, "play_album(%s) failed err=%d status=%d",
-                 context_uri, (int)err, status);
-    }
+    int st = _do_cmd(HTTP_METHOD_PUT,
+                     "https://api.spotify.com/v1/me/player/play", body);
+    bool ok = (st == 204 || st == 202);
+    if (!ok) ESP_LOGW(TAG, "play_album(%s) failed status=%d", context_uri, st);
     return ok;
 }
 
@@ -748,26 +738,39 @@ static int _do_cmd(esp_http_client_method_t method, const char *url, const char 
 {
     if (!ensure_token()) return -1;
 
-    esp_http_client_config_t cfg = {
-        .url               = url,
-        .method            = method,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms        = 5000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return -1;
+    if (!s_cmd_client) {
+        esp_http_client_config_t cfg = {
+            .url               = url,
+            .method            = method,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .timeout_ms        = 5000,
+            .keep_alive_enable = true,
+        };
+        s_cmd_client = esp_http_client_init(&cfg);
+        if (!s_cmd_client) return -1;
+    } else {
+        esp_http_client_set_url(s_cmd_client, url);
+        esp_http_client_set_method(s_cmd_client, method);
+    }
 
     char bearer[320];
     snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
-    esp_http_client_set_header(client, "Authorization", bearer);
+    esp_http_client_set_header(s_cmd_client, "Authorization", bearer);
+
     if (body && body[0]) {
-        esp_http_client_set_header(client, "Content-Type", "application/json");
-        esp_http_client_set_post_field(client, body, (int)strlen(body));
+        esp_http_client_set_header(s_cmd_client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(s_cmd_client, body, (int)strlen(body));
+    } else {
+        esp_http_client_delete_header(s_cmd_client, "Content-Type");
+        esp_http_client_set_post_field(s_cmd_client, NULL, 0);
     }
 
-    esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
+    esp_err_t err = esp_http_client_perform(s_cmd_client);
+    int status = esp_http_client_get_status_code(s_cmd_client);
+
+    /* On transport failure the TLS session is broken -- drop the handle so the
+     * next command re-establishes instead of reusing a dead socket. */
+    if (err != ESP_OK) cmd_client_close();
 
     /* Mirror the poll's 401 handling: a server-side token invalidation would
      * otherwise make a button press fail silently until the next poll happens
@@ -776,8 +779,8 @@ static int _do_cmd(esp_http_client_method_t method, const char *url, const char 
         ESP_LOGW(TAG, "cmd %s got 401, invalidating cached token", url);
         s_token_expiry_us = 0;
         s_access_token[0]  = '\0';
+        cmd_client_close();
     } else if (status < 200 || status >= 300) {
-        /* Log unexpected results so a failed press is debuggable later. */
         ESP_LOGW(TAG, "cmd %s -> %d", url, status);
     }
     return status;
@@ -841,4 +844,16 @@ bool spotify_set_volume(int pct)
     snprintf(url, sizeof(url),
              "https://api.spotify.com/v1/me/player/volume?volume_percent=%d", pct);
     return _cmd_ok(_do_cmd(HTTP_METHOD_PUT, url, NULL));
+}
+
+bool spotify_toggle_shuffle(void)
+{
+    bool new_state = !s_shuffle_state;
+    char url[96];
+    snprintf(url, sizeof(url),
+             "https://api.spotify.com/v1/me/player/shuffle?state=%s",
+             new_state ? "true" : "false");
+    bool ok = _cmd_ok(_do_cmd(HTTP_METHOD_PUT, url, NULL));
+    if (ok) s_shuffle_state = new_state;
+    return ok;
 }

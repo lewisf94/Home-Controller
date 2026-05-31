@@ -710,6 +710,7 @@ static void build_np_screen(void)
     style_label(s_np_title,
                 s_font_28 ? s_font_28 : &lv_font_montserrat_28,
                 lv_color_hex(s_th->text), NP_TITLE_Y);
+    lv_label_set_text(s_np_title, "Nothing playing");
 
     s_np_artist = lv_label_create(s_screen_np);
     style_label(s_np_artist,

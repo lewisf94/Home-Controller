@@ -34,6 +34,7 @@ void ui_request_prev();
 void ui_request_next();
 void ui_request_seek(uint32_t ms);
 void ui_request_volume(int pct);
+void ui_request_shuffle();
 
 // ── Legacy no-op shims ─────────────────────────────────────────────────────
 // spotify.cpp still calls these around its network I/O (they guarded the old

@@ -163,10 +163,14 @@ static bool json_obj_get_double(const char *obj, const char *key, double *out)
 }
 
 /* ── Outbound (WebSocket sends) ──────────────────────────────────────────── */
-static void ws_send(const char *json)
+static bool ws_send(const char *json)
 {
-    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) return;
-    esp_websocket_client_send_text(s_ws, json, strlen(json), pdMS_TO_TICKS(2000));
+    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) {
+        ESP_LOGW(TAG, "ws_send: not connected, dropping: %.40s...", json);
+        return false;
+    }
+    int ret = esp_websocket_client_send_text(s_ws, json, strlen(json), pdMS_TO_TICKS(2000));
+    return (ret >= 0);
 }
 
 static void send_auth(void)
@@ -194,8 +198,9 @@ static void send_subscribe(void)
     ws_send(buf);
 }
 
-/* call_service with optional service_data object body (without braces). */
-static void call_service(const char *domain, const char *service,
+/* call_service with optional service_data object body (without braces).
+ * Returns true if the WebSocket send succeeded. */
+static bool call_service(const char *domain, const char *service,
                          const char *service_data /* e.g. "\"x\":1" or NULL */)
 {
     char buf[384];
@@ -212,30 +217,39 @@ static void call_service(const char *domain, const char *service,
                  "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"}}",
                  id, domain, service, s_entity ? s_entity : "");
     }
-    ws_send(buf);
+    return ws_send(buf);
 }
 
-void ha_toggle_play_pause(void) { call_service("media_player", "media_play_pause",     NULL); }
-void ha_prev_track(void)        { call_service("media_player", "media_previous_track", NULL); }
-void ha_next_track(void)        { call_service("media_player", "media_next_track",     NULL); }
+bool ha_toggle_play_pause(void) { return call_service("media_player", "media_play_pause",     NULL); }
+bool ha_prev_track(void)        { return call_service("media_player", "media_previous_track", NULL); }
+bool ha_next_track(void)        { return call_service("media_player", "media_next_track",     NULL); }
+bool ha_toggle_shuffle(void)
+{
+    bool new_state = !s_track.shuffle_state;
+    char data[24];
+    snprintf(data, sizeof(data), "\"shuffle\":%s", new_state ? "true" : "false");
+    bool ok = call_service("media_player", "shuffle_set", data);
+    if (ok) s_track.shuffle_state = new_state;
+    return ok;
+}
 
-void ha_seek_position(uint32_t position_ms)
+bool ha_seek_position(uint32_t position_ms)
 {
     char data[48];
     snprintf(data, sizeof(data), "\"seek_position\":%u", (unsigned)(position_ms / 1000));
-    call_service("media_player", "media_seek", data);
+    return call_service("media_player", "media_seek", data);
 }
 
-void ha_set_volume(int pct)
+bool ha_set_volume(int pct)
 {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     char data[48];
     snprintf(data, sizeof(data), "\"volume_level\":%.2f", pct / 100.0);
-    call_service("media_player", "volume_set", data);
+    return call_service("media_player", "volume_set", data);
 }
 
-void ha_play_album(const char *spotify_uri)
+bool ha_play_album(const char *spotify_uri)
 {
     /* "spotify:album:ID" -> "spotify://album/ID" for Music Assistant. */
     char media_id[160];
@@ -250,7 +264,7 @@ void ha_play_album(const char *spotify_uri)
     char data[256];
     snprintf(data, sizeof(data),
              "\"media_id\":\"%s\",\"media_type\":\"album\"", media_id);
-    call_service("music_assistant", "play_media", data);
+    return call_service("music_assistant", "play_media", data);
 }
 
 /* ── Inbound (state parsing) ─────────────────────────────────────────────── */
@@ -285,6 +299,15 @@ static void apply_state_object(const char *st)
             s_art_pending = true;
             taskEXIT_CRITICAL(&s_art_mux);
         }
+
+        s_track.volume_pct = -1;
+        double vol = 0.0;
+        if (json_obj_get_double(attrs, "volume_level", &vol))
+            s_track.volume_pct = (int)(vol * 100.0 + 0.5);
+
+        const char *shuf_p = json_obj_get(attrs, "shuffle");
+        if (shuf_p)
+            s_track.shuffle_state = (strncmp(shuf_p, "true", 4) == 0);
     }
 
     ESP_LOGI(TAG, "state: %s -- %s [%s]", s_track.artist, s_track.title, state);

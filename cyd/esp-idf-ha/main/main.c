@@ -107,6 +107,7 @@ typedef enum {
     SCMD_NEXT_TRACK,
     SCMD_SEEK_MS,
     SCMD_SET_VOLUME,
+    SCMD_TOGGLE_SHUFFLE,
 } scmd_type_t;
 
 typedef struct {
@@ -124,12 +125,13 @@ static void _post_cmd(scmd_type_t type, uint32_t param, const char *uri)
     (void)xQueueSend(s_cmd_queue, &cmd, 0);
 }
 
-void ui_request_play(const char *uri)         { _post_cmd(SCMD_PLAY_ALBUM,   0,     uri); }
-void ui_request_toggle_play(void)             { _post_cmd(SCMD_TOGGLE_PLAY,  0,     NULL); }
-void ui_request_prev(void)                    { _post_cmd(SCMD_PREV_TRACK,   0,     NULL); }
-void ui_request_next(void)                    { _post_cmd(SCMD_NEXT_TRACK,   0,     NULL); }
-void ui_request_seek(uint32_t ms)             { _post_cmd(SCMD_SEEK_MS,      ms,    NULL); }
-void ui_request_volume(int pct)               { _post_cmd(SCMD_SET_VOLUME,   (uint32_t)pct, NULL); }
+void ui_request_play(const char *uri)         { _post_cmd(SCMD_PLAY_ALBUM,      0,              uri); }
+void ui_request_toggle_play(void)             { _post_cmd(SCMD_TOGGLE_PLAY,     0,              NULL); }
+void ui_request_prev(void)                    { _post_cmd(SCMD_PREV_TRACK,      0,              NULL); }
+void ui_request_next(void)                    { _post_cmd(SCMD_NEXT_TRACK,      0,              NULL); }
+void ui_request_seek(uint32_t ms)             { _post_cmd(SCMD_SEEK_MS,         ms,             NULL); }
+void ui_request_volume(int pct)               { _post_cmd(SCMD_SET_VOLUME,      (uint32_t)pct,  NULL); }
+void ui_request_shuffle(void)                 { _post_cmd(SCMD_TOGGLE_SHUFFLE,  0,              NULL); }
 
 static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
                             uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
@@ -245,13 +247,19 @@ static void ha_task(void *arg)
         /* Dispatch any queued commands (blocks up to 200 ms when idle). */
         scmd_t cmd = {0};
         while (xQueueReceive(s_cmd_queue, &cmd, pdMS_TO_TICKS(200)) == pdTRUE) {
+            bool ok = false;
             switch (cmd.type) {
-                case SCMD_PLAY_ALBUM:   ha_play_album(cmd.uri);          break;
-                case SCMD_TOGGLE_PLAY:  ha_toggle_play_pause();          break;
-                case SCMD_PREV_TRACK:   ha_prev_track();                 break;
-                case SCMD_NEXT_TRACK:   ha_next_track();                 break;
-                case SCMD_SEEK_MS:      ha_seek_position(cmd.param);     break;
-                case SCMD_SET_VOLUME:   ha_set_volume((int)cmd.param);   break;
+                case SCMD_PLAY_ALBUM:      ok = ha_play_album(cmd.uri);         break;
+                case SCMD_TOGGLE_PLAY:     ok = ha_toggle_play_pause();         break;
+                case SCMD_PREV_TRACK:      ok = ha_prev_track();                break;
+                case SCMD_NEXT_TRACK:      ok = ha_next_track();                break;
+                case SCMD_SEEK_MS:         ok = ha_seek_position(cmd.param);    break;
+                case SCMD_SET_VOLUME:      ok = ha_set_volume((int)cmd.param);  break;
+                case SCMD_TOGGLE_SHUFFLE:  ok = ha_toggle_shuffle();            break;
+            }
+            if (!ok) {
+                ESP_LOGW(TAG, "ha cmd %d failed (ws not connected?)", (int)cmd.type);
+                ui_show_toast("HA offline", 2000);
             }
         }
 

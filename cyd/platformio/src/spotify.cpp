@@ -233,6 +233,10 @@ void spotify_fetch_player_state() {
         } else if (httpCode == 204) {
             current_track_info.is_playing = false;
         } else {
+            if (httpCode == 401) {
+                access_token = "";
+                token_expiry  = 0;
+            }
             Serial.printf("Player state error: %d\n", httpCode);
         }
         s_poll_https.end();   // with setReuse(true), keeps the socket for the next poll
@@ -241,7 +245,7 @@ void spotify_fetch_player_state() {
     // A connection-level failure (httpCode <= 0) means the kept-alive socket is
     // dead (server closed it, or a WiFi blip). Drop it so the next poll opens a
     // fresh connection instead of reusing a broken handle.
-    if (httpCode <= 0) poll_client_close();
+    if (httpCode <= 0 || httpCode == 401) poll_client_close();
 
     ui_resume_sprite();
 }
@@ -278,8 +282,12 @@ static int _spotify_command(const char* method, const char* path,
             // PUT
             code = https.PUT(body ? String(body) : String(""));
         }
+        if (code == 401) {
+            access_token = "";
+            token_expiry  = 0;
+        }
         if (!(code == 200 || code == 204 || code == 202)) {
-            Serial.printf("Spotify %s %s → %d\n", method, path, code);
+            Serial.printf("Spotify %s %s -> %d\n", method, path, code);
         }
         https.end();
     }
