@@ -25,15 +25,26 @@ of truth.
 
 ### Copy from SmartKnob → `Symbols & Footprints/`
 
+**Note on SmartKnob `.lib` files:** The copy in `docs/smartknob-repo/` may not
+include `.lib` symbol files (only `.dcm` doc stubs and `.pretty` footprints are
+guaranteed to be present). If a symbol is missing, download the SmartKnob ZIP
+fresh from GitHub. However, check the KiCad 8 stdlib first — several SmartKnob
+symbols are now superseded and the stdlib version is better reviewed.
+
+**Verify every third-party symbol pin-for-pin against its datasheet before use.**
+SmartKnob targets the MT6701CT (SOIC-8); this build uses the MT6701QT (different
+package — do not share that symbol). SnapEDA symbols sometimes swap pins or omit
+exposed pads. One wrong pin can destroy a chip.
+
 | Lib path (under `smartknob-master/electronics/lib/`) | Use |
 |---|---|
-| `MagnTek.lib` | MT6701 schematic symbol |
-| `strain.lib` + `strain.pretty` | BF350-3AA gauge symbol + footprint |
-| `VEML7700.lib` + `VEML7700.pretty` + `VEML7700.3dshapes` | Ambient-light sensor full package |
-| `SK6812.lib` + `sk6812.pretty` + `sk6812.3dshapes` | Side-firing RGB LED |
+| `strain.lib` | Contains an **HX711** symbol (not a BF350 symbol — BF350 is a passive resistor; use `Device:R` for it). Only useful if you want SmartKnob's particular HX711 pin layout — the KiCad stdlib `Analog_ADC:HX711` is a cleaner choice. |
+| `strain.pretty` | **BF350-3AA strain gauge footprint** — this is what you actually need from this library. |
+| `VEML7700.lib` + `VEML7700.pretty` + `VEML7700.3dshapes` | Ambient-light sensor full package (not in KiCad 8 stdlib) |
+| `SK6812.lib` + `sk6812.pretty` + `sk6812.3dshapes` | Side-firing SK6812-SIDE-A LED (top-firing SK6812 is in KiCad 8 stdlib; the side-firing variant is not) |
 | `Holes.pretty` | M1.6 / M2 mounting holes, alignment pins |
 | `SolderPads.pretty` | 2/3/4/8-pad solder break-outs |
-| `Modified.pretty` | Thermal-via QFN-20, SOT-223 variants, electrolytic cap with cutout, test-point pad |
+| `Modified.pretty` | SOT-223 variants, electrolytic cap with cutout, test-point pad (skip the QFN-20 thermal-via entry — use the stdlib footprint instead; see "Source elsewhere") |
 
 **KiCad-version note:** SmartKnob is KiCad 5-era (no `.kicad_sym` files, just legacy
 `.lib`). KiCad 6/7/8 Symbol Library Editor offers **File → Migrate Libraries** —
@@ -41,21 +52,27 @@ one-way `.lib` → `.kicad_sym`. Footprints (`.kicad_mod`) work as-is.
 
 ### Skip from SmartKnob
 
+- `MagnTek.lib` (MT6701 symbol) — SmartKnob uses the CT (SOIC-8) variant; this
+  build uses the **QT variant**. Use KiCad 8 stdlib `Sensor_Magnetic:MT6701QT`
+  instead (different package, different pinout).
 - `LCD_GC9A01` — no round screen on this knob
 - `BM28` — not stacking a daughter PCB on the motor; simpler connector works
 - `lilygo_micro32` — wrong MCU (we're on ESP32-P4)
 - `SN74AVC4T774` — wrong chip; we use single-channel logic translators (see below)
 - `GCT_USB` — Waveshare board already has USB-C; daughterboard's RP2040 USB-C
   uses a stock KiCad part
-- `Trinamic` (TMC6300 symbol) — already have `TMC6300-LA` from elsewhere
+- `Trinamic` (TMC6300 symbol) — already have `TMC6300-LA` from SnapEDA
 - `Molex`, `BOM_Only`, `no_pin` — not applicable
 
 ### Source elsewhere
 
 | Part | Source |
 |---|---|
+| **MT6701QT** | KiCad 8 stdlib `Sensor_Magnetic:MT6701QT` — verify pin map against the QT datasheet before use (SmartKnob uses the CT/SOIC-8 variant; different package, different symbol) |
 | **RP2040** | Raspberry Pi official KiCad libs (`github.com/raspberrypi/hardware-design-guide`) |
-| **HX711** | SnapEDA / Ultra Librarian; Sparkfun's HX711 breakout schematic is a good reference design |
+| **HX711** | KiCad 8 stdlib `Analog_ADC:HX711` (confirmed present in KiCad 8.0.0; Sparkfun's HX711 breakout schematic is a good wiring reference) |
+| **TMC6300** symbol | SnapEDA `TMC6300-LA.kicad_sym` — already imported to `Symbols & Footprints/TMC6300-LA/`. Not in KiCad 8 stdlib. Verify pins against datasheet before sign-off. |
+| **TMC6300** footprint | Use KiCad 8 stdlib `Package_DFN_QFN:QFN-20-1EP_3x3mm_P0.4mm_EP1.65x1.65mm_ThermalVias` — **not** the SnapEDA `.kicad_mod` bundled with the symbol (that file has 21 pads and zero thermal vias; the stdlib version is KLC-reviewed and includes thermal vias for heat dissipation) |
 | **MAX17048** | ADI/Maxim KiCad lib or SnapEDA |
 | **SN74AHCT1G125** *(see decision below)* | TI KiCad libs or SnapEDA; SOT-23-5 footprint is in stock KiCad `Package_TO_SOT_SMD` |
 | **Kailh MX hot-swap socket** | [`keebio/keyswitches.pretty`](https://github.com/keebio/Keebio-Parts.pretty) — search "Kailh_MX_Hotswap" |
@@ -91,6 +108,11 @@ one-way `.lib` → `.kicad_sym`. Footprints (`.kicad_mod`) work as-is.
   cancels in the differential).
 - Wired to **HX711 channel A at gain 128** (designed for ±20 mV span — matches
   a finger-press bridge output).
+- **KiCad symbol:** use `Device:R` — a BF350 strain gauge is electrically just
+  a 350 Ω resistor. There is no dedicated BF350 schematic symbol. (`strain.lib`
+  from SmartKnob contains an HX711 symbol, not a BF350 symbol.)
+- **KiCad footprint:** SmartKnob's `strain.pretty/BF350-3AA` — pads sized for
+  the gauge tabs and solder-bridge connections.
 - Gauges placed on **flexure beams cut into the PCB**, two stretch + two
   compress on press-down. Copy the slot pattern from SmartKnob's
   `electronics/view_base/view_base.kicad_pcb` (open in KiCad PCB editor).
