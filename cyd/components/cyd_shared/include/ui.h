@@ -54,6 +54,7 @@ void ui_request_prev(void);
 void ui_request_next(void);
 void ui_request_seek(uint32_t ms);
 void ui_request_volume(int pct);
+void ui_request_shuffle(void);
 
 /* UI state queries and actions -- must be called under the LVGL lock. */
 bool     ui_is_now_playing(void);

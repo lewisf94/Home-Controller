@@ -108,6 +108,7 @@ typedef enum {
     SCMD_NEXT_TRACK,
     SCMD_SEEK_MS,
     SCMD_SET_VOLUME,
+    SCMD_TOGGLE_SHUFFLE,
 } scmd_type_t;
 
 typedef struct {
@@ -125,12 +126,13 @@ static void _post_cmd(scmd_type_t type, uint32_t param, const char *uri)
     (void)xQueueSend(s_cmd_queue, &cmd, 0);
 }
 
-void ui_request_play(const char *uri)         { _post_cmd(SCMD_PLAY_ALBUM,   0,     uri); }
-void ui_request_toggle_play(void)             { _post_cmd(SCMD_TOGGLE_PLAY,  0,     NULL); }
-void ui_request_prev(void)                    { _post_cmd(SCMD_PREV_TRACK,   0,     NULL); }
-void ui_request_next(void)                    { _post_cmd(SCMD_NEXT_TRACK,   0,     NULL); }
-void ui_request_seek(uint32_t ms)             { _post_cmd(SCMD_SEEK_MS,      ms,    NULL); }
-void ui_request_volume(int pct)               { _post_cmd(SCMD_SET_VOLUME,   (uint32_t)pct, NULL); }
+void ui_request_play(const char *uri)         { _post_cmd(SCMD_PLAY_ALBUM,      0,     uri); }
+void ui_request_toggle_play(void)             { _post_cmd(SCMD_TOGGLE_PLAY,     0,     NULL); }
+void ui_request_prev(void)                    { _post_cmd(SCMD_PREV_TRACK,      0,     NULL); }
+void ui_request_next(void)                    { _post_cmd(SCMD_NEXT_TRACK,      0,     NULL); }
+void ui_request_seek(uint32_t ms)             { _post_cmd(SCMD_SEEK_MS,         ms,    NULL); }
+void ui_request_volume(int pct)               { _post_cmd(SCMD_SET_VOLUME,      (uint32_t)pct, NULL); }
+void ui_request_shuffle(void)                 { _post_cmd(SCMD_TOGGLE_SHUFFLE,  0,     NULL); }
 
 static void touch_calibrate(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
                             uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
@@ -294,28 +296,30 @@ static void spotify_task(void *arg)
                         if (!ok) {
                             /* Most common cause: no active Spotify device. The
                              * toast surfaces this on-screen so the press isn't
-                             * a silent no-op. (1B's 404-wake catches the
+                             * a silent no-op. (404-wake catches the
                              * idled-phone case before we get here.) */
                             ui_show_toast("No active Spotify device", 3000);
                         }
                         break;
-                    case SCMD_TOGGLE_PLAY:  ok = spotify_toggle_play_pause();         break;
-                    case SCMD_PREV_TRACK:   ok = spotify_prev_track();                break;
-                    case SCMD_NEXT_TRACK:   ok = spotify_next_track();                break;
-                    case SCMD_SEEK_MS:      ok = spotify_seek_position(cmd.param);    break;
-                    case SCMD_SET_VOLUME:   ok = spotify_set_volume((int)cmd.param);  break;
+                    case SCMD_TOGGLE_PLAY:    ok = spotify_toggle_play_pause();         break;
+                    case SCMD_PREV_TRACK:     ok = spotify_prev_track();                break;
+                    case SCMD_NEXT_TRACK:     ok = spotify_next_track();                break;
+                    case SCMD_SEEK_MS:        ok = spotify_seek_position(cmd.param);    break;
+                    case SCMD_SET_VOLUME:     ok = spotify_set_volume((int)cmd.param);  break;
+                    case SCMD_TOGGLE_SHUFFLE: ok = spotify_toggle_shuffle();            break;
                 }
                 /* Surface failed presses so a "the button did nothing" complaint
                  * is debuggable from the serial log. _do_cmd already logs the
                  * underlying HTTP status; this names the high-level command. */
                 if (!ok && cmd.type != SCMD_PLAY_ALBUM) {
                     static const char *const names[] = {
-                        [SCMD_PLAY_ALBUM]  = "play_album",
-                        [SCMD_TOGGLE_PLAY] = "toggle_play_pause",
-                        [SCMD_PREV_TRACK]  = "prev_track",
-                        [SCMD_NEXT_TRACK]  = "next_track",
-                        [SCMD_SEEK_MS]     = "seek",
-                        [SCMD_SET_VOLUME]  = "set_volume",
+                        [SCMD_PLAY_ALBUM]      = "play_album",
+                        [SCMD_TOGGLE_PLAY]     = "toggle_play_pause",
+                        [SCMD_PREV_TRACK]      = "prev_track",
+                        [SCMD_NEXT_TRACK]      = "next_track",
+                        [SCMD_SEEK_MS]         = "seek",
+                        [SCMD_SET_VOLUME]      = "set_volume",
+                        [SCMD_TOGGLE_SHUFFLE]  = "toggle_shuffle",
                     };
                     ESP_LOGW(TAG, "spotify cmd %s FAILED", names[cmd.type]);
                 }

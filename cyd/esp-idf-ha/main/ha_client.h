@@ -27,13 +27,15 @@ void ha_client_init(const char *host, int port,
  * state arrives asynchronously via the event handler. */
 void ha_client_start(void);
 
-/* Playback commands -- each builds a call_service frame and sends it. */
-void ha_toggle_play_pause(void);
-void ha_prev_track(void);
-void ha_next_track(void);
-void ha_seek_position(uint32_t position_ms);
-void ha_set_volume(int pct);
-void ha_play_album(const char *spotify_uri);   /* "spotify:album:ID" */
+/* Playback commands -- each builds a call_service frame and sends it.
+ * Returns true if the WebSocket send succeeded (does not confirm HA executed it). */
+bool ha_toggle_play_pause(void);
+bool ha_prev_track(void);
+bool ha_next_track(void);
+bool ha_toggle_shuffle(void);
+bool ha_seek_position(uint32_t position_ms);
+bool ha_set_volume(int pct);
+bool ha_play_album(const char *spotify_uri);   /* "spotify:album:ID" */
 
 /* Album art: when a track change brings a new entity_picture, the event
  * handler stashes its relative URL. The ha task polls this (consume-once),

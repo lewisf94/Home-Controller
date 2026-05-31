@@ -134,8 +134,9 @@ static void lvgl_glue_init() {
 // Mirrors the IDF build: ui_request_*() post here from the render/input context
 // and spotify_task drains them, so the blocking HTTPS never stalls rendering.
 typedef enum {
-  SCMD_PLAY_ALBUM, SCMD_TOGGLE_PLAY, SCMD_PREV_TRACK,
-  SCMD_NEXT_TRACK, SCMD_SEEK_MS,     SCMD_SET_VOLUME,
+  SCMD_PLAY_ALBUM, SCMD_TOGGLE_PLAY,  SCMD_PREV_TRACK,
+  SCMD_NEXT_TRACK, SCMD_SEEK_MS,      SCMD_SET_VOLUME,
+  SCMD_TOGGLE_SHUFFLE,
 } scmd_type_t;
 
 typedef struct {
@@ -152,21 +153,23 @@ static void post_cmd(scmd_type_t type, uint32_t param, const char *uri) {
   xQueueSend(s_cmd_queue, &cmd, 0);
 }
 
-void ui_request_play(const char *uri) { post_cmd(SCMD_PLAY_ALBUM,  0,                 uri); }
-void ui_request_toggle_play()         { post_cmd(SCMD_TOGGLE_PLAY, 0,                 nullptr); }
-void ui_request_prev()                { post_cmd(SCMD_PREV_TRACK,  0,                 nullptr); }
-void ui_request_next()                { post_cmd(SCMD_NEXT_TRACK,  0,                 nullptr); }
-void ui_request_seek(uint32_t ms)     { post_cmd(SCMD_SEEK_MS,     ms,                nullptr); }
-void ui_request_volume(int pct)       { post_cmd(SCMD_SET_VOLUME,  (uint32_t)pct,     nullptr); }
+void ui_request_play(const char *uri) { post_cmd(SCMD_PLAY_ALBUM,      0,             uri); }
+void ui_request_toggle_play()         { post_cmd(SCMD_TOGGLE_PLAY,    0,             nullptr); }
+void ui_request_prev()                { post_cmd(SCMD_PREV_TRACK,     0,             nullptr); }
+void ui_request_next()                { post_cmd(SCMD_NEXT_TRACK,     0,             nullptr); }
+void ui_request_seek(uint32_t ms)     { post_cmd(SCMD_SEEK_MS,        ms,            nullptr); }
+void ui_request_volume(int pct)       { post_cmd(SCMD_SET_VOLUME,     (uint32_t)pct, nullptr); }
+void ui_request_shuffle()             { post_cmd(SCMD_TOGGLE_SHUFFLE, 0,             nullptr); }
 
 static void dispatch_cmd(const scmd_t &c) {
   switch (c.type) {
-    case SCMD_PLAY_ALBUM:  spotify_play_album(c.uri);              break;
-    case SCMD_TOGGLE_PLAY: spotify_toggle_play_pause();            break;
-    case SCMD_PREV_TRACK:  spotify_prev_track();                   break;
-    case SCMD_NEXT_TRACK:  spotify_next_track();                   break;
-    case SCMD_SEEK_MS:     spotify_seek_position((int32_t)c.param);break;
-    case SCMD_SET_VOLUME:  spotify_set_volume((int)c.param);       break;
+    case SCMD_PLAY_ALBUM:      spotify_play_album(c.uri);               break;
+    case SCMD_TOGGLE_PLAY:     spotify_toggle_play_pause();             break;
+    case SCMD_PREV_TRACK:      spotify_prev_track();                    break;
+    case SCMD_NEXT_TRACK:      spotify_next_track();                    break;
+    case SCMD_SEEK_MS:         spotify_seek_position((int32_t)c.param); break;
+    case SCMD_SET_VOLUME:      spotify_set_volume((int)c.param);        break;
+    case SCMD_TOGGLE_SHUFFLE:  spotify_toggle_shuffle();                break;
   }
 }
 

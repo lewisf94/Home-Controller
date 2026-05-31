@@ -55,3 +55,4 @@ bool spotify_prev_track(void);
 bool spotify_next_track(void);
 bool spotify_seek_position(uint32_t position_ms);
 bool spotify_set_volume(int pct);
+bool spotify_toggle_shuffle(void);
