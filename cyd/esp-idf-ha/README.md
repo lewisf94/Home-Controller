@@ -1,151 +1,111 @@
-# cyd/esp-idf-ha — ESP-IDF build, HOME ASSISTANT backend (Phase 3)
+# cyd/esp-idf-ha — ESP-IDF build, Home Assistant backend
 
-> **This is the Home Assistant variant.** It is a self-contained copy of
-> `../esp-idf/` with the Spotify Web API backend replaced by a Home Assistant
-> WebSocket client (`ha_client.c`) talking to a Music Assistant `media_player`
-> entity. The non-HA build in `../esp-idf/` is unchanged; both can be flashed to
-> the CYD independently. **NOT YET HARDWARE-TESTED.**
->
-> Setup: see Phase 3 in [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md) and the
-> HA runbook. Fill `include/secrets.h` (copy from `secrets.h.example`) with
-> `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY`.
->
-> **Maintenance note:** the UI/input/album code here is a copy of `../esp-idf/`.
-> A fix to one must be applied to the other.
+The Home Assistant variant of the CYD-IDF firmware. Shares its UI, input,
+album-art and storage code with `../esp-idf/` via the
+[`cyd_shared`](../components/cyd_shared/README.md) component — the only
+build-local code is `main.c` (board bring-up + WebSocket task) and
+`ha_client.{c,h}` (the WebSocket client to Music Assistant). Hardware is
+identical to the direct-Spotify build.
 
-Native ESP-IDF port of the Music Controller targeting the same CYD hardware as `../platformio/`. The display layer is LVGL 9 via `esp_lvgl_port`; the same UI stack carries over to the future Waveshare ESP32-P4 build, which is the main reason for porting to IDF in the first place.
+> **STATUS: never hardware-tested.** All the UI/input/reliability features
+> that landed on `cyd/esp-idf/` ride along here for free (because they're in
+> `cyd_shared`), but no one has yet flashed this build, brought up a Pi 5
+> with HA OS, and confirmed the WebSocket handshake / state push / service
+> calls actually work end-to-end. First-flash checklist is in
+> [`../../docs/TESTING.md`](../../docs/TESTING.md) under "CYD ESP-IDF HA".
 
-This build is **not** a feature port of the Arduino code yet — it's being brought up incrementally per the Phase 2 checkpoint table in [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md). Each checkpoint is a flashable, hardware-verified milestone before moving to the next.
+## What's different from `cyd/esp-idf/`
 
----
-
-## Status
-
-| Step | Goal | State |
+| Concern | `cyd/esp-idf/` (Spotify) | `cyd/esp-idf-ha/` (HA) |
 |---|---|---|
-| 0 | Backlight blink, serial log | verified |
-| 1 | esp_lcd + ILI9341, full-screen R/G/B colour cycle | verified |
-| 2 | LVGL init + centred "Hello CYD" label | verified |
-| 3 | XPT2046 touch + LVGL input device, draggable square | verified |
-| 4 | WiFi STA, IP logged | not started |
-| 5 | HTTPS to Spotify, token refresh, GET player state | not started |
-| 6 | Download `nowplaying.jpg`, display via `lv_image` | not started |
-| 7 | SD mount, load `metadata.csv` + thumbnails as raw RGB565 | not started |
-| 8 | LVGL scrollable container + snap + tap-to-play | not started |
-| 9 | MCP23017 I2C driver + LVGL encoder input device | not started |
-| 10 | Button dispatch, volume debounce, mute toggle | not started |
-| 11 | Feature parity: WiFi indicator, mute badge, play-pause flash, volume HUD | not started |
+| Backend file | `main/spotify.c` | `main/ha_client.c` |
+| Backend header | `main/spotify.h` (struct + API) | `main/spotify.h` (thin wrapper — see below) + `main/ha_client.h` |
+| Transport | HTTPS to `api.spotify.com` (`esp_http_client` + cert bundle) | WebSocket to `ws://<HA_HOST>:<HA_PORT>/api/websocket` (`esp_websocket_client`) |
+| Auth | OAuth refresh-token flow, persisted to NVS | One static long-lived access token in `secrets.h` |
+| State updates | `GET /me/player` poll every 5 s (adaptive 15 s when paused) | `state_changed` push from HA — real-time |
+| Album art | Spotify CDN over TLS | HA-proxied `entity_picture` over local HTTP (faster, no TLS) |
+| Volume on phones | Limited by Spotify Web API on mobile (knob no-ops on Android/iOS) | Works (HA handles device targeting) |
+| Secrets file | `WIFI_*` + `SPOTIFY_*` | `WIFI_*` + `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` |
+| Extra IDF requirements | `esp_http_client` | `esp_websocket_client` |
 
-The currently-flashed program is a touch test: a centred red square that follows your finger across the screen, with a "TOP" label and a live `x=N y=N` coord HUD.
+The `main/spotify.h` here is a thin wrapper that just `#include "player.h"`
+(from `cyd_shared`) so `ha_client.c` and the shared UI both see the same
+`spotify_track_t` struct. The HA build doesn't actually link any Spotify Web
+API client — the file's filename is historical.
 
----
+## Shared with `cyd/esp-idf/` (via `cyd_shared`)
 
-## Requirements
+Everything in the table below comes for free in this build because it lives
+in [`../components/cyd_shared/`](../components/cyd_shared/README.md):
 
-- **ESP-IDF 6.0** installed and on PATH. Tested with the official Espressif Windows installer at `C:\Espressif\` / `C:\esp\v6.0\esp-idf`. Older 5.x might work but the API rename `rgb_endian` → `rgb_ele_order` (see `PORT-NOTES.md`) will need to be undone if you go back to 5.x.
-- **Python** is provided by the IDF venv (`C:\Espressif\tools\python\v6.0\venv` in the official installer). You don't need a separate system Python.
-- **VS Code ESP-IDF extension** is the easiest day-to-day driver, but everything below also works from the IDF terminal.
+- LVGL UI: album browser, now-playing screen, volume HUD, OFFLINE indicator,
+  auto-snap to playing album, MAX_CARDS truncation warning, toast widget,
+  WiFi-bars indicator.
+- Input: MCP23017 driver (with re-probe-on-failure), debounced buttons +
+  RE1 encoder, volume base seeded from device, mute toggle.
+- Storage: LittleFS scratch partition mount.
+- Album art: JPEGDEC decode of the now-playing image to RGB565.
 
----
+What the HA `ha_client.c` is responsible for filling in:
+- The `spotify_track_t` struct (call `ui_set_track_info` after every
+  `state_changed` event).
+- The album-art URL field, pointing at the HA-proxied `entity_picture`.
+- Implementing the same set of `*_play_album` / `*_toggle_play_pause` /
+  `*_next` / `*_prev` / `*_seek` / `*_set_volume` / `*_get_devices` /
+  `*_transfer_playback` semantics that the dispatcher in `main.c` expects.
+
+## Setup (HA side)
+
+1. Install HA OS on a Pi 5. Add the Spotify (or Music Assistant) integration.
+   Note the entity ID: typically `media_player.spotify_<username>` or
+   `media_player.<mass_user>`.
+2. Create a long-lived access token: HA Profile → Long-Lived Access Tokens
+   → Create. Store in `include/secrets.h` as `HA_TOKEN`.
+3. Confirm Pi 5 is reachable on the LAN at a stable IP or hostname. Set
+   `HA_HOST` + `HA_PORT` (default 8123) + `HA_ENTITY` to your media-player
+   entity id.
+
+## Setup (device side)
+
+1. `cp include/secrets.h.example include/secrets.h` and fill in
+   `WIFI_SSID` / `WIFI_PASSWORD` / `HA_HOST` / `HA_PORT` / `HA_TOKEN` /
+   `HA_ENTITY`. File is gitignored.
+2. Make sure `idf.py set-target esp32` has been run at least once.
+3. `idf.py build flash monitor` — first build downloads `esp_websocket_client`
+   and the rest of the managed-component graph.
 
 ## Build / flash / monitor
 
-### From VS Code (ESP-IDF extension)
+Same as `cyd/esp-idf/` — open this folder in VS Code with the ESP-IDF
+extension (the extension wants the IDF project at the workspace root, not
+the repo root), set target `esp32`, pick the COM port, click the flame icon
+to build + flash + monitor.
 
-1. `File → Open Folder` → select this `cyd/esp-idf/` directory (not the repo root — the extension wants the IDF project at the workspace root).
-2. Set target to `esp32` via `Ctrl+Shift+P → ESP-IDF: Set Espressif device target`.
-3. Plug in the CYD over USB, then `Ctrl+Shift+P → ESP-IDF: Select Port to use` → pick the COM port (usually COM3..COM7 on Windows).
-4. Click the **flame icon** in the bottom status bar to build + flash + monitor in one shot. Press `Ctrl+]` in the monitor to exit.
-
-### From the IDF PowerShell
+From the IDF PowerShell:
 
 ```powershell
-cd "cyd\esp-idf"
 idf.py set-target esp32           # first time only
 idf.py build
 idf.py -p COM5 flash monitor      # replace COM5 with your port
 ```
 
-After editing `main/idf_component.yml` (adding or changing managed components), run `idf.py reconfigure` so the component manager re-resolves dependencies. If the component manager seems to be ignoring a change, the cached `build/` is the usual culprit — delete it and rebuild.
+## Build configuration
 
----
+The CMake wiring matches `cyd/esp-idf/` after the `cyd_shared` extraction:
 
-## Project layout
-
-```
-main/
-  CMakeLists.txt          Lists main.c as the app source
-  idf_component.yml       Managed dependencies (LVGL, esp_lvgl_port, ILI9341, XPT2046)
-  main.c                  Application entry — currently the Step 3 touch demo
-sdkconfig.defaults        Project Kconfig defaults
-sdkconfig                 Generated by IDF; do not edit by hand for permanent changes
-CMakeLists.txt            Top-level project file
-managed_components/       Auto-downloaded components (gitignored)
-build/                    Generated; gitignored
-```
-
-### Managed dependencies (`main/idf_component.yml`)
-
-```yaml
-dependencies:
-  idf: ">=5.3.0"
-  espressif/esp_lcd_ili9341: "^2.0.0"
-  lvgl/lvgl: "^9.2.0"
-  espressif/esp_lvgl_port: "^2.4.0"
-  atanisoft/esp_lcd_touch_xpt2046: "*"
-```
-
-The XPT2046 driver is `atanisoft/...`, not `espressif/...` — Espressif maintains drivers for GT911 / FT5x06 / TT21100 but not for the XPT2046. The atanisoft package is the de-facto community driver and integrates with the standard `esp_lcd_touch` interface.
-
-### Why the manifest is in `main/`, not at the project root
-
-The IDF component manager looks for `idf_component.yml` **inside each component's directory**. A manifest at the project root is silently ignored. The `main/` folder IS a component, so its manifest lives there. This is the standard pattern; you'll only ever have a project-root manifest if you're using component-manager features at the project level (we're not).
-
-### Why `sdkconfig.defaults` matters
-
-Edits to `sdkconfig.defaults` only take effect if there's no existing `sdkconfig` (the active config) — the defaults are merged in at first configure. After editing `sdkconfig.defaults`, either delete `sdkconfig` and rebuild, or apply the changes interactively via `idf.py menuconfig`. Our current defaults:
-
-```
-CONFIG_FREERTOS_HZ=1000
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-CONFIG_LV_COLOR_DEPTH_16=y                # LVGL needs to know we're 16-bit
-CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y      # CYD ships with BOYA flash on some revisions
-```
-
----
-
-## Troubleshooting
-
-### "Build seems to ignore my source edits"
-
-VS Code can silently overwrite on-disk edits if you have the same file open in an editor tab — Ctrl+S writes the (stale) tab contents back to disk. Close the file's tab while iterating, or `File → Revert File` before saving. Boot-time canary strings (e.g. `ESP_LOGI(TAG, "step N (some-tag)")`) are the cheapest way to confirm a fresh binary is on the chip — also check the app `Compile time:` line in the monitor output.
-
-### "Manifest changes don't take effect"
-
-Either the cached `build/` has the previous CMake state, or there's a stale `dependencies.lock` at the project root. Delete `build/` and `dependencies.lock` and re-run a full build. `idf.py fullclean` also works.
-
-### "Touch doesn't fire any events"
-
-The IRQ-driven path through `esp_lvgl_port` can wedge on this board. Set `int_gpio_num = GPIO_NUM_NC` in the touch config so the driver polls the chip over SPI on every LVGL tick. See `PORT-NOTES.md` for the full story.
-
-### "Square / widget drifts under my finger"
-
-LVGL 9 active screens are scrollable by default — press-and-drag scrolls the screen, which offsets every `lv_indev_get_point()`. Remove the flag once at setup:
-
-```c
-lv_obj_remove_flag(lv_screen_active(), LV_OBJ_FLAG_SCROLLABLE);
-```
-
-### "BOYA flash" warning at boot
-
-Enable `CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y` in `sdkconfig.defaults` (and regenerate `sdkconfig`). The generic driver works, but the BOYA-specific one is faster and gets sleep-mode behaviour right.
-
----
+- Top-level `CMakeLists.txt` adds `list(APPEND EXTRA_COMPONENT_DIRS ../components)`
+  before the `project()` call so IDF discovers `cyd_shared`.
+- `main/CMakeLists.txt` lists `cyd_shared` in `REQUIRES`; the only sources
+  it builds itself are `main.c`, `ha_client.c`, `albums.c` (generated), and
+  `album_thumbs.c` (with `EMBED_FILES "album_thumbs.bin"`).
 
 ## Project memory
 
-- Hardware pin map, I2C addresses, architecture, coding conventions: [`../../CLAUDE.md`](../../CLAUDE.md)
-- Full phase plan (incl. Phase 3 Home Assistant integration that builds on top of this): [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md)
-- IDF-port gotchas with root cause + fix per entry: [`../../docs/PORT-NOTES.md`](../../docs/PORT-NOTES.md)
-- Hardware test checklist: [`../../docs/TESTING.md`](../../docs/TESTING.md)
+- Hardware pin map, I2C addresses, architecture, coding conventions:
+  [`../../CLAUDE.md`](../../CLAUDE.md).
+- Phased plan (incl. Phase 3 HA backend rationale):
+  [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md).
+- IDF port gotchas: [`../../docs/PORT-NOTES.md`](../../docs/PORT-NOTES.md).
+- What's not yet verified and deferred work:
+  [`../../docs/PENDING.md`](../../docs/PENDING.md).
+- Test plan: [`../../docs/TESTING.md`](../../docs/TESTING.md).

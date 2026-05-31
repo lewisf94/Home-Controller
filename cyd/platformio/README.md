@@ -1,8 +1,8 @@
-# cyd/platformio — Arduino/PlatformIO build (Phase 1, frozen)
+# cyd/platformio — Arduino/PlatformIO build (Phase 1, maintenance)
 
-The original PlatformIO + Arduino-framework build of the Music Controller. Reached feature parity at the end of Phase 1.5 and is now in maintenance mode. Active development has moved to [`../esp-idf/`](../esp-idf/) for the IDF rewrite, but this folder remains the working firmware until the IDF build reaches feature parity at Step 11 of the Phase 2 plan.
+The original PlatformIO + Arduino-framework build of the Music Controller. Reached feature parity at the end of Phase 1.5 on TFT_eSPI direct-draw, then was rewritten on top of LVGL 9.5 to match the IDF look (centre-snap carousel, volume HUD, WiFi bars, embedded thumbnails). Active development has moved to [`../esp-idf/`](../esp-idf/), but this folder still takes perf and reliability fixes when they apply.
 
-**Status:** frozen — bug fixes only. No new features. Pull from the open-issues list in [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md) Phase 1 if you want to chip at something here.
+**Status:** the LVGL rewrite is committed and so is the 05-24 / 05-26 review perf + reliability batch (TLS keep-alive on the poll, filtered JSON parse via `DeserializationOption::Filter`, adaptive 2 s / 15 s poll backoff, dead code stub cleanup in `download_album_art`, deleted `ui_fancy_backup.cpp`). Neither the LVGL port nor the perf batch has been **re-flashed** since the changes landed — colours/byte-order, touch, heap, TLS handshake under the new keep-alive client are all owed a smoke test. See [`../../docs/TESTING.md`](../../docs/TESTING.md) under "CYD Arduino".
 
 ---
 
@@ -24,10 +24,13 @@ Everything below is verified on hardware and lives on the `main` branch.
 - Play/pause flash overlay for 1.5 s when state changes
 
 **Spotify Web API client (`spotify.cpp`)**
-- `WiFiClientSecure` HTTPS with the Spotify root CA bundled
-- Refresh-token OAuth flow (one-time setup via [`../../SPOTIFY_SETUP.md`](../../SPOTIFY_SETUP.md))
-- Player-state poll every 2 s
-- play / pause / next / prev / seek / shuffle / volume endpoints
+- `WiFiClientSecure` HTTPS with the Spotify root CA bundled (was `setInsecure()` — now properly verified against the embedded cert bundle).
+- Refresh-token OAuth flow (one-time setup via [`../../SPOTIFY_SETUP.md`](../../SPOTIFY_SETUP.md)).
+- Player-state poll with a **persistent keep-alive `WiFiClientSecure`** (`setReuse(true)` — TLS session is negotiated once and reused instead of re-handshaking every poll). Reconnect-on-failure drops the client on a connection-level error so the next poll opens a fresh socket.
+- Poll cadence is **adaptive**: 2 s while playing, 15 s when paused / 204. Button presses still act immediately via the one-shot command path; only the background poll is lazier when nothing's happening.
+- Player JSON parsed with **`DeserializationOption::Filter`** — only the ~10 fields actually used (is_playing, shuffle_state, progress_ms, item.name, item.duration_ms, item.artists[0].name, item.album.name, item.album.images[0].url, device.id, device.volume_percent) are kept; the rest of the large `/me/player` response is discarded during parse.
+- 404 wake-on-play: caches the last-seen `device.id`; on a 404 from `/me/player/play`, transfers playback back to it (which also starts it), so an idled phone Just Works.
+- play / pause / next / prev / seek / shuffle / volume endpoints.
 
 **MCP23017 input (`mcp_input.cpp`)**
 - I2C on the default Wire bus (SDA 27, SCL 22 @ 400 kHz; address `0x20`)

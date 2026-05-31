@@ -10,27 +10,40 @@ This repo holds the firmware. Album art conversion tools live alongside in [`scr
 
 | Build | Folder | Framework | Status |
 |---|---|---|---|
-| **CYD ESP-IDF** (direct Spotify) | [`cyd/esp-idf/`](cyd/esp-idf/) | ESP-IDF 6.0 + LVGL 9 | **Feature-complete, fully verified on hardware** — the lead build |
-| **CYD ESP-IDF — HA** | [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/) | ESP-IDF 6.0 + LVGL 9 | Home Assistant backend added; not yet hardware-tested |
-| **CYD Arduino** | [`cyd/platformio/`](cyd/platformio/) | PlatformIO + Arduino | Phase 1 + 1.5 shipped; LVGL port committed, not yet re-verified on hardware |
-| **Waveshare ESP32-P4** (direct Spotify) | [`waveshare/esp-idf/`](waveshare/esp-idf/) | ESP-IDF 5.5 + LVGL 9.4 | **Checkpoints 1–3 (display/WiFi/Spotify) hardware-verified**; UI (browser, now-playing, settings, Cover Flow, colour themes) committed — needs hardware verify |
+| **CYD ESP-IDF** (direct Spotify) | [`cyd/esp-idf/`](cyd/esp-idf/) | ESP-IDF 6.0 + LVGL 9 | Lead build — feature-complete and hardware-verified originally; recent perf + reliability + UX batches (today's work across 05-24/26/27/28/30 reviews) need a CYD re-flash. See [`docs/PENDING.md`](docs/PENDING.md). |
+| **CYD ESP-IDF — HA** | [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/) | ESP-IDF 6.0 + LVGL 9 | Shares UI/input/etc with the direct-Spotify build via [`cyd/components/cyd_shared/`](cyd/components/cyd_shared/) — only the backend is HA-specific (`ha_client.c`). Never hardware-tested. |
+| **CYD Arduino** | [`cyd/platformio/`](cyd/platformio/) | PlatformIO + Arduino | Phase 1 + 1.5 shipped; LVGL port committed; perf + reliability fixes from the 05-24 / 05-26 reviews landed (TLS keep-alive, filtered JSON parse, adaptive poll backoff). Needs hardware re-verify. |
+| **Waveshare ESP32-P4** (direct Spotify) | [`waveshare/esp-idf/`](waveshare/esp-idf/) | ESP-IDF 5.5 + LVGL 9.4 | Checkpoints 1–3 hardware-verified. UI + Sonos + brightness + reliability/UX batches committed — needs hardware verify (board in hand). |
 
-The CYD ESP-IDF build is now the lead firmware: feature-complete and verified smooth on device, and the foundation for Phase 3 (Home Assistant integration) and the Waveshare ESP32-P4 port. The Arduino build was the original working product and has since been ported to LVGL to match (that port still needs a hardware pass). The Waveshare ESP32-P4 board has arrived and its own ESP-IDF build is being brought up checkpoint by checkpoint.
+The CYD ESP-IDF build is the lead firmware — feature-complete and (originally) verified smooth on device. The two CYD IDF builds now share UI/input/MCP/album-art/littlefs via the [`cyd_shared`](cyd/components/cyd_shared/) ESP-IDF component, so a fix to either build benefits both. The Arduino build is in maintenance mode (perf + reliability fixes welcome, no new features). The Waveshare ESP32-P4 build has grown into the most feature-rich variant (Sonos integration, settings UI with brightness/themes/Cover Flow, auto-dim, etc.) — board is in hand, awaiting a verification flash for the recent batches.
 
 ---
 
-## What it does (feature list — Phase 1.5)
+## What it does
 
-Implemented and running on the Arduino build:
+Shared across all builds:
 
-- **Album browser**: SD-card-driven grid of 80×80 RGB565 thumbnails, scrolled by RE1, tap any tile to play.
-- **Now playing screen**: title / artist / album / progress bar; album art rendered from JPEG (`nowplaying.jpg` fallback on SD) with a vinyl-style square/round toggle.
-- **Spotify Web API**: OAuth refresh-token flow, player-state polling every 2 s, play / pause / next / prev / seek / shuffle / volume endpoints.
-- **MCP23017 input**: gray-code decoder for RE1, debounced buttons SW1..SW4 with single-press / hold detection.
-- **HUD overlays**: volume bar (auto-hides after 2 s), persistent mute badge, play / pause flash, WiFi signal indicator.
-- **SW4 manual scrub**: hold SW4 + turn RE1 to seek anywhere in the current track.
+- **Album browser** — fixed list of albums (generated from `spotify-albums-list.txt` via `scripts/gen_albums.py`), thumbnails embedded into the app binary (CYD) or built per-board (waveshare, 220×220), scroll + tap-to-play.
+- **Now-playing screen** — title / artist / album / progress bar / album art (Spotify CDN → JPEG decode → RGB565). Local progress bar simulation between polls so the bar moves smoothly.
+- **Spotify Web API** — OAuth refresh-token flow, player-state poll with TLS keep-alive + adaptive backoff (5 s playing, 15 s paused), play / pause / next / prev / seek / volume. 404 wake-on-play (idle phone gets transferred back to and started). 401 token refresh on the command path.
+- **WiFi resilience** — fast retries plus an `esp_timer` background reconnect (no more "router blip = power-cycle the device").
+- **UX honesty** — OFFLINE indicator on the title when WiFi drops; toast on the now-playing screen when a play attempt fails; on-screen warning when the album list exceeds the cap; "no albums configured" message instead of a blank carousel; volume HUD gated until the first poll lands so a first nudge doesn't jump the speaker from a guessed 50 %.
+- **Auto-snap browser** — opening the browser lands on whatever's currently playing, with the card border accented.
 
-Known issues open at end of Phase 1.5 are tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) Phase 1.
+CYD build (Arduino + IDF):
+
+- **MCP23017 panel** — 4 push buttons + RE1 encoder + RE1 push-switch, via I2C, with INTA on GPIO 35. Encoder uses a gray-code state machine; buttons are 30 ms debounced; `event_pending` is a consume-on-read latch so a press during an LVGL-lock timeout isn't dropped. MCP re-probes itself every 5 s if it was missing at boot, so a transient I2C glitch doesn't disable physical controls permanently.
+- **HUD overlays** — volume bar (auto-hide), persistent mute badge, play/pause flash, WiFi signal indicator.
+
+Waveshare ESP32-P4 build:
+
+- **Touch-first UI** — GT911 capacitive touch on an 800×480 IPS panel. On-screen transport keys + volume slider on now-playing; gear button opens a Settings screen.
+- **Settings** — Menu Transition (Over / Move / Fade / None), Mode (Dark / Black / Light), Colour accent (Orange / Red / Green / Purple), Browser Style (Carousel / Focus / Cover Flow), Selection Line on/off, Backlight Brightness (10–100 % slider, live-dimmed). All persisted to NVS.
+- **Auto-dim / sleep** — backlight ramps to 30 % at 1 min idle, 10 % at 5 min, restores on touch.
+- **Sonos** — direct UPnP/SOAP control of a Sonos speaker on the LAN: transport, volume, and full album-start (enqueue cpcontainer + point transport at queue + Play). Device selector merges Spotify Connect transfer targets with configured Sonos speakers; now-playing fallback reads UPnP `GetPositionInfo` when Spotify's `/me/player` can't see the speaker.
+- **Three browser styles** — flat Carousel, scale-and-dim Focus, and iPod-style Cover Flow (with image-direct scale to avoid the rotated-DSI layer-snapshot artefact).
+
+For the rolling list of what's been written but not yet hardware-verified, see [`docs/PENDING.md`](docs/PENDING.md).
 
 ---
 
@@ -62,26 +75,36 @@ Three active phases plus a future board port. Detail in [`docs/ROADMAP.md`](docs
 
 ```
 cyd/                       CYD board (ESP32-WROOM, 2.8" ILI9341)
+  components/
+    cyd_shared/            Shared ESP-IDF component used by both IDF builds:
+                           ui.c, input.c, mcp_input.c, album_art.cpp, littlefs.c,
+                           + their headers and the backend-neutral player.h struct
   platformio/              Arduino build via PlatformIO (LVGL port, needs re-verify)
-    include/               LVGL config, pin defines
-    src/                   main.cpp, ui.cpp, input.cpp, spotify.cpp, ...
+    include/               LVGL config, pin defines, gitignored secrets.h
+    src/                   main.cpp, ui.cpp, input.cpp, mcp_input.cpp, spotify.cpp, ...
     platformio.ini         Board / framework / libs
-  esp-idf/                 Native ESP-IDF build, direct Spotify (lead build, verified)
-    main/                  app source (main.c, CMakeLists, idf_component.yml)
+  esp-idf/                 Native ESP-IDF build, direct Spotify (lead build)
+    main/                  main.c + spotify.c + albums.c + album_thumbs.{c,bin}
     sdkconfig.defaults     Project Kconfig defaults (target esp32, LVGL 16bpp, etc.)
-    CMakeLists.txt         Top-level project file
-  esp-idf-ha/              ESP-IDF build, Home Assistant backend (Phase 3, untested)
+    CMakeLists.txt         Top-level (adds EXTRA_COMPONENT_DIRS for cyd_shared)
+  esp-idf-ha/              ESP-IDF build, Home Assistant backend (never flashed)
+    main/                  main.c + ha_client.{c,h} + albums.c + album_thumbs.{c,bin}
+    CMakeLists.txt         Same EXTRA_COMPONENT_DIRS pattern
 waveshare/                 Waveshare ESP32-P4 board
-  esp-idf/                 ESP-IDF 5.5 build, direct Spotify (cp1-3 verified; UI committed, needs verify)
+  esp-idf/                 ESP-IDF 5.5 build, direct Spotify + Sonos
     components/            vendored board-support package (BSP)
-    main/                  app source; sources copied from cyd/esp-idf/
+    main/                  app source; has its own ui.c (laid out for 800x480)
 docs/
-  ROADMAP.md               Three-phase plan + future P4 plan
-  TESTING.md               Hardware test checklist
+  ROADMAP.md               Per-phase plan + P4 + HA notes
+  TESTING.md               Hardware verification checklist (per build)
   PORT-NOTES.md            IDF port gotchas discovered on hardware
-scripts/                   Album-art conversion (JPEG -> RGB565 bin)
+  P4-TODO.md               Waveshare-specific backlog (open items + shipped one-liners)
+  PENDING.md               Rolling list of what's committed but not yet flashed
+scripts/                   Album-art + symbol generation (gen_albums.py, embed_albums_idf.py, ...)
 CLAUDE.md                  Project memory: hardware, architecture, conventions
 SPOTIFY_SETUP.md           One-time OAuth setup instructions
+spotify-albums-list.txt    Source of truth for the album list (gitignored, personal)
+previous-reviews.md        Daily-review log appended by the cloud-review routine
 ```
 
 Each board folder is self-contained — open it directly in your IDE and follow its own README for build steps. `cyd/platformio/` is a PlatformIO project; `cyd/esp-idf/` is an ESP-IDF project. Don't mix them.

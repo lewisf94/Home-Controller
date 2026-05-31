@@ -160,14 +160,28 @@ Recommended: bump poll to 4 s first. If encoder still lags, do FreeRTOS split.
 
 ---
 
-## Phase 2 — ESP-IDF port (same CYD hardware, same feature set)  [DONE]
+## Phase 2 — ESP-IDF port (same CYD hardware, same feature set)  [DONE — plus subsequent reliability/UX work]
 
-**Status: complete and verified on hardware.** All 11 checkpoints below are
-done — `cyd/esp-idf/` is feature-complete (display, LVGL 9.5, XPT2046 touch,
-WiFi, Spotify HTTPS with NVS-persisted token, album art, browser + now-playing,
-MCP23017 buttons + RE1 encoder on their own FreeRTOS input task). The one
-accepted limit is browser scroll tearing (no ILI9341 TE pin wired). This is the
-lead build and the carrier for Phase 3.
+**Status: cp0-11 complete and verified on hardware (the original port).** The
+build then absorbed a substantial perf / reliability / UX / arch backlog from
+the 05-24 / 05-26 / 05-27 / 05-28 / 05-30 daily reviews — TLS keep-alive,
+adaptive poll backoff, 404 wake-on-play, WiFi background reconnect, MCP
+re-probe, `_do_cmd` 401 handling, volume sync from device, MAX_CARDS log,
+OFFLINE indicator, toast on play failure, auto-snap-to-playing-album, empty
+list message, JPEG SOI check, etc. None of that has been re-flashed yet
+(CYD board has been out of reach). See [`PENDING.md`](PENDING.md) for the
+verify-pending list and [`TESTING.md`](TESTING.md) for the sanity-check menu.
+
+**Architecture update:** the two CYD IDF builds (`cyd/esp-idf/` direct
+Spotify and `cyd/esp-idf-ha/` Home Assistant backend) now share their UI /
+input / MCP / album-art / LittleFS code via the
+[`cyd/components/cyd_shared/`](../cyd/components/cyd_shared/) ESP-IDF
+component — extracted in commits `2f7accd` + `1731a6a`. Only the backend
+file differs between them (`spotify.c` vs `ha_client.c`). A fix to shared
+code lands in both builds at once instead of needing hand-syncing.
+
+The one accepted hardware limit is browser scroll tearing (no ILI9341 TE pin
+wired). This is the lead build and the carrier for Phase 3.
 
 **Goal (achieved):** identical product running on ESP-IDF instead of Arduino, as
 the foundation for Phase 3 (HA integration). Phase 3 is implemented directly in
@@ -362,8 +376,14 @@ call the same command functions, just from a different backend.
 The Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (4.3" IPS, ST7701 MIPI-DSI,
 GT911 capacitive touch, onboard ESP32-C6 WiFi) has arrived. The build lives in
 `waveshare/esp-idf/` (direct Spotify, touch-first). **Checkpoints 1 (display),
-2 (WiFi) and 3 (Spotify) are hardware-verified.** The UI (cp4+) has been built
-and committed — see below — but **needs a hardware verification pass.**
+2 (WiFi) and 3 (Spotify) are hardware-verified.** Everything since — the full
+UI (cp4-7), Sonos integration (direct UPnP control + album-start + combined
+device selector), Settings (Brightness + Theme + Accent + Browser Style +
+Transition + Selection Line), and the full reliability/UX batch (auto-dim,
+OFFLINE indicator, toast on play failure, auto-snap to playing album,
+MAX_CARDS warning, etc.) — is committed but **needs a hardware verification
+pass**. See [`PENDING.md`](PENDING.md) for the rolling list and
+[`P4-TODO.md`](P4-TODO.md) for shipped one-liners plus what's still open.
 
 On-chip memory budget measured at cp2 (~390 KB internal heap free + 31 MB PSRAM;
 see `docs/PORT-NOTES.md`). See `waveshare/esp-idf/README.md` for the full

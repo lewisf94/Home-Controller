@@ -1,8 +1,10 @@
-# cyd/esp-idf — ESP-IDF build (direct Spotify, feature-complete)
+# cyd/esp-idf — ESP-IDF build (direct Spotify, lead build)
 
-Native ESP-IDF port of the Music Controller targeting the same CYD hardware as `../platformio/`. The display layer is LVGL 9 via `esp_lvgl_port`; the same UI stack carries over to the Waveshare ESP32-P4 build in [`../../waveshare/esp-idf/`](../../waveshare/esp-idf/), which is the main reason for porting to IDF in the first place. The Home Assistant variant in [`../esp-idf-ha/`](../esp-idf-ha/) is a copy of this build with the backend swapped.
+Native ESP-IDF port of the Music Controller targeting the same CYD hardware as `../platformio/`. The display layer is LVGL 9 via `esp_lvgl_port`. The Home Assistant variant in [`../esp-idf-ha/`](../esp-idf-ha/) shares its UI / input / MCP / album-art / LittleFS code with this build through the [`../components/cyd_shared/`](../components/cyd_shared/) component — only the backend file differs (`spotify.c` here vs `ha_client.c` there).
 
-**This is the lead build.** It is a full feature port of the Arduino code and is **verified smooth on hardware**: display, LVGL 9.5, XPT2046 touch, WiFi STA, Spotify HTTPS (token persisted to NVS), album art, the LVGL album browser + now-playing UI, and the MCP23017 controls (four buttons + RE1 encoder). Input runs in its own 2 ms FreeRTOS task and posts commands to the Spotify task via a queue, so controls stay smooth during blocking HTTPS calls.
+**This is the lead build.** It is a full feature port of the Arduino code and was originally **verified smooth on hardware** (cp0-11 below). It has since absorbed a substantial backlog of perf, reliability, and UX work from the 05-24 / 05-26 / 05-27 / 05-28 / 05-30 daily reviews. None of those have been re-flashed (CYD board has been unavailable). See [`../../docs/PENDING.md`](../../docs/PENDING.md) for the full verify-pending list and [`../../docs/TESTING.md`](../../docs/TESTING.md) for the sanity-check menu next time the board is back.
+
+Input runs in its own 2 ms FreeRTOS task and posts commands to the Spotify task via a queue, so controls stay smooth during blocking HTTPS calls.
 
 ---
 
@@ -23,7 +25,19 @@ Native ESP-IDF port of the Music Controller targeting the same CYD hardware as `
 | 10 | Button dispatch, volume debounce, mute toggle | verified |
 | 11 | Feature parity: WiFi indicator, mute badge, play-pause flash, volume HUD | verified |
 
-Album art is stored in a 256 KB LittleFS partition on internal flash (avoids SD/SPI/DMA conflicts). **Known hardware limit:** browser scroll tearing — the CYD's ILI9341 TE pin isn't wired, so there's no vsync to sync redraws to; accepted as unfixable without hardware TE wiring. **Next:** Phase 3 (Home Assistant — see [`../esp-idf-ha/`](../esp-idf-ha/)).
+### Since the cp0-11 verification — committed, **not yet re-flashed**
+
+| Area | What landed |
+|---|---|
+| Perf | TLS keep-alive on the `/me/player` poll (persistent `s_poll_client`); adaptive 5 s/15 s backoff. |
+| Code quality | Removed unused functions / dead-code stubs; `MAX_CARDS` truncation log; mcp_input timing `#define`s; stale "16 KB" `RESP_MAX_CAP` comment fixed; backported `err != ESP_OK` close to keep-alive client. |
+| Reliability | WiFi background reconnect (`esp_timer`, 20 s) after fast retries exhaust; 404 wake-on-play (cached `s_last_device_id` + transfer-and-play); MCP re-probe every 5 s if missing at boot (`_configure_mcp` split out); `xQueueCreate` failure halts cleanly; `esp_littlefs_info` return checked; named `ESP_LOGW` on each failed dispatcher command; per-tick `event_pending` clear removed so presses during LVGL-lock timeouts aren't dropped. |
+| Volume | `device.volume_percent` parsed; published to UI under the LVGL lock; `input_update` adopts edge-triggered (volume HUD no longer starts at 50 %). |
+| Spotify command path | 401 mirrors the poll's token-clear (no more silent press loss right after token expiry). |
+| Architecture | `ui.c` / `input.c` / `mcp_input.c` / `album_art.cpp` / `littlefs.c` extracted into [`../components/cyd_shared/`](../components/cyd_shared/) so the HA build picks them up for free. `spotify_track_t` lives in the backend-neutral `player.h` there. |
+| UX | Empty album list message (no more blank carousel); volume HUD gated until first poll; JPEG SOI marker check (rejects non-JPEG bodies); on-screen MAX_CARDS warning; OFFLINE title on WiFi drop; `ui_show_toast` + "No active Spotify device" toast on play failure; auto-snap browser to playing album + accent border. |
+
+Album art is stored in a 256 KB LittleFS partition on internal flash (avoids SD/SPI/DMA conflicts). **Known hardware limit:** browser scroll tearing — the CYD's ILI9341 TE pin isn't wired, so there's no vsync to sync redraws to; accepted as unfixable without hardware TE wiring. **Deferred:** auto-dim/sleep (needs LEDC PWM init on BL pin — see [`../../docs/PENDING.md`](../../docs/PENDING.md)). Next active work: Phase 3 (Home Assistant — see [`../esp-idf-ha/`](../esp-idf-ha/)).
 
 ---
 
@@ -61,15 +75,28 @@ After editing `main/idf_component.yml` (adding or changing managed components), 
 
 ```
 main/
-  CMakeLists.txt          Lists main.c as the app source
+  CMakeLists.txt          SRCS: main.c, spotify.c, albums.c, album_thumbs.c.
+                          REQUIRES cyd_shared (the shared component). EMBED_FILES
+                          for album_thumbs.bin.
   idf_component.yml       Managed dependencies (LVGL, esp_lvgl_port, ILI9341, XPT2046)
-  main.c                  Application entry — currently the Step 3 touch demo
+  main.c                  App entry: WiFi + NVS + LCD/touch init + spotify_task +
+                          input_task + command-queue scaffold (scmd_t, _post_cmd,
+                          ui_request_* posters).
+  spotify.c / spotify.h   Spotify Web API client. spotify.h is a thin wrapper that
+                          #includes "player.h" from cyd_shared so the struct
+                          definition stays single-sourced.
+  albums.c                Generated from spotify-albums-list.txt by gen_albums.py.
+  album_thumbs.{c,h,bin}  Per-build EMBED_FILES blob of 120x120 RGB565 thumbs.
 sdkconfig.defaults        Project Kconfig defaults
 sdkconfig                 Generated by IDF; do not edit by hand for permanent changes
-CMakeLists.txt            Top-level project file
+CMakeLists.txt            Top-level project file -- adds
+                          list(APPEND EXTRA_COMPONENT_DIRS ../components)
+                          BEFORE the project() call so cyd_shared is discovered.
 managed_components/       Auto-downloaded components (gitignored)
 build/                    Generated; gitignored
 ```
+
+The UI / input / MCP / album-art / LittleFS code lives in [`../components/cyd_shared/`](../components/cyd_shared/) — both this build and `cyd/esp-idf-ha/` link against it.
 
 ### Managed dependencies (`main/idf_component.yml`)
 

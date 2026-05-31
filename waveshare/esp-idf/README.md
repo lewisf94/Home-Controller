@@ -6,18 +6,27 @@ onboard **ESP32-C6** over SDIO, PSRAM, 32 MB flash). Talks **directly to the
 Spotify Web API**. A future `waveshare/esp-idf-ha/` will swap the backend to
 Home Assistant, exactly like the CYD split.
 
-> **STATUS: cp1–3 hardware-verified; UI (cp4+) committed, needs hardware verify.**
-> Display (cp1) renders at 800×480 landscape, the board associates to WiFi through
-> the onboard ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a
-> DHCP lease (cp2), and the Spotify task refreshes the OAuth token (cached in NVS),
-> validates the TLS cert bundle, and polls `/me/player` every 5 s over a persistent
-> keep-alive connection — boot log shows `now playing: <artist> -- <title>`. The
-> UI (`ui.c`) is committed: full LVGL browser + now-playing, three browser styles
-> (Carousel / Focus / Cover Flow), a Settings screen (Menu Transition / Mode /
-> Colour accent / Browser Style, all NVS-persisted), charcoal palette, flat
-> buttons, and the tiny_ttf kerning crash fix. **That UI code still needs a
-> hardware verification pass.** Most app logic (Spotify client, album data, art
-> decode, LittleFS) is copied unchanged from `../../cyd/esp-idf/`.
+> **STATUS: cp1–3 hardware-verified; cp4+ + Sonos + brightness + reliability/UX
+> batches committed, board in hand, needs hardware verify.** Display (cp1)
+> renders at 800×480 landscape, the board associates to WiFi through the onboard
+> ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a DHCP lease
+> (cp2), and the Spotify task refreshes the OAuth token (cached in NVS),
+> validates the TLS cert bundle, and polls `/me/player` every 5 s (adaptive
+> 15 s when paused) over a persistent keep-alive connection — boot log shows
+> `now playing: <artist> -- <title>`. The UI (`ui.c`) is committed in full:
+> browser + now-playing + Settings screen (Menu Transition / Mode /
+> Colour accent / Browser Style / Brightness / Selection Line, all
+> NVS-persisted), three browser styles (Carousel / Focus / Cover Flow),
+> charcoal palette, flat buttons, tiny_ttf kerning crash fix, auto-snap-to-
+> playing-album with accent border, OFFLINE indicator, generic toast for
+> play-failures, on-screen `MAX_CARDS` warning, auto-dim/sleep, and a Sonos
+> integration (direct UPnP control + album-start + device selector). **All of
+> that still needs a hardware verification pass** — see
+> [`../../docs/PENDING.md`](../../docs/PENDING.md) for the rolling list and
+> [`../../docs/TESTING.md`](../../docs/TESTING.md) for the sanity-check menu.
+> Most board-agnostic logic (Spotify client, album data, art decode, LittleFS)
+> started as a copy of `../../cyd/esp-idf/` and has diverged where the P4's
+> extras require it (Sonos integration, settings UI, larger display layout).
 
 ## Reference
 Waveshare official component + demos:
@@ -84,17 +93,36 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
    `cyd/esp-idf/main.c`); log the track title; persistent keep-alive poll. *(hardware-verified)*
 4. **UI** — ported `cyd/esp-idf/main/ui.c`; `lvgl_port_lock` → `bsp_display_lock`;
    constants re-laid-out for 800×480; touch scroll + tap-to-play; on-screen
-   playback controls; Settings screen. *(committed — needs hardware verify)*
+   playback controls; Settings screen (Menu Transition / Mode / Colour / Browser
+   Style / Brightness / Selection Line). *(committed — needs hardware verify)*
 5. **Assets** — `album_thumbs.bin`, now-playing art (album_art.cpp), runtime
    tiny_ttf fonts (Montserrat + DejaVu fallback). *(committed — needs hardware verify)*
 6. **Touch controls** — on-screen prev/play-pause/next + volume → `ui_request_*()`.
    *(committed — needs hardware verify; `input.c` seam left for physical controls)*
 7. **Parity** — WiFi indicator, volume HUD, progress bar, view toggle, three
    browser styles, colour accents. *(committed — needs hardware verify)*
+8. **Sonos** — direct UPnP/SOAP control (port 1400) of a Sonos speaker, including
+   full album-start (enqueue cpcontainer → point transport at queue → Play).
+   Combined device selector (Spotify Connect transfer + Sonos UPnP). Now-playing
+   fallback reads UPnP `GetPositionInfo` when Spotify can't see the speaker.
+   *(committed — needs hardware verify)*
+9. **Reliability/UX** — WiFi background reconnect, 404 wake-on-play, dispatcher
+   logging, OFFLINE title, toast on play failure, auto-snap browser to playing
+   album, on-screen `MAX_CARDS` warning, empty-list message, volume-HUD guard
+   before first poll, JPEG SOI marker check, auto-dim/sleep. *(committed — needs
+   hardware verify)*
 
-After cp4–7 are confirmed on hardware: PPA hardware acceleration (isolated
-change), then RAM art decode (PSRAM), then adaptive poll backoff. See
-`docs/ROADMAP.md` and `docs/P4-TODO.md`.
+After all of the above is confirmed on hardware:
+- **PPA hardware acceleration** — `enable_ppa_accel = true` in
+  `bsp_display_cfg_t`. The P4 PPA does the 90° rotation/blit in hardware
+  (currently software every frame).
+- **RAM art decode** — switch from LittleFS round-trip to the existing
+  `spotify_download_bytes` + `album_art_decode` RAM path (PSRAM-resident,
+  no flash wear). The RAM path already exists; unused today.
+- **Adaptive poll backoff** — already done (5 s playing, 15 s paused/idle).
+
+See [`../../docs/P4-TODO.md`](../../docs/P4-TODO.md) for the rolling backlog
+and [`../../docs/PENDING.md`](../../docs/PENDING.md) for the verify-pending list.
 
 ## Already in this folder
 - Copied board-agnostic, unchanged: `spotify.c/.h`, `albums.c/.h`,
