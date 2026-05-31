@@ -142,3 +142,42 @@ response body as JPEG (no FFD8 magic check). Status updates on prior findings:
 05-28 #3 (volume-50) and #4 (401-in-command-path) ARE NOW FIXED on lead;
 adaptive poll backoff (5s/15s) shipped on lead too. The other six 05-28
 findings remain open. Suggestions made: 9.
+
+2026-05-31 - Area covered: Performance. Key findings: The single biggest
+carryover from 05-24 is still open -- every transport button press opens a
+fresh TLS connection in `_do_cmd` on both ESP-IDF builds (CYD `spotify.c:740`,
+waveshare `spotify.c:754`), even though the matching poll path has used a
+persistent keep-alive client since `db5501b`; that's ~0.5-1.5 s of handshake
+plus ~30-40 KB heap spike per press, the most user-visible perf win available.
+Two new hot-path issues introduced by recent work: Sonos
+`sonos_fetch_now_playing()` opens THREE separate HTTP connections per poll
+cycle (GetPositionInfo + GetTransportInfo + GetVolume in `sonos.c:398-429`, all
+cleanup-on-each-call), and waveshare `apply_card_transforms()`
+(`ui.c:1907-1945`) rewrites all 64 cards on every scroll frame (~10k style
+mutations/sec during inertia) when only ~9 around the centre actually change.
+Carryovers from 05-24 still open: CYD `find_centered_card()` still does O(n)
+coord-walks every scroll event (waveshare already moved to O(1) index math via
+`(scroll_x + step/2) / step`), the `/me/player` poll doesn't use Spotify's
+`?fields=` filter so it parses 6-15 KB when only ~10 fields are read,
+`json_obj_get` rescans the parent object ~7 times per poll (a single-pass
+multi-key scanner would roughly halve parse time), and the LVGL progress/wifi
+timers tick on both screens even when not visible (5 wakeups/sec wasted on the
+browser screen). New finding: `input_task` takes the LVGL lock every 2 ms
+unconditionally (`cyd/esp-idf/main/main.c:329-342`), even when no button was
+pressed and no encoder edge fired -- competes with the render task's lock
+acquisition and causes bimodal frame times during Cover Flow scrolls. Stale
+comment + dead code: `spotify_download_bytes` + `album_art_decode` RAM-decode
+paths exist in both builds but are unused; waveshare with 32 MB PSRAM is going
+through the LittleFS write/read round-trip on every track change for no reason
+(the deferred-work list flags this). Status updates: 05-30 findings are almost
+entirely fixed on main (empty list message, MAX_CARDS on-screen warning,
+OFFLINE cue, vol-HUD pre-poll gate, "No active device" toast, auto-snap
+browser, JPEG SOI check, waveshare auto-dim); shuffle toggle is still missing
+on the IDF builds, and the SW4 + RE1 seek-preview gesture is still claimed in
+CLAUDE.md but never ported to the IDF input dispatcher. 05-28 findings mostly
+addressed (WiFi background reconnect timer, 404 wake-idle, volume-50 sentinel,
+401-clear in `_do_cmd`, MCP re-probe every 5 s, on-screen truncation);
+`esp_littlefs_info` unchecked-return still open. 05-29 architecture: the
+shared `cyd_shared` component and `player.h` rename both landed; shared
+`main.c` glue across builds and a proper connectivity supervisor remain open.
+Suggestions made: 9.
