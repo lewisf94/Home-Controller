@@ -1,0 +1,67 @@
+# ESP32-P4 (Waveshare 4.3" 480x800) -- direct-Spotify build.
+# Grounded in the Waveshare 04_wifistation + 08_lvgl_demo_v9 defaults.
+
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_1=y
+
+# Flash + PSRAM (DSI framebuffers + LVGL buffers live in PSRAM).
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240
+CONFIG_FREERTOS_HZ=1000
+
+# WiFi via the onboard ESP32-C6 slave (esp_wifi_remote + esp_hosted over SDIO).
+# ESP32-P4 has no native radio; this routes esp_wifi_* to the C6.
+CONFIG_ESP_WIFI_REMOTE_ENABLED=y
+
+# TLS for the Spotify Web API (same approach as the CYD IDF build).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# cp3: free the mbedTLS handshake buffers after each connect (TLS to Spotify).
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# cp3: PSRAM-first heap policy (see docs/PORT-NOTES.md). Allocations >4 KB --
+# the Spotify response/JPEG buffers -- spill to PSRAM instead of the scarce
+# 768 KB internal SRAM; WiFi/lwip buffers also move to PSRAM. PSRAM is already
+# in the heap allocator (boot log), so this just tightens the threshold and
+# relieves internal SRAM as TLS lands.
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# LVGL 9.4 (Kconfig-driven; the board uses esp_lvgl_adapter, not lv_conf.h).
+CONFIG_LV_OS_FREERTOS=y
+CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+CONFIG_LV_DEF_REFR_PERIOD=15
+# cp2: WiFi stack pushed internal SRAM ~2 KB over. Don't force LVGL hot
+# functions into IRAM -- frees several KB of IRAM (and silences the
+# .iram1 section-conflict warnings). Negligible render cost for this UI.
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n
+# Freeze diagnosis: turn LVGL's own logging on so an out-of-memory / draw
+# assert PRINTS (via printf) instead of silently spinning the render task.
+# WARN level stays quiet in normal operation.
+CONFIG_LV_USE_LOG=y
+CONFIG_LV_LOG_LEVEL_WARN=y
+CONFIG_LV_LOG_PRINTF=y
+# Fonts (bigger than the CYD's 12/16 for the 800x480 panel).
+# Built-in bitmap fonts for hints + symbols (LVGL arrow/gear glyphs live here).
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+# lv_tiny_ttf: runtime TTF rendering for title/artist labels so accented
+# characters (e.g. Sigur Ros with accent, Cyrillic, Irish) render correctly.
+# Montserrat-Medium.ttf is primary; DejaVuSans.ttf is the fallback.
+# Both are embedded as flash blobs (see CMakeLists.txt EMBED_FILES).
+CONFIG_LV_USE_TINY_TTF=y

@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "ha_client.c"
+        "album_thumbs.c"
+        "albums.c"
+    INCLUDE_DIRS "." "../include"
+    EMBED_FILES
+        "album_thumbs.bin"
+    REQUIRES
+        cyd_shared
+    PRIV_REQUIRES
+        esp_timer
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_websocket_client
+)
