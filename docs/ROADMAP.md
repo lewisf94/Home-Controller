@@ -169,13 +169,15 @@ Recommended: bump poll to 4 s first. If encoder still lags, do FreeRTOS split.
 
 **Status: cp0-11 complete and verified on hardware (the original port).** The
 build then absorbed a substantial perf / reliability / UX / arch backlog from
-the 05-24 / 05-26 / 05-27 / 05-28 / 05-30 daily reviews — TLS keep-alive,
+the 05-24 / 05-26 / 05-27 / 05-28 / 05-30 / 05-31 daily reviews — TLS keep-alive,
 adaptive poll backoff, 404 wake-on-play, WiFi background reconnect, MCP
 re-probe, `_do_cmd` 401 handling, volume sync from device, MAX_CARDS log,
 OFFLINE indicator, toast on play failure, auto-snap-to-playing-album, empty
-list message, JPEG SOI check, etc. None of that has been re-flashed yet
-(CYD board has been out of reach). See [`PENDING.md`](PENDING.md) for the
-verify-pending list and [`TESTING.md`](TESTING.md) for the sanity-check menu.
+list message, JPEG SOI check, shuffle toggle (SW4 long-hold in now-playing,
+all four builds), "Nothing playing" initial UI state, HA build volume/shuffle
+state parsing, HA command bool return + offline toast, etc. None of that has been
+re-flashed yet (CYD board has been out of reach). See [`PENDING.md`](PENDING.md)
+for the verify-pending list and [`TESTING.md`](TESTING.md) for the sanity-check menu.
 
 **Architecture update:** the two CYD IDF builds (`cyd/esp-idf/` direct
 Spotify and `cyd/esp-idf-ha/` Home Assistant backend) now share their UI /
