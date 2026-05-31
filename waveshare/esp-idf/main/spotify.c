@@ -739,7 +739,14 @@ bool spotify_play_album(const char *context_uri)
     /* Spotify returns 204 No Content on success. 202 Accepted is also
      * reported on some devices. 404 means no active device. */
     bool ok = (err == ESP_OK && (status == 204 || status == 202));
-    if (!ok) {
+    if (status == 401) {
+        /* Same fix as _do_cmd / fetch_player -- otherwise the press silently
+         * fails until the next poll refreshes the token. */
+        ESP_LOGW(TAG, "play_album(%s) got 401, invalidating cached token: %s",
+                 context_uri, resp.data ? resp.data : "(no body)");
+        s_token_expiry_us = 0;
+        s_access_token[0]  = '\0';
+    } else if (!ok) {
         /* Error body is small JSON with no secrets -- log the reason (403 =
          * PREMIUM_REQUIRED vs a scope error; 404 = no active device). */
         ESP_LOGW(TAG, "play_album(%s) failed err=%d status=%d: %s",
@@ -781,9 +788,18 @@ static int _do_cmd(esp_http_client_method_t method, const char *url, const char 
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
-    /* The error body is small JSON with no secrets -- safe to log. */
-    if (status >= 400)
+    /* Mirror the poll's 401 handling: a server-side token invalidation would
+     * otherwise make a button press fail silently until the next poll happens
+     * to refresh. Clear the token so the next command/poll refreshes at once.
+     * The error body is small JSON with no secrets -- safe to log. */
+    if (status == 401) {
+        ESP_LOGW(TAG, "cmd %s got 401, invalidating cached token: %s",
+                 url, resp.data ? resp.data : "(no body)");
+        s_token_expiry_us = 0;
+        s_access_token[0]  = '\0';
+    } else if (status >= 400) {
         ESP_LOGW(TAG, "cmd %s -> %d: %s", url, status, resp.data ? resp.data : "(no body)");
+    }
 
     free(resp.data);
     return status;
@@ -904,6 +920,12 @@ bool spotify_get_devices(spotify_device_t *out, int max, int *count)
             while (*after==' '||*after=='\t'||*after=='\n'||*after=='\r'||*after==',') after++;
             obj = (*after == '{') ? after : NULL;
         }
+    } else if (status == 401) {
+        /* Same fix as the other call paths -- clear the token so the next
+         * call refreshes instead of looping on the stale Bearer. */
+        ESP_LOGW(TAG, "get_devices got 401, invalidating cached token");
+        s_token_expiry_us = 0;
+        s_access_token[0]  = '\0';
     } else {
         ESP_LOGW(TAG, "get_devices err=%d status=%d", (int)err, status);
     }

@@ -679,11 +679,13 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(3000));
 
     if (wifi_init_sta() != ESP_OK) {
-        ESP_LOGE(TAG, "wifi did not connect -- cannot reach Spotify");
-        bsp_display_lock(-1);
-        lv_label_set_text(status_label, "Music Controller P4\ncheckpoint 5: WiFi FAILED\ncheck secrets.h SSID/password");
-        bsp_display_unlock();
-        return;
+        /* Initial connect exhausted its fast retries. Don't abort: the WiFi
+         * event handler has armed the slow background reconnect timer, which
+         * will keep trying every 20 s and recover transparently once the AP is
+         * reachable. Bring up the UI anyway so the browser is usable (and the
+         * "No active Spotify device" toast surfaces if the user taps a card
+         * before the link is up). */
+        ESP_LOGE(TAG, "wifi did not connect -- continuing; background reconnect will keep trying");
     }
 
     /* Build the LVGL UI (browser + now-playing) and load the browser. This

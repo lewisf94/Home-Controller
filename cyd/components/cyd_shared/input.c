@@ -94,13 +94,8 @@ void input_update(void)
                 /* No volume known yet -- swallow the turn rather than nudge
                  * from a guessed 50% (would visibly jump the speaker by ~30%
                  * once the real value arrives). Next turn after first poll
-                 * works normally. */
-                static bool s_warned_no_vol = false;
-                if (!s_warned_no_vol) {
-                    s_warned_no_vol = true;
-                    /* one log is plenty -- no ESP_LOG include here, the
-                     * silent skip is debuggable from the missing HUD */
-                }
+                 * works normally. The silent skip is debuggable from the
+                 * missing HUD. */
             } else {
                 int new_vol = s_current_vol - (int)(delta * 5);
                 if (new_vol < 0)   new_vol = 0;

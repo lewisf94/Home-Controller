@@ -728,7 +728,14 @@ bool spotify_play_album(const char *context_uri)
     /* Spotify returns 204 No Content on success. 202 Accepted is also
      * reported on some devices. 404 means no active device. */
     bool ok = (err == ESP_OK && (status == 204 || status == 202));
-    if (!ok) {
+    if (status == 401) {
+        /* Mirror _do_cmd's 401 handling -- without it the press fails silently
+         * until the next poll happens to refresh the token. */
+        ESP_LOGW(TAG, "play_album(%s) got 401, invalidating cached token",
+                 context_uri);
+        s_token_expiry_us = 0;
+        s_access_token[0]  = '\0';
+    } else if (!ok) {
         ESP_LOGW(TAG, "play_album(%s) failed err=%d status=%d",
                  context_uri, (int)err, status);
     }
