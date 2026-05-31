@@ -144,6 +144,7 @@ typedef enum {
     SCMD_GET_DEVICES,    /* fetch device list -> ui_set_devices */
     SCMD_TRANSFER,       /* str = Spotify device id to transfer playback to */
     SCMD_SELECT_SONOS,   /* str = Sonos LAN IP to drive over UPnP */
+    SCMD_TOGGLE_SHUFFLE,
 } scmd_type_t;
 
 typedef struct {
@@ -209,12 +210,13 @@ static void _post_cmd(scmd_type_t type, uint32_t param, const char *str)
     (void)xQueueSend(s_cmd_queue, &cmd, 0);
 }
 
-void ui_request_play(const char *uri)  { _post_cmd(SCMD_PLAY_ALBUM,  0,             uri);  }
-void ui_request_toggle_play(void)      { _post_cmd(SCMD_TOGGLE_PLAY, 0,             NULL); }
-void ui_request_prev(void)             { _post_cmd(SCMD_PREV_TRACK,  0,             NULL); }
-void ui_request_next(void)             { _post_cmd(SCMD_NEXT_TRACK,  0,             NULL); }
-void ui_request_seek(uint32_t ms)      { _post_cmd(SCMD_SEEK_MS,     ms,            NULL); }
-void ui_request_volume(int pct)        { _post_cmd(SCMD_SET_VOLUME,  (uint32_t)pct, NULL); }
+void ui_request_play(const char *uri)  { _post_cmd(SCMD_PLAY_ALBUM,     0,             uri);  }
+void ui_request_toggle_play(void)      { _post_cmd(SCMD_TOGGLE_PLAY,    0,             NULL); }
+void ui_request_prev(void)             { _post_cmd(SCMD_PREV_TRACK,     0,             NULL); }
+void ui_request_next(void)             { _post_cmd(SCMD_NEXT_TRACK,     0,             NULL); }
+void ui_request_seek(uint32_t ms)      { _post_cmd(SCMD_SEEK_MS,        ms,            NULL); }
+void ui_request_volume(int pct)        { _post_cmd(SCMD_SET_VOLUME,     (uint32_t)pct, NULL); }
+void ui_request_shuffle(void)          { _post_cmd(SCMD_TOGGLE_SHUFFLE, 0,             NULL); }
 void ui_request_get_devices(void)              { _post_cmd(SCMD_GET_DEVICES,   0, NULL); }
 void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
 void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
@@ -583,6 +585,9 @@ static void spotify_task(void *arg)
                                  cmd.str, ok ? "ok" : "nothing queued");
                         ok = true;  /* selection itself always succeeds */
                         break;
+                    case SCMD_TOGGLE_SHUFFLE:
+                        ok = spotify_toggle_shuffle();
+                        break;
                 }
                 /* Surface silent transport failures so a "button did nothing"
                  * complaint is debuggable from the serial log. Cases that
@@ -599,9 +604,10 @@ static void spotify_task(void *arg)
                         [SCMD_NEXT_TRACK]    = "next_track",
                         [SCMD_SEEK_MS]       = "seek",
                         [SCMD_SET_VOLUME]    = "set_volume",
-                        [SCMD_GET_DEVICES]   = "get_devices",
-                        [SCMD_TRANSFER]      = "transfer",
-                        [SCMD_SELECT_SONOS]  = "select_sonos",
+                        [SCMD_GET_DEVICES]      = "get_devices",
+                        [SCMD_TRANSFER]         = "transfer",
+                        [SCMD_SELECT_SONOS]     = "select_sonos",
+                        [SCMD_TOGGLE_SHUFFLE]   = "toggle_shuffle",
                     };
                     ESP_LOGW(TAG, "cmd %s FAILED (route=%s)",
                              names[cmd.type], sh ? "sonos" : "spotify");

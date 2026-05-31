@@ -55,6 +55,7 @@ void ui_request_prev(void);
 void ui_request_next(void);
 void ui_request_seek(uint32_t ms);
 void ui_request_volume(int pct);
+void ui_request_shuffle(void);
 
 /* Device selector. ui_request_get_devices() asks the Spotify task to fetch the
  * current device list and hand it back via ui_set_devices(). Tapping a row then

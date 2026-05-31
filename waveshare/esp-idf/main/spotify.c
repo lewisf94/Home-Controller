@@ -42,6 +42,7 @@ static char     s_access_token[256]   = {0};
 static int64_t  s_token_expiry_us     = 0;
 static char     s_album_art_url[256]  = {0};
 static bool     s_is_playing          = false;
+static bool     s_shuffle_state       = false;
 /* Most-recent device id seen in /me/player. Spotify drops the active-device
  * association after a phone/speaker idles and returns 404 to the next play
  * command; we use this to wake it back up (PUT /me/player device_ids+play). */
@@ -454,6 +455,12 @@ bool spotify_fetch_player(spotify_track_t *info)
         const char *is_playing_v = json_obj_get(buf.data, "is_playing");
         if (is_playing_v) info->is_playing = (*is_playing_v == 't');
 
+        const char *shuffle_v = json_obj_get(buf.data, "shuffle_state");
+        if (shuffle_v) {
+            info->shuffle_state = (*shuffle_v == 't');
+            s_shuffle_state = info->shuffle_state;
+        }
+
         const char *progress_v = json_obj_get(buf.data, "progress_ms");
         if (progress_v) info->progress_ms = (uint32_t)atoi(progress_v);
 
@@ -863,6 +870,18 @@ bool spotify_set_volume(int pct)
     snprintf(url, sizeof(url),
              "https://api.spotify.com/v1/me/player/volume?volume_percent=%d", pct);
     return _cmd_ok(_do_cmd(HTTP_METHOD_PUT, url, NULL));
+}
+
+bool spotify_toggle_shuffle(void)
+{
+    bool new_state = !s_shuffle_state;
+    char url[96];
+    snprintf(url, sizeof(url),
+             "https://api.spotify.com/v1/me/player/shuffle?state=%s",
+             new_state ? "true" : "false");
+    bool ok = _cmd_ok(_do_cmd(HTTP_METHOD_PUT, url, NULL));
+    if (ok) s_shuffle_state = new_state;
+    return ok;
 }
 
 bool spotify_transfer_playback(const char *device_id)

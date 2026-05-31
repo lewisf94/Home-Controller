@@ -223,7 +223,15 @@ static bool call_service(const char *domain, const char *service,
 bool ha_toggle_play_pause(void) { return call_service("media_player", "media_play_pause",     NULL); }
 bool ha_prev_track(void)        { return call_service("media_player", "media_previous_track", NULL); }
 bool ha_next_track(void)        { return call_service("media_player", "media_next_track",     NULL); }
-bool ha_toggle_shuffle(void)    { return call_service("media_player", "shuffle_set",          NULL); }
+bool ha_toggle_shuffle(void)
+{
+    bool new_state = !s_track.shuffle_state;
+    char data[24];
+    snprintf(data, sizeof(data), "\"shuffle\":%s", new_state ? "true" : "false");
+    bool ok = call_service("media_player", "shuffle_set", data);
+    if (ok) s_track.shuffle_state = new_state;
+    return ok;
+}
 
 bool ha_seek_position(uint32_t position_ms)
 {

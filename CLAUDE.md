@@ -109,7 +109,7 @@ Button functions are context-dependent on the active view (handled in the
 | SW1     | GPA0 (pin 0) | `PIN_SW1`     = 0 | Scroll one album left   | Previous track (restart if >5 s in) |
 | SW2     | GPA1 (pin 1) | `PIN_SW2`     = 1 | Select centred album    | Play / Pause |
 | SW3     | GPA2 (pin 2) | `PIN_SW3`     = 2 | Scroll one album right  | Next track |
-| SW4     | GPA3 (pin 3) | `PIN_SW4`     = 3 | Toggle view ↔           | Toggle view ↔ |
+| SW4     | GPA3 (pin 3) | `PIN_SW4`     = 3 | Toggle view ↔           | Short press: toggle view; long hold (>500 ms): shuffle toggle |
 | RE1 CLK | GPA4 (pin 4) | `PIN_RE1_CLK` = 4 | Browser scroll encoder A | (volume A) |
 | RE1 DT  | GPA5 (pin 5) | `PIN_RE1_DT`  = 5 | Browser scroll encoder B | (volume B) |
 | RE1 SW  | GPA6 (pin 6) | `PIN_RE1_SW`  = 6 | Select centred album     | Mute toggle |
@@ -338,7 +338,7 @@ features survived the TFT_eSPI → LVGL transition:**
 |---|---|---|---|
 | 1A debounced volume | yes | yes | `s_vol_pending` / 300 ms guard in `input.c` / `input.cpp` |
 | 1B volume HUD | yes | yes | `ui_show_volume_hud()` in `ui.c` / `ui.cpp`; shows "MUTED" transiently |
-| 1C SW4 seek preview | **no** | **no** | SW4 is a view toggle in all current builds; seek preview was TFT_eSPI only |
+| 1C SW4 seek preview | **no** | **no** | SW4 is view-toggle (short) / shuffle (long hold, now-playing) in all current builds; seek preview was TFT_eSPI only |
 | 1D persistent mute badge | **no** | **no** | Mute toggle exists (RE1-SW) but only the transient HUD says "MUTED"; no persistent badge |
 | 1E play/pause flash | **no** | **no** | Used `fillTriangle`/`fillRect`; not ported to LVGL |
 | 1.5 WiFi bars | yes | yes | LVGL bar objects, 2 s refresh, `esp_wifi_sta_get_rssi()` on IDF / `WiFi.RSSI()` on Arduino |
