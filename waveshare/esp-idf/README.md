@@ -1,4 +1,4 @@
-# waveshare/esp-idf — ESP32-P4, direct Spotify (no HA)
+# waveshare/esp-idf — ESP32-P4, direct Spotify (lead build)
 
 Music Controller on the **Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3** (ESP32-P4
 RISC-V, 4.3" 480×800 IPS, **ST7701** MIPI-DSI, **GT911** touch, WiFi6/BLE5 via an

@@ -1,17 +1,19 @@
 # cyd — CYD board (ESP32-WROOM, 2.8" ILI9341)
 
-Music Controller firmware for the **CYD** ("Cheap Yellow Display") — a budget ESP32-WROOM dev board sold under various Sunton / generic SKUs (commonly `ESP32-2432S028R`). It bundles a 2.8" 320×240 ILI9341 SPI TFT and an XPT2046 resistive touch controller into one board. Around it we add an MCP23017 I2C IO expander breakout (CJMCU-2317) carrying four push buttons and a rotary encoder, plus an SD card slot for album thumbnails.
+Music Controller firmware for the **CYD** ("Cheap Yellow Display") — a budget ESP32-WROOM dev board sold under various Sunton / generic SKUs (commonly `ESP32-2432S028R`). It bundles a 2.8" 320×240 ILI9341 SPI TFT and an XPT2046 resistive touch controller into one board. Around it we add an MCP23017 I2C IO expander breakout (CJMCU-2317) carrying four push buttons and a rotary encoder.
+
+> The primary development board is now the **Waveshare ESP32-P4** — see [`../waveshare/`](../waveshare/). The CYD builds are actively maintained but no longer the lead.
 
 Three builds live here, plus one shared ESP-IDF component:
 
 | Folder | Framework | LVGL | Status |
 |---|---|---|---|
-| [`esp-idf/`](esp-idf/) | ESP-IDF 6.0 native, direct Spotify | LVGL 9.x via esp_lvgl_port | Lead build — feature-complete + originally hardware-verified; recent perf/reliability/UX batches need a CYD re-flash |
+| [`esp-idf/`](esp-idf/) | ESP-IDF 6.0 native, direct Spotify | LVGL 9.x via esp_lvgl_port | Feature-complete + originally hardware-verified; recent perf/reliability/UX batches need a CYD re-flash |
 | [`esp-idf-ha/`](esp-idf-ha/) | ESP-IDF 6.0 native, Home Assistant backend | LVGL 9.x via esp_lvgl_port | Shares UI/input/etc with `esp-idf/` via `cyd_shared`; only the backend (`ha_client.c`) is HA-specific; **never hardware-tested** |
-| [`platformio/`](platformio/) | PlatformIO + Arduino framework | LVGL 9.5 (ported from TFT_eSPI direct draw) | Phase 1 + 1.5 shipped on hardware; LVGL port + recent perf/reliability fixes committed, needs re-verify |
+| [`platformio/`](platformio/) | PlatformIO + Arduino framework | LVGL 9.5 (ported from TFT_eSPI direct draw) | Phase 1 + 1.5 shipped on hardware; LVGL port + recent perf/reliability fixes committed, needs re-verify; maintenance mode |
 | [`components/cyd_shared/`](components/cyd_shared/) | ESP-IDF component | — | Shared `ui.c` + `input.c` + `mcp_input.c` + `album_art.cpp` + `littlefs.c` (with their headers + `player.h`) used by both IDF builds |
 
-The two IDF builds share UI/input/MCP/album-art/LittleFS code through the `cyd_shared` component, so a fix to either one benefits both — no more hand-syncing two copies of `ui.c`. The Spotify build is the lead firmware. The HA variant is the same build with the backend swapped to a Home Assistant WebSocket client (Phase 3). The Arduino build is in maintenance mode (perf and reliability fixes welcome; no new features); the LVGL rewrite + the recent TLS-keep-alive / filtered-JSON / adaptive-poll-backoff changes are all committed but unverified on hardware. The `cyd_shared` UI stack is *not* used by the waveshare build — that build has its own `ui.c` laid out for 800×480 and lives in [`../waveshare/`](../waveshare/).
+The two IDF builds share UI/input/MCP/album-art/LittleFS code through the `cyd_shared` component, so a fix to either benefits both. The HA variant (`esp-idf-ha/`) swaps the Spotify backend for a Home Assistant WebSocket client (Phase 3) — see [`../docs/HA-SETUP.md`](../docs/HA-SETUP.md) for the Pi 5 setup guide. The Arduino build is in maintenance mode (perf and reliability fixes welcome, no new features). The `cyd_shared` UI stack is *not* used by the Waveshare build — that has its own `ui.c` laid out for 800×480.
 
 ---
 

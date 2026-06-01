@@ -1,8 +1,10 @@
-# cyd/esp-idf — ESP-IDF build (direct Spotify, lead build)
+# cyd/esp-idf — ESP-IDF build (direct Spotify)
 
-Native ESP-IDF port of the Music Controller targeting the same CYD hardware as `../platformio/`. The display layer is LVGL 9 via `esp_lvgl_port`. The Home Assistant variant in [`../esp-idf-ha/`](../esp-idf-ha/) shares its UI / input / MCP / album-art / LittleFS code with this build through the [`../components/cyd_shared/`](../components/cyd_shared/) component — only the backend file differs (`spotify.c` here vs `ha_client.c` there).
+Native ESP-IDF port of the Music Controller targeting the CYD hardware. The display layer is LVGL 9 via `esp_lvgl_port`. The Home Assistant variant in [`../esp-idf-ha/`](../esp-idf-ha/) shares its UI / input / MCP / album-art / LittleFS code with this build through the [`../components/cyd_shared/`](../components/cyd_shared/) component — only the backend file differs (`spotify.c` here vs `ha_client.c` there).
 
-**This is the lead build.** It is a full feature port of the Arduino code and was originally **verified smooth on hardware** (cp0-11 below). It has since absorbed a substantial backlog of perf, reliability, and UX work from the 05-24 / 05-26 / 05-27 / 05-28 / 05-30 daily reviews. None of those have been re-flashed (CYD board has been unavailable). See [`../../docs/PENDING.md`](../../docs/PENDING.md) for the full verify-pending list and [`../../docs/TESTING.md`](../../docs/TESTING.md) for the sanity-check menu next time the board is back.
+> The primary development platform is now the **Waveshare ESP32-P4** (`waveshare/esp-idf/`). This CYD build is feature-complete and was originally hardware-verified (cp0–11 below); it remains actively maintained but is no longer the lead.
+
+It is a full feature port of the Arduino code, originally **verified smooth on hardware** (cp0-11 below). It has since absorbed a substantial backlog of perf, reliability, and UX work from the 05-24 / 05-26 / 05-27 / 05-28 / 05-30 daily reviews. None of those have been re-flashed (CYD board has been unavailable). See [`../../docs/PENDING.md`](../../docs/PENDING.md) for the full verify-pending list and [`../../docs/TESTING.md`](../../docs/TESTING.md) for the sanity-check menu next time the board is back.
 
 Input runs in its own 2 ms FreeRTOS task and posts commands to the Spotify task via a queue, so controls stay smooth during blocking HTTPS calls.
 
