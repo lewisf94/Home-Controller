@@ -337,9 +337,11 @@ static void input_task(void *arg)
     input_init();
     for (;;) {
         mcp_input_update();
-        if (lvgl_port_lock(10)) {
-            input_update();
-            lvgl_port_unlock();
+        if (mcp_input_has_pending() || input_needs_tick()) {
+            if (lvgl_port_lock(0)) {
+                input_update();
+                lvgl_port_unlock();
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(2));
     }

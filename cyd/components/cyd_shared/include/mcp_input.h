@@ -17,3 +17,8 @@ bool    btn_is_held(uint8_t btn_index);
 
 /* True for exactly one call on confirmed RE1 push-switch press. */
 bool    re1_sw_get_event(void);
+
+/* True if any button event, encoder delta, or held button is pending.
+ * Non-consuming: does not clear any event latch. Used to gate the LVGL lock
+ * in input_task so the lock is only contested when there is work to do. */
+bool    mcp_input_has_pending(void);

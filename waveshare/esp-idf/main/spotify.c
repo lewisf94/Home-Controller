@@ -396,9 +396,8 @@ static bool ensure_token(void)
 /* Persistent keep-alive client for the /v1/me/player poll. The player is
  * polled every few seconds, so giving that hot path a reused connection means
  * the TLS session is negotiated once instead of re-handshaking (and
- * re-validating the cert bundle) on every poll. Commands and the token refresh
- * stay one-shot -- they're infrequent. Single-threaded: only spotify_task
- * touches this. */
+ * re-validating the cert bundle) on every poll. Single-threaded: only
+ * spotify_task touches either client. */
 static esp_http_client_handle_t s_poll_client = NULL;
 
 static void poll_client_close(void)
@@ -406,6 +405,21 @@ static void poll_client_close(void)
     if (s_poll_client) {
         esp_http_client_cleanup(s_poll_client);
         s_poll_client = NULL;
+    }
+}
+
+/* Persistent keep-alive client for playback commands. Same principle as
+ * s_poll_client: reusing one TLS session across consecutive button presses
+ * skips the handshake (~0.5-2 s) that would otherwise block the UI. Commands
+ * always go to api.spotify.com so the connection stays eligible for reuse.
+ * Cleared on any transport error or 401 so the next call opens a fresh handle. */
+static esp_http_client_handle_t s_cmd_client = NULL;
+
+static void cmd_client_close(void)
+{
+    if (s_cmd_client) {
+        esp_http_client_cleanup(s_cmd_client);
+        s_cmd_client = NULL;
     }
 }
 
@@ -769,46 +783,51 @@ static int _do_cmd(esp_http_client_method_t method, const char *url, const char 
 {
     if (!ensure_token()) return -1;
 
-    /* Capture the response body so a failure can log Spotify's reason (e.g. a
-     * 403 reads "PREMIUM_REQUIRED" vs a missing-scope message). */
-    resp_buf_t resp = {0};
-    esp_http_client_config_t cfg = {
-        .url               = url,
-        .method            = method,
-        .event_handler     = http_event_handler,
-        .user_data         = &resp,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms        = 5000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return -1;
+    if (!s_cmd_client) {
+        esp_http_client_config_t cfg = {
+            .url               = url,
+            .method            = method,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .timeout_ms        = 5000,
+            .keep_alive_enable = true,
+        };
+        s_cmd_client = esp_http_client_init(&cfg);
+        if (!s_cmd_client) return -1;
+    } else {
+        esp_http_client_set_url(s_cmd_client, url);
+        esp_http_client_set_method(s_cmd_client, method);
+    }
 
     char bearer[320];
     snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
-    esp_http_client_set_header(client, "Authorization", bearer);
+    esp_http_client_set_header(s_cmd_client, "Authorization", bearer);
+
     if (body && body[0]) {
-        esp_http_client_set_header(client, "Content-Type", "application/json");
-        esp_http_client_set_post_field(client, body, (int)strlen(body));
+        esp_http_client_set_header(s_cmd_client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(s_cmd_client, body, (int)strlen(body));
+    } else {
+        esp_http_client_delete_header(s_cmd_client, "Content-Type");
+        esp_http_client_set_post_field(s_cmd_client, NULL, 0);
     }
 
-    esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
+    esp_err_t err = esp_http_client_perform(s_cmd_client);
+    int status = esp_http_client_get_status_code(s_cmd_client);
+
+    /* On transport failure the TLS session is broken -- drop the handle so
+     * the next command re-establishes instead of reusing a dead socket. */
+    if (err != ESP_OK) cmd_client_close();
 
     /* Mirror the poll's 401 handling: a server-side token invalidation would
      * otherwise make a button press fail silently until the next poll happens
-     * to refresh. Clear the token so the next command/poll refreshes at once.
-     * The error body is small JSON with no secrets -- safe to log. */
+     * to refresh. Clear the token so the next command/poll refreshes at once. */
     if (status == 401) {
-        ESP_LOGW(TAG, "cmd %s got 401, invalidating cached token: %s",
-                 url, resp.data ? resp.data : "(no body)");
+        ESP_LOGW(TAG, "cmd %s got 401, invalidating cached token", url);
         s_token_expiry_us = 0;
         s_access_token[0]  = '\0';
+        cmd_client_close();
     } else if (status >= 400) {
-        ESP_LOGW(TAG, "cmd %s -> %d: %s", url, status, resp.data ? resp.data : "(no body)");
+        ESP_LOGW(TAG, "cmd %s -> %d", url, status);
     }
-
-    free(resp.data);
     return status;
 }
 

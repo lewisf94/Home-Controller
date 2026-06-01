@@ -270,3 +270,13 @@ bool re1_sw_get_event(void)
     s_re1_sw.event_pending = false;
     return e;
 }
+
+bool mcp_input_has_pending(void)
+{
+    if (s_re1.count != 0) return true;
+    if (s_re1_sw.event_pending) return true;
+    for (int i = 0; i < 4; i++) {
+        if (s_btns[i].event_pending || s_btns[i].pressed) return true;
+    }
+    return false;
+}

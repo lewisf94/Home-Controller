@@ -5,6 +5,7 @@
 
 static int  s_pre_mute_vol = 50;
 static bool s_is_muted     = false;
+static bool s_vol_pending  = false;
 /* -1 = volume not yet known (no successful poll yet). The encoder / mute
  * toggle no-op until the first poll lands so a first nudge can't jump the
  * speaker by computing from a guessed 50%. ui_get_device_volume() seeds this
@@ -19,6 +20,11 @@ static uint32_t _millis(void)
 bool input_is_muted(void) { return s_is_muted; }
 
 void input_init(void) {}
+
+bool input_needs_tick(void)
+{
+    return s_vol_pending || btn_is_held(3);
+}
 
 void input_update(void)
 {
@@ -95,7 +101,6 @@ void input_update(void)
 
     /* RE1: scroll carousel (browser) or adjust volume (now-playing) */
     static uint32_t s_last_vol_ms = 0;
-    static bool     s_vol_pending = false;
 
     /* Adopt the device's real volume as the encoder/HUD base whenever the poll
      * reports a new level, so the first nudge moves from the actual volume, not

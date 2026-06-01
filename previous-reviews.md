@@ -10,18 +10,13 @@ instead of repeating. Newest entries at the bottom.
 > Those entries are consolidated here. Future runs: read this file on `main`,
 > and **rotate to a new area** rather than repeating one already covered.
 
-**Coverage so far:** Security ×2 (05-22, 05-23), Performance ×1 (05-24),
-Code quality ×1 (05-26), Testing/reliability ×1 (05-28), Architecture ×1 (05-29).
-The Security actionable
-findings have since been fixed on `main` (TLS verification on both builds, log
-redaction, `.cache` gitignored, setup docs + `get_spotify_token.py` point at the
-gitignored `secrets.h`, IDF token-refresh `snprintf` guard). Most Performance
-findings from 05-24 are still open (only the poll keep-alive landed; the rest
-were lower-priority/deferred). All seven 05-26 Code-quality findings are still
-open as of 05-28. All eight 05-28 Testing/reliability findings are still open as
-of 05-29. **Next run should cover Missing features / edge cases** — the only
-rotation area not yet visited. After that, restart the rotation, preferring the
-least-recently-covered area.
+**Coverage so far:** Security ×2 (05-22, 05-23), Performance ×2 (05-24, 05-31),
+Code quality ×1 (05-26), Testing/reliability ×1 (05-28), Architecture ×1 (05-29),
+Missing features ×1 (05-30), Implementation fixes ×1 (06-01).
+Security findings fixed. Most 05-24 Performance items addressed (poll keep-alive,
+cmd keep-alive on CYD). 05-26 Code-quality and 05-28 Testing/reliability findings
+largely addressed through 05-31. **Next run should cover Code quality** — oldest
+unrefreshed area (last visited 05-26). After that restart rotation.
 
 ---
 
@@ -181,3 +176,26 @@ addressed (WiFi background reconnect timer, 404 wake-idle, volume-50 sentinel,
 shared `cyd_shared` component and `player.h` rename both landed; shared
 `main.c` glue across builds and a proper connectivity supervisor remain open.
 Suggestions made: 9.
+
+2026-06-01 - Area covered: Implementation of open review findings. Implemented
+three fixes from the 05-31 performance review backlog. (1) Waveshare `_do_cmd`
+persistent TLS client: `waveshare/esp-idf/main/spotify.c` was still opening a
+fresh TLS connection (full handshake ~0.5-2 s, ~30-40 KB heap spike) for every
+playback command, while the CYD build already had `s_cmd_client` with
+`keep_alive_enable`. Ported the same `s_cmd_client` + `cmd_client_close()`
+pattern to waveshare -- handle reused across calls, dropped on transport error
+or 401. (2) `input_task` unconditional LVGL lock: both CYD IDF builds called
+`lvgl_port_lock(10)` every 2 ms regardless of pending input, competing with
+the render task 500 times/second. Added `mcp_input_has_pending()` to
+`cyd/components/cyd_shared/mcp_input.c` (non-consuming check of all event
+latches and encoder delta) and `input_needs_tick()` to `input.c` (true when
+vol debounce or SW4 long-press is active); both `main.c` files now gate the
+lock attempt behind these checks and use timeout=0 so a busy render task is
+never blocked. (3) Promoted `s_vol_pending` to file scope in `input.c` so
+`input_needs_tick()` can read it. Verified: `esp_littlefs_info` return is
+already checked (logged as warning -- not open). Still open from prior reviews:
+shared `main.c` WiFi/bring-up glue across builds; connectivity supervisor;
+Sonos three-connection-per-poll; `apply_card_transforms()` all-64-cards rewrite
+per scroll frame; CYD `find_centered_card()` O(n); `?fields=` poll filter;
+`json_obj_get` multi-key scan; LVGL timers running on wrong screen; waveshare
+RAM art decode (PSRAM available). Suggestions actioned: 3.
