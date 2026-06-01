@@ -308,6 +308,25 @@ static void apply_state_object(const char *st)
         const char *shuf_p = json_obj_get(attrs, "shuffle");
         if (shuf_p)
             s_track.shuffle_state = (strncmp(shuf_p, "true", 4) == 0);
+
+        /* Populate album_uri so the browser auto-snaps to the playing album.
+         * Music Assistant reports the album URI under media_album_id;
+         * the native Spotify integration uses media_content_id (track URI)
+         * from which we can extract the album portion if it's an album type.
+         * Leave empty when neither is present -- auto-snap silently no-ops. */
+        char content_id[128] = {0};
+        char content_type[32] = {0};
+        json_obj_get_str(attrs, "media_content_id",   content_id,   sizeof(content_id));
+        json_obj_get_str(attrs, "media_content_type", content_type, sizeof(content_type));
+        if (strncmp(content_id, "spotify:album:", 14) == 0) {
+            snprintf(s_track.album_uri, sizeof(s_track.album_uri), "%s", content_id);
+        } else if (strncmp(content_id, "spotify://album/", 16) == 0) {
+            /* Music Assistant format: spotify://album/<id> -> spotify:album:<id> */
+            snprintf(s_track.album_uri, sizeof(s_track.album_uri),
+                     "spotify:album:%s", content_id + 16);
+        } else {
+            s_track.album_uri[0] = '\0';
+        }
     }
 
     ESP_LOGI(TAG, "state: %s -- %s [%s]", s_track.artist, s_track.title, state);
@@ -481,6 +500,14 @@ bool ha_download_to_file(const char *url, const char *path, size_t *out_len)
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { fclose(f); return false; }
+
+    /* HA's /api/media_player_proxy/ endpoints require authentication even on
+     * the local network. Without the Bearer token they return 401. */
+    if (s_token && s_token[0]) {
+        char bearer[320];
+        snprintf(bearer, sizeof(bearer), "Bearer %s", s_token);
+        esp_http_client_set_header(c, "Authorization", bearer);
+    }
 
     esp_err_t err = esp_http_client_perform(c);
     int status = esp_http_client_get_status_code(c);

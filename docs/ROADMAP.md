@@ -348,19 +348,32 @@ network — faster than Spotify CDN direct.
 ESP32 connects → receives {"type":"auth_required"}
 → sends {"type":"auth","access_token":"<token>"}
 → receives {"type":"auth_ok"}
-→ sends {"type":"subscribe_events","event_type":"state_changed","id":1}
-→ receives {"type":"result","success":true}
-→ ongoing: {"type":"event","event":{"data":{"new_state":{...}}}}
+→ sends {"id":1,"type":"get_states"}
+→ receives {"type":"result","id":1,"result":[...all entities...]}
+→ sends {"id":2,"type":"subscribe_trigger",
+          "trigger":{"platform":"state","entity_id":"media_player.xxx"}}
+→ receives {"type":"result","id":2,"success":true}
+→ ongoing: {"type":"event","id":2,
+             "event":{"variables":{"trigger":{"to_state":{...entity state...}}}}}
 ```
+
+`subscribe_trigger` (not `subscribe_events`) filters to a single entity
+server-side so the firmware only receives frames for its own media player.
+`get_states` seeds the initial track without waiting for the first change.
 
 ### HA setup required (on Pi 5)
 
-1. Install Spotify integration in HA: Settings → Integrations → Spotify.
-   Authenticate once via OAuth in the browser.
-2. Note the entity ID: typically `media_player.spotify_<username>`.
-3. Create a long-lived access token: Profile → Long-Lived Access Tokens →
-   Create Token. Store in device `secrets.h` / NVS.
-4. Confirm Pi 5 hostname is reachable at `homeassistant.local` or use IP.
+See `docs/HA-SETUP.md` for the full step-by-step guide (Pi OS install,
+Music Assistant, long-lived token, entity ID, first-run checklist,
+troubleshooting). Short version:
+
+1. Install Music Assistant add-on (recommended) or the native Spotify
+   integration. Note the `media_player.*` entity ID.
+2. Create a long-lived access token: Profile → Security → Long-Lived Access
+   Tokens → Create. Copy immediately (shown once).
+3. Assign the Pi a static IP or DHCP reservation.
+4. Fill `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` in
+   `cyd/esp-idf-ha/include/secrets.h`. Use the IP, not `homeassistant.local`.
 
 ### Migration within Phase 3
 
