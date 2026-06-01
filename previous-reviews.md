@@ -199,3 +199,22 @@ Sonos three-connection-per-poll; `apply_card_transforms()` all-64-cards rewrite
 per scroll frame; CYD `find_centered_card()` O(n); `?fields=` poll filter;
 `json_obj_get` multi-key scan; LVGL timers running on wrong screen; waveshare
 RAM art decode (PSRAM available). Suggestions actioned: 3.
+
+2026-06-01 (follow-up) - Verification + Sonos poll fix. Audited 15 prior-review
+"fixed/open" claims against current source (file:line evidence): 14 confirmed
+genuinely fixed (all Security; both keep-alive clients; WiFi background
+reconnect; 404 device-wake; `esp_littlefs_info` checked; MCP re-probe; shuffle
+on IDF; JPEG SOI check), and the one "FALSE" was good news -- `ui_fancy_backup.cpp`
+no longer exists and `download_album_art()` is a clean stub, so the 05-26
+dead-code finding is resolved. Then fixed the clearest remaining open item:
+Sonos `sonos_fetch_now_playing()` opened three separate HTTP connections per
+poll cycle (`GetPositionInfo` + `GetTransportInfo` + `GetVolume`, each a full
+init/perform/cleanup to host:1400). Added a persistent keep-alive `s_query_client`
+to `soap_query()` (`waveshare/esp-idf/main/sonos.c`), reused across all three
+queries and across poll cycles; `set_url`/`set_method`/`set_user_data` per call
+(same host:port, only path/SOAPAction differ); dropped on transport error via
+`query_client_close()`. Same pattern as the verified Spotify `s_poll_client`/
+`s_cmd_client`. Still open (deferred-by-design perf + architecture): shared
+`main.c` glue, connectivity supervisor, `apply_card_transforms()` per-frame
+cost, `find_centered_card()` O(n), `?fields=` poll filter, `json_obj_get`
+multi-key scan, off-screen LVGL timers, waveshare RAM art decode.

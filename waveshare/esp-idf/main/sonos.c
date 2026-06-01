@@ -279,6 +279,22 @@ static bool sonos_fetch_uuid(const char *host)
     return ok;
 }
 
+/* Persistent keep-alive client for SOAP queries. The now-playing poll fires
+ * three queries back-to-back (GetPositionInfo + GetTransportInfo + GetVolume)
+ * every few seconds, all to the same host:1400 -- reusing one TCP connection
+ * across them (and across poll cycles) avoids a connect/teardown per query.
+ * Single-threaded: only spotify_task calls soap_query. Dropped on transport
+ * error so the next call reconnects instead of reusing a dead socket. */
+static esp_http_client_handle_t s_query_client = NULL;
+
+static void query_client_close(void)
+{
+    if (s_query_client) {
+        esp_http_client_cleanup(s_query_client);
+        s_query_client = NULL;
+    }
+}
+
 /* POST a query action with caller-supplied inner args and return the response
  * body in a freshly-malloc'd, NUL-terminated buffer (caller frees). *out_len,
  * if non-NULL, receives the body length. Returns NULL on transport/HTTP error. */
@@ -301,23 +317,40 @@ static char *soap_query(const char *host, const char *path, const char *svc,
         "</s:Envelope>", action, svc, inner ? inner : "", action);
     if (n <= 0 || n >= (int)sizeof body) return NULL;
 
+    /* rb lives on this stack frame; perform() runs synchronously and fully
+     * before we return, so pointing the persistent client's user_data at it
+     * for the duration of this call is safe. */
     rbuf_t rb = {0};
-    esp_http_client_config_t cfg = {
-        .url           = url,
-        .method        = HTTP_METHOD_POST,
-        .event_handler = rbuf_evt,
-        .user_data     = &rb,
-        .timeout_ms    = 4000,
-    };
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) return NULL;
+    if (!s_query_client) {
+        esp_http_client_config_t cfg = {
+            .url               = url,
+            .method            = HTTP_METHOD_POST,
+            .event_handler     = rbuf_evt,
+            .user_data         = &rb,
+            .timeout_ms        = 4000,
+            .keep_alive_enable = true,
+        };
+        s_query_client = esp_http_client_init(&cfg);
+        if (!s_query_client) return NULL;
+    } else {
+        /* Same host:port across all Sonos actions, only the path/SOAPAction
+         * differ, so the kept-alive TCP connection is reused. */
+        esp_http_client_set_url(s_query_client, url);
+        esp_http_client_set_method(s_query_client, HTTP_METHOD_POST);
+        esp_http_client_set_user_data(s_query_client, &rb);
+    }
+    esp_http_client_handle_t c = s_query_client;
+
     esp_http_client_set_header(c, "Content-Type", "text/xml; charset=\"utf-8\"");
     esp_http_client_set_header(c, "SOAPAction", soapaction);
     esp_http_client_set_post_field(c, body, n);
 
     esp_err_t err = esp_http_client_perform(c);
     int status = esp_http_client_get_status_code(c);
-    esp_http_client_cleanup(c);
+
+    /* Transport error breaks the connection -- drop the handle so the next
+     * query opens a fresh one rather than reusing a dead socket. */
+    if (err != ESP_OK) query_client_close();
 
     if (err == ESP_OK && status == 200 && rb.data) {
         if (out_len) *out_len = rb.len;
