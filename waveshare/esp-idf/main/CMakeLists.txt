@@ -36,6 +36,10 @@ idf_component_register(
         bitbank2__jpegdec     # cp5: now-playing art JPEG decode
 )
 
+# Link libm for cosf/sinf used by the WiFi orbit animation in ui.c.
+idf_component_get_property(main_lib main COMPONENT_LIB)
+target_link_libraries(${main_lib} PRIVATE m)
+
 # Silence warnings from the third-party bitbank JPEGDEC library (pointer-to-int
 # casts, shift-of-negative, unused statics). They're benign and not our code;
 # this targets only that component's lib so our own warnings still surface.

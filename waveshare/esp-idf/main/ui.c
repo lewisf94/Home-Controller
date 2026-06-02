@@ -45,6 +45,7 @@
 #include "esp_random.h"
 
 #include <string.h>
+#include <math.h>
 
 static const char *TAG = "ui";
 
@@ -260,12 +261,42 @@ static bool    s_show_sel_line = true;   /* centred-card underline (Settings tog
 #define BRIGHTNESS_DEFAULT 100
 static uint8_t s_brightness = BRIGHTNESS_DEFAULT;
 
-/* Art-theme particle animation: scattered animated dots drawn beneath the
- * browser content. Active only for THEME_YUDHO_IDX and THEME_FUHRER_IDX.
- * Objects pre-allocated (no timer-path allocation); timer NULLed when inactive. */
+/* Background particle animation: scattered dots drawn beneath browser content.
+ * Active for both art themes. Objects pre-allocated; timer NULLed when inactive. */
 #define PARTICLE_COUNT    20
 static lv_obj_t   *s_particle_objs[PARTICLE_COUNT] = {0};
 static lv_timer_t *s_particle_timer = NULL;
+
+/* === Yudho-only integrated particle features === */
+
+/* 1. Gas-particle progress bar: 24 dots confined to the played zone, bouncing
+ *    elastically inside the expanding container as the song progresses. */
+#define PROG_PART_COUNT  24
+typedef struct { int16_t x, y; int8_t vx, vy; } prog_pt_t;
+static prog_pt_t   s_prog_pts[PROG_PART_COUNT]   = {0};
+static lv_obj_t   *s_prog_objs[PROG_PART_COUNT]  = {0};
+static lv_timer_t *s_prog_particle_timer         = NULL;
+
+/* 2. Volume page: full-screen dot-matrix volume display. */
+#define VOL_PAGE_COLS   8
+#define VOL_PAGE_ROWS  10
+#define VOL_PAGE_DOTS  (VOL_PAGE_COLS * VOL_PAGE_ROWS)
+static lv_obj_t *s_screen_volume   = NULL;
+static lv_obj_t *s_vol_page_dots[VOL_PAGE_DOTS] = {0};
+static lv_obj_t *s_vol_page_label  = NULL;   /* "XX%" readout */
+static lv_timer_t *s_vol_release_timer = NULL;
+
+/* 3. WiFi orbiting dot cluster: 4 dots orbiting a centre point in the browser
+ *    top-left corner, replacing the bar indicators when Yudho is active. */
+static lv_obj_t   *s_wifi_dots[4]   = {0};
+static float       s_wifi_angles[4] = {0.0f, 1.57f, 3.14f, 4.71f};
+static int         s_wifi_dot_count = 0;
+static int         s_wifi_dot_radius = 10;
+static lv_timer_t *s_wifi_orbit_timer = NULL;
+
+/* 4. Offline title dissipation: temporary dots that animate on offline transition. */
+#define DISSOLVE_DOT_COUNT  8
+static lv_obj_t *s_dissolve_dots[DISSOLVE_DOT_COUNT] = {0};
 
 /* True for any style that transforms cards per scroll position (Focus + CF). */
 #define BROWSER_STYLE_TRANSFORMS(s) ((s) == BROWSER_FOCUS || (s) == BROWSER_COVERFLOW)
@@ -365,9 +396,30 @@ static void on_vol_press_lost(lv_event_t *e);
 static void refresh_play_icon(void);
 static void position_seek_thumb(int32_t pct);
 static bool is_art_theme(void);
+static bool is_yudho_theme(void);
 static void particle_tick_cb(lv_timer_t *t);
 static void particles_start(lv_obj_t *screen);
 static void particles_stop(void);
+/* Gas-particle progress bar */
+static void prog_particles_start(lv_obj_t *screen);
+static void prog_particles_stop(void);
+static void prog_particle_tick_cb(lv_timer_t *t);
+/* Volume page */
+static void build_volume_screen(void);
+static void vol_page_dots_update(int pct);
+static void on_open_volume(lv_event_t *e);
+static void on_vol_page_back(lv_event_t *e);
+static void on_vol_page_drag(lv_event_t *e);
+static void vol_release_timer_cb(lv_timer_t *t);
+/* WiFi orbit */
+static void wifi_dots_start(lv_obj_t *screen);
+static void wifi_dots_stop(void);
+static void wifi_orbit_tick_cb(lv_timer_t *t);
+static void wifi_dots_update_count(int bars);
+/* Offline dissolve */
+static void title_dissolve(void);
+static void title_reform(void);
+static void dissolve_done_cb(lv_anim_t *a);
 
 static lv_color_t card_color(size_t i)
 {
@@ -620,19 +672,22 @@ static void build_browser_screen(void)
     lv_obj_align(s_sel_line, LV_ALIGN_TOP_MID, 0, SCROLLER_Y + SCROLLER_H - 8);
     if (!s_show_sel_line) lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
 
-    /* WiFi-strength indicator: four rising bars at top-left. */
-    for (int i = 0; i < 4; i++) {
-        int h = 6 + i * 4;   /* 6, 10, 14, 18 px tall */
-        lv_obj_t *bar = lv_obj_create(s_screen_browser);
-        lv_obj_set_size(bar, 5, h);
-        lv_obj_set_pos(bar, 6 + i * 8, 22 - h);
-        lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_border_width(bar, 0, 0);
-        lv_obj_set_style_radius(bar, 0, 0);
-        lv_obj_set_style_pad_all(bar, 0, 0);
-        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(bar, lv_color_hex(s_th->track), 0);
-        s_wifi_bars[i] = bar;
+    /* WiFi-strength indicator: rising bars normally; orbiting dot cluster for Yudho. */
+    memset(s_wifi_bars, 0, sizeof s_wifi_bars);
+    if (!is_yudho_theme()) {
+        for (int i = 0; i < 4; i++) {
+            int h = 6 + i * 4;   /* 6, 10, 14, 18 px tall */
+            lv_obj_t *bar = lv_obj_create(s_screen_browser);
+            lv_obj_set_size(bar, 5, h);
+            lv_obj_set_pos(bar, 6 + i * 8, 22 - h);
+            lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_style_border_width(bar, 0, 0);
+            lv_obj_set_style_radius(bar, 0, 0);
+            lv_obj_set_style_pad_all(bar, 0, 0);
+            lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(bar, lv_color_hex(s_th->track), 0);
+            s_wifi_bars[i] = bar;
+        }
     }
 
     /* Tappable "now playing" hint pill at the bottom edge (matches the "albums"
@@ -876,19 +931,30 @@ static void build_np_screen(void)
     lv_obj_set_style_text_color(vol_ico, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(vol_ico, &lv_font_montserrat_20, 0);
     lv_obj_set_pos(vol_ico, 715, 40);
+    /* In Yudho mode the icon is a tappable shortcut to the volume page. */
+    if (is_yudho_theme()) {
+        lv_obj_set_style_text_color(vol_ico, lv_color_hex(accent_color()), 0);
+        lv_obj_add_flag(vol_ico, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(vol_ico, on_open_volume, LV_EVENT_CLICKED, NULL);
+    }
 
     s_np_volume = lv_slider_create(s_screen_np);
     lv_obj_set_size(s_np_volume, 44, 236);          /* h > w -> vertical slider; 44px wide for touch */
     lv_obj_set_pos(s_np_volume, 708, 66);
     lv_slider_set_range(s_np_volume, 0, 100);
     lv_slider_set_value(s_np_volume, 50, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(s_th->track), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(accent_color()), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(accent_color()), LV_PART_KNOB);
-    lv_obj_set_style_radius(s_np_volume, 6, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_np_volume, 6, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(s_np_volume, 22, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(s_np_volume, 4, LV_PART_KNOB);
+    if (is_yudho_theme()) {
+        /* Hidden in Yudho: the volume page handles display; keep for internal value. */
+        lv_obj_add_flag(s_np_volume, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(s_th->track), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(accent_color()), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(accent_color()), LV_PART_KNOB);
+        lv_obj_set_style_radius(s_np_volume, 6, LV_PART_MAIN);
+        lv_obj_set_style_radius(s_np_volume, 6, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(s_np_volume, 22, LV_PART_KNOB);
+        lv_obj_set_style_pad_all(s_np_volume, 4, LV_PART_KNOB);
+    }
     /* PRESSED sets s_vol_dragging so on_gesture won't misread the drag as a
      * swipe-to-browser. PRESS_LOST handles the case where LVGL reclassifies the
      * touch mid-drag. Both RELEASED paths clear the flag. */
@@ -951,6 +1017,11 @@ static void refresh_accent_selection(void)
 static bool is_art_theme(void)
 {
     return s_theme == THEME_YUDHO_IDX || s_theme == THEME_FUHRER_IDX;
+}
+
+static bool is_yudho_theme(void)
+{
+    return s_theme == THEME_YUDHO_IDX;
 }
 
 static void particle_tick_cb(lv_timer_t *t)
@@ -1019,6 +1090,422 @@ static void particles_start(lv_obj_t *screen)
 
     uint32_t period_ms = (s_theme == THEME_FUHRER_IDX) ? 150 : 400;
     s_particle_timer = lv_timer_create(particle_tick_cb, period_ms, NULL);
+}
+
+/* =====================================================================
+ * Feature 1: Gas-particle progress bar (Yudho theme only)
+ * Dots bounce elastically inside the played zone [PROG_X, PROG_X+progress_px].
+ * As the song progresses the right wall moves outward; the same dots have more
+ * space, so bounces become less frequent -- the visual "slowing down" of gas
+ * expanding into a larger container.
+ * ===================================================================== */
+static void prog_particles_stop(void)
+{
+    if (s_prog_particle_timer) {
+        lv_timer_delete(s_prog_particle_timer);
+        s_prog_particle_timer = NULL;
+    }
+    memset(s_prog_objs, 0, sizeof s_prog_objs);
+}
+
+static void prog_particles_start(lv_obj_t *screen)
+{
+    if (!screen) return;
+    prog_particles_stop();
+
+    for (int i = 0; i < PROG_PART_COUNT; i++) {
+        lv_obj_t *dot = lv_obj_create(screen);
+        lv_obj_set_size(dot, 2, 2);
+        lv_obj_set_style_radius(dot, 0, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_60, 0);
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        /* All dots start packed at the left wall (song hasn't started). */
+        lv_obj_set_pos(dot, PROG_X + 2,
+                       PROG_Y - 5 + (int)(esp_random() % (PROG_H + 10)));
+        s_prog_objs[i] = dot;
+        /* Random velocity: mostly horizontal with slight vertical wobble. */
+        s_prog_pts[i].x  = (int16_t)(PROG_X + 2);
+        s_prog_pts[i].y  = (int16_t)(PROG_Y - 5 + (int)(esp_random() % (PROG_H + 10)));
+        s_prog_pts[i].vx = (int8_t)(2 + (int)(esp_random() % 3));   /* +2..+4 */
+        if (esp_random() % 2) s_prog_pts[i].vx = -s_prog_pts[i].vx;
+        s_prog_pts[i].vy = (int8_t)(esp_random() % 3) - 1;          /* -1..+1 */
+    }
+    s_prog_particle_timer = lv_timer_create(prog_particle_tick_cb, 100, NULL);
+}
+
+static void prog_particle_tick_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_prog_objs[0]) return;
+    if (s_track.duration_ms == 0) return;
+
+    int32_t progress_px = (int32_t)((uint64_t)s_track.progress_ms * PROG_W
+                                    / s_track.duration_ms);
+    int32_t right_wall  = PROG_X + progress_px;
+    if (right_wall < PROG_X + 6) right_wall = PROG_X + 6;   /* min box */
+
+    int16_t ymin = (int16_t)(PROG_Y - 6);
+    int16_t ymax = (int16_t)(PROG_Y + PROG_H + 6);
+
+    for (int i = 0; i < PROG_PART_COUNT; i++) {
+        lv_obj_t *dot = s_prog_objs[i];
+        if (!dot) continue;
+
+        s_prog_pts[i].x += s_prog_pts[i].vx;
+        s_prog_pts[i].y += s_prog_pts[i].vy;
+
+        /* Bounce off left wall. */
+        if (s_prog_pts[i].x < PROG_X) {
+            s_prog_pts[i].x = PROG_X;
+            if (s_prog_pts[i].vx < 0) s_prog_pts[i].vx = -s_prog_pts[i].vx;
+        }
+        /* Bounce off right wall (the progress point). */
+        if (s_prog_pts[i].x > right_wall) {
+            s_prog_pts[i].x = (int16_t)right_wall;
+            if (s_prog_pts[i].vx > 0) s_prog_pts[i].vx = -s_prog_pts[i].vx;
+        }
+        /* Bounce off top/bottom. */
+        if (s_prog_pts[i].y < ymin) {
+            s_prog_pts[i].y = ymin;
+            if (s_prog_pts[i].vy < 0) s_prog_pts[i].vy = -s_prog_pts[i].vy;
+        }
+        if (s_prog_pts[i].y > ymax) {
+            s_prog_pts[i].y = ymax;
+            if (s_prog_pts[i].vy > 0) s_prog_pts[i].vy = -s_prog_pts[i].vy;
+        }
+
+        lv_obj_set_pos(dot, s_prog_pts[i].x, s_prog_pts[i].y);
+        /* Gentle brightness flicker for a live feel. */
+        uint8_t v = (uint8_t)(180 + esp_random() % 76);
+        lv_obj_set_style_bg_color(dot, lv_color_make(v, v, v), 0);
+        lv_obj_set_style_bg_opa(dot, (lv_opa_t)(50 + esp_random() % 80), 0);
+    }
+}
+
+/* =====================================================================
+ * Feature 2: Volume page
+ * Full-screen dot-matrix display; 8 cols × 10 rows = 80 dots.
+ * Bottom row = 0 %, top row = 100 %. Dots below volume threshold are lit
+ * in the accent colour; above threshold are dim track-colour.
+ * ===================================================================== */
+#define VOL_DOT_SZ    10    /* dot size in pixels */
+#define VOL_DOT_STEP  20    /* centre-to-centre spacing */
+/* Grid origin: centred horizontally, slight upward offset for the label below. */
+#define VOL_GRID_X    ((SCREEN_W - (VOL_PAGE_COLS * VOL_DOT_STEP - (VOL_DOT_STEP - VOL_DOT_SZ))) / 2)
+#define VOL_GRID_Y    60    /* top of the dot grid */
+
+static void vol_page_dots_update(int pct)
+{
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    if (s_vol_page_label) {
+        char b[8];
+        snprintf(b, sizeof b, "%d%%", pct);
+        lv_label_set_text(s_vol_page_label, b);
+    }
+    for (int r = 0; r < VOL_PAGE_ROWS; r++) {
+        /* r=0 is the bottom row (low volume); r=9 is the top row (high volume).
+         * Dot is "active" when pct is above the midpoint of its band. */
+        int threshold = r * 10 + 5;   /* 5, 15, 25 ... 95 */
+        bool active   = (pct >= threshold);
+        for (int c = 0; c < VOL_PAGE_COLS; c++) {
+            int idx = r * VOL_PAGE_COLS + c;
+            lv_obj_t *dot = s_vol_page_dots[idx];
+            if (!dot) continue;
+            if (active) {
+                lv_obj_set_style_bg_color(dot, lv_color_hex(accent_color()), 0);
+                lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            } else {
+                lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->track), 0);
+                lv_obj_set_style_bg_opa(dot, (lv_opa_t)100, 0);
+            }
+        }
+    }
+}
+
+static void vol_release_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    s_vol_release_timer = NULL;
+    if (s_np_volume) ui_request_volume(lv_slider_get_value(s_np_volume));
+}
+
+static void on_vol_page_drag(lv_event_t *e)
+{
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    /* Map touch y to volume: top of grid = 100 %, bottom = 0 %. */
+    int grid_top    = VOL_GRID_Y;
+    int grid_bottom = VOL_GRID_Y + VOL_PAGE_ROWS * VOL_DOT_STEP;
+    int pct = 100 - (int)((p.y - grid_top) * 100 / (grid_bottom - grid_top));
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    vol_page_dots_update(pct);
+    if (s_np_volume) lv_slider_set_value(s_np_volume, pct, LV_ANIM_OFF);
+    /* Debounce: send command 400 ms after the last move. */
+    if (s_vol_release_timer) {
+        lv_timer_reset(s_vol_release_timer);
+    } else {
+        s_vol_release_timer = lv_timer_create(vol_release_timer_cb, 400, NULL);
+        lv_timer_set_repeat_count(s_vol_release_timer, 1);
+    }
+}
+
+static void on_open_volume(lv_event_t *e)
+{
+    (void)e;
+    if (!s_screen_volume) return;
+    if (s_np_volume)
+        vol_page_dots_update(lv_slider_get_value(s_np_volume));
+    lv_screen_load(s_screen_volume);
+}
+
+static void on_vol_page_back(lv_event_t *e)
+{
+    (void)e;
+    if (s_screen_np) lv_screen_load(s_screen_np);
+}
+
+static void build_volume_screen(void)
+{
+    s_screen_volume = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_volume, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(s_screen_volume, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_volume, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Back button top-left. */
+    lv_obj_t *back = lv_button_create(s_screen_volume);
+    lv_obj_set_size(back, 120, 44);
+    lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
+    lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_radius(back, 3, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_add_event_cb(back, on_vol_page_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(back_lbl);
+
+    /* "VOLUME" title. */
+    lv_obj_t *title = lv_label_create(s_screen_volume);
+    lv_label_set_text(title, "VOLUME");
+    lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_letter_space(title, 3, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+
+    /* Dot grid: r=0 bottom row (low), r=9 top row (high).
+     * Screen y increases downward, so row 9 is at y=VOL_GRID_Y and row 0
+     * is at y = VOL_GRID_Y + 9*VOL_DOT_STEP. */
+    memset(s_vol_page_dots, 0, sizeof s_vol_page_dots);
+    for (int r = 0; r < VOL_PAGE_ROWS; r++) {
+        int dot_y = VOL_GRID_Y + (VOL_PAGE_ROWS - 1 - r) * VOL_DOT_STEP;
+        for (int c = 0; c < VOL_PAGE_COLS; c++) {
+            int dot_x = VOL_GRID_X + c * VOL_DOT_STEP;
+            lv_obj_t *dot = lv_obj_create(s_screen_volume);
+            lv_obj_set_size(dot, VOL_DOT_SZ, VOL_DOT_SZ);
+            lv_obj_set_style_radius(dot, VOL_DOT_SZ / 2, 0);
+            lv_obj_set_style_border_width(dot, 0, 0);
+            lv_obj_set_style_bg_opa(dot, (lv_opa_t)100, 0);
+            lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->track), 0);
+            lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_pos(dot, dot_x, dot_y);
+            s_vol_page_dots[r * VOL_PAGE_COLS + c] = dot;
+        }
+    }
+
+    /* Percentage readout below the grid. */
+    s_vol_page_label = lv_label_create(s_screen_volume);
+    lv_label_set_text(s_vol_page_label, "50%");
+    lv_obj_set_style_text_color(s_vol_page_label, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(s_vol_page_label, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_letter_space(s_vol_page_label, 2, 0);
+    lv_obj_align(s_vol_page_label, LV_ALIGN_BOTTOM_MID, 0, -24);
+
+    /* Drag anywhere on screen to set volume. */
+    lv_obj_add_event_cb(s_screen_volume, on_vol_page_drag, LV_EVENT_PRESSING,  NULL);
+    lv_obj_add_event_cb(s_screen_volume, on_vol_page_drag, LV_EVENT_RELEASED,  NULL);
+    lv_obj_add_event_cb(s_screen_volume, on_vol_page_drag, LV_EVENT_PRESS_LOST, NULL);
+}
+
+/* =====================================================================
+ * Feature 3: WiFi orbiting dot cluster (Yudho theme only)
+ * Replaces the 4 rising bar indicators with 4 dots orbiting a centre
+ * point. Active dots reflect signal strength; orbit speed is constant.
+ * ===================================================================== */
+static void wifi_dots_stop(void)
+{
+    if (s_wifi_orbit_timer) {
+        lv_timer_delete(s_wifi_orbit_timer);
+        s_wifi_orbit_timer = NULL;
+    }
+    memset(s_wifi_dots, 0, sizeof s_wifi_dots);
+}
+
+static void wifi_orbit_tick_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_wifi_dots[0]) return;
+    float speed = 0.09f;   /* radians per tick (80 ms) ≈ 1 rev / 1.4 s */
+    for (int i = 0; i < 4; i++) {
+        s_wifi_angles[i] += speed;
+        if (s_wifi_angles[i] > 6.2832f) s_wifi_angles[i] -= 6.2832f;
+        lv_obj_t *dot = s_wifi_dots[i];
+        if (!dot) continue;
+        if (i >= s_wifi_dot_count) {
+            lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_HIDDEN);
+        int cx = 18, cy = 18;
+        int x  = cx + (int)(s_wifi_dot_radius * cosf(s_wifi_angles[i])) - 2;
+        int y  = cy + (int)(s_wifi_dot_radius * sinf(s_wifi_angles[i])) - 2;
+        lv_obj_set_pos(dot, x, y);
+    }
+}
+
+static void wifi_dots_update_count(int bars)
+{
+    s_wifi_dot_count  = bars;
+    /* Weaker signal → larger orbit (dots appear lost/spread); strong → tight. */
+    switch (bars) {
+        case 4:  s_wifi_dot_radius = 7;  break;
+        case 3:  s_wifi_dot_radius = 9;  break;
+        case 2:  s_wifi_dot_radius = 11; break;
+        default: s_wifi_dot_radius = 13; break;
+    }
+}
+
+static void wifi_dots_start(lv_obj_t *screen)
+{
+    if (!screen) return;
+    wifi_dots_stop();
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *dot = lv_obj_create(screen);
+        lv_obj_set_size(dot, 4, 4);
+        lv_obj_set_style_radius(dot, 2, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_pos(dot, 18, 18);
+        lv_obj_move_to_index(dot, 0);
+        s_wifi_dots[i] = dot;
+    }
+    s_wifi_orbit_timer = lv_timer_create(wifi_orbit_tick_cb, 80, NULL);
+}
+
+/* =====================================================================
+ * Feature 4: Offline title dissipation (Yudho theme only)
+ * When WiFi drops, the NP title dissolves into rising dots; "OFFLINE"
+ * fades in after. On reconnect the reverse happens and the real title
+ * is restored.
+ * ===================================================================== */
+static void dissolve_done_cb(lv_anim_t *a)
+{
+    (void)a;
+    /* Called when the last dissolve dot's animation completes.
+     * Clean up temp dots and show "OFFLINE". */
+    for (int i = 0; i < DISSOLVE_DOT_COUNT; i++) {
+        if (s_dissolve_dots[i]) {
+            lv_obj_delete(s_dissolve_dots[i]);
+            s_dissolve_dots[i] = NULL;
+        }
+    }
+    if (s_np_title) {
+        if (s_offline) lv_label_set_text(s_np_title, "OFFLINE");
+        else           lv_label_set_text(s_np_title, s_track.title[0] ? s_track.title : "Nothing playing");
+        lv_obj_remove_flag(s_np_title, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void title_dissolve(void)
+{
+    if (!s_np_title || !s_screen_np) return;
+    lv_obj_add_flag(s_np_title, LV_OBJ_FLAG_HIDDEN);
+
+    for (int i = 0; i < DISSOLVE_DOT_COUNT; i++) {
+        if (s_dissolve_dots[i]) { lv_obj_delete(s_dissolve_dots[i]); s_dissolve_dots[i] = NULL; }
+        int dot_x = 120 + (int)(esp_random() % 560);
+        int dot_y = NP_TITLE_Y + 14;
+        lv_obj_t *dot = lv_obj_create(s_screen_np);
+        lv_obj_set_size(dot, 4, 4);
+        lv_obj_set_style_radius(dot, 2, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(dot, (lv_opa_t)200, 0);
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_pos(dot, dot_x, dot_y);
+        s_dissolve_dots[i] = dot;
+
+        /* Y drift: float upward 25-45 px. */
+        lv_anim_t ay;
+        lv_anim_init(&ay);
+        lv_anim_set_var(&ay, dot);
+        lv_anim_set_exec_cb(&ay, (lv_anim_exec_xcb_t)lv_obj_set_y);
+        lv_anim_set_values(&ay, dot_y, dot_y - 25 - (int)(esp_random() % 20));
+        lv_anim_set_time(&ay, 450);
+        lv_anim_set_delay(&ay, (uint32_t)(i * 55));
+        lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);
+        /* Attach completed callback to the last dot's animation. */
+        if (i == DISSOLVE_DOT_COUNT - 1) lv_anim_set_completed_cb(&ay, dissolve_done_cb);
+        lv_anim_start(&ay);
+
+        /* Opacity fade-out. */
+        lv_anim_t ao;
+        lv_anim_init(&ao);
+        lv_anim_set_var(&ao, dot);
+        lv_anim_set_exec_cb(&ao, (lv_anim_exec_xcb_t)lv_obj_set_style_bg_opa);
+        lv_anim_set_values(&ao, 200, 0);
+        lv_anim_set_time(&ao, 450);
+        lv_anim_set_delay(&ao, (uint32_t)(i * 55));
+        lv_anim_start(&ao);
+    }
+}
+
+static void title_reform(void)
+{
+    if (!s_np_title || !s_screen_np) return;
+    lv_obj_add_flag(s_np_title, LV_OBJ_FLAG_HIDDEN);
+
+    for (int i = 0; i < DISSOLVE_DOT_COUNT; i++) {
+        if (s_dissolve_dots[i]) { lv_obj_delete(s_dissolve_dots[i]); s_dissolve_dots[i] = NULL; }
+        int dot_x = 120 + (int)(esp_random() % 560);
+        int dot_y_from = NP_TITLE_Y + 14 - 30 - (int)(esp_random() % 20);
+        int dot_y_to   = NP_TITLE_Y + 14;
+        lv_obj_t *dot = lv_obj_create(s_screen_np);
+        lv_obj_set_size(dot, 4, 4);
+        lv_obj_set_style_radius(dot, 2, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(dot, 0, 0);
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_pos(dot, dot_x, dot_y_from);
+        s_dissolve_dots[i] = dot;
+
+        lv_anim_t ay;
+        lv_anim_init(&ay);
+        lv_anim_set_var(&ay, dot);
+        lv_anim_set_exec_cb(&ay, (lv_anim_exec_xcb_t)lv_obj_set_y);
+        lv_anim_set_values(&ay, dot_y_from, dot_y_to);
+        lv_anim_set_time(&ay, 400);
+        lv_anim_set_delay(&ay, (uint32_t)(i * 45));
+        lv_anim_set_path_cb(&ay, lv_anim_path_ease_in);
+        if (i == DISSOLVE_DOT_COUNT - 1) lv_anim_set_completed_cb(&ay, dissolve_done_cb);
+        lv_anim_start(&ay);
+
+        lv_anim_t ao;
+        lv_anim_init(&ao);
+        lv_anim_set_var(&ao, dot);
+        lv_anim_set_exec_cb(&ao, (lv_anim_exec_xcb_t)lv_obj_set_style_bg_opa);
+        lv_anim_set_values(&ao, 0, 200);
+        lv_anim_set_time(&ao, 400);
+        lv_anim_set_delay(&ao, (uint32_t)(i * 45));
+        lv_anim_start(&ao);
+    }
 }
 
 static void build_settings_screen(void)
@@ -1349,13 +1836,25 @@ static void apply_theme_cb(void *unused)
     lv_obj_t *old_settings = s_screen_settings;
     lv_obj_t *old_devices  = s_screen_devices;
 
-    /* Stop particles before deleting old screens (objects on those screens). */
+    /* Stop all animated features before deleting old screens. */
     particles_stop();
+    prog_particles_stop();
+    wifi_dots_stop();
+    memset(s_wifi_bars, 0, sizeof s_wifi_bars);
+    memset(s_prog_objs, 0, sizeof s_prog_objs);
+    memset(s_wifi_dots, 0, sizeof s_wifi_dots);
+    memset(s_dissolve_dots, 0, sizeof s_dissolve_dots);
+
+    lv_obj_t *old_volume = s_screen_volume;
+    s_screen_volume  = NULL;
+    s_vol_page_label = NULL;
+    memset(s_vol_page_dots, 0, sizeof s_vol_page_dots);
 
     build_browser_screen();
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
+    if (is_yudho_theme()) build_volume_screen();
 
     /* Restore carousel position -- build always starts at card 0. Force the
      * layout so scroll bounds are computed before we set the offset. */
@@ -1378,21 +1877,36 @@ static void apply_theme_cb(void *unused)
     if (s_track.title[0]  && s_np_title)  lv_label_set_text(s_np_title,  s_track.title);
     if (s_track.artist[0] && s_np_artist) lv_label_set_text(s_np_artist, s_track.artist);
     if (s_np_device) lv_label_set_text(s_np_device, s_track.device_name[0] ? s_track.device_name : "");
-    if (s_track.volume_pct >= 0 && s_np_volume)
+    if (s_track.volume_pct >= 0 && s_np_volume) {
         lv_slider_set_value(s_np_volume, s_track.volume_pct, LV_ANIM_OFF);
+        if (is_yudho_theme() && s_screen_volume)
+            vol_page_dots_update(s_track.volume_pct);
+    }
     update_progress_bar();
 
-    /* Start particle animation on browser screen if an art theme is selected. */
+    /* Start animated features for the new screens. */
     if (is_art_theme()) particles_start(s_screen_browser);
+    if (is_yudho_theme()) {
+        prog_particles_start(s_screen_np);
+        wifi_dots_start(s_screen_browser);
+        wifi_dots_update_count(s_wifi_dot_count);   /* restore last-known signal strength */
+        if (s_screen_volume)
+            vol_page_dots_update(s_np_volume ? lv_slider_get_value(s_np_volume) : 50);
+    }
 
     /* Activate the equivalent new screen first -- the active screen can't be
      * deleted -- then drop the old ones. */
-    lv_screen_load(was_np ? s_screen_np : was_setting ? s_screen_settings
-                 : was_devices ? s_screen_devices : s_screen_browser);
+    bool was_volume = (active == old_volume);
+    lv_screen_load(was_np ? s_screen_np :
+                   was_setting ? s_screen_settings :
+                   was_devices ? s_screen_devices :
+                   was_volume  ? (s_screen_volume ? s_screen_volume : s_screen_browser) :
+                   s_screen_browser);
     lv_obj_delete(old_browser);
     lv_obj_delete(old_np);
     lv_obj_delete(old_settings);
     if (old_devices) lv_obj_delete(old_devices);
+    if (old_volume)  lv_obj_delete(old_volume);
 }
 
 static void load_settings(void)
@@ -1524,7 +2038,12 @@ void ui_init(lv_image_dsc_t *art_dsc)
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
-    if (is_art_theme()) particles_start(s_screen_browser);
+    if (is_yudho_theme()) build_volume_screen();
+    if (is_art_theme())   particles_start(s_screen_browser);
+    if (is_yudho_theme()) {
+        prog_particles_start(s_screen_np);
+        wifi_dots_start(s_screen_browser);
+    }
     lv_screen_load(s_screen_browser);
 
     /* Local-progress simulation -- ticks 200 ms of progress every 200 ms
@@ -1615,8 +2134,10 @@ void ui_set_track_info(const spotify_track_t *info)
     /* Reflect the device's real level, but not while the user is dragging the
      * fader (the hold window) -- programmatic set doesn't fire VALUE_CHANGED. */
     if (info && info->volume_pct >= 0 && s_np_volume &&
-        (int32_t)(lv_tick_get() - s_vol_hold_until) >= 0)
+        (int32_t)(lv_tick_get() - s_vol_hold_until) >= 0) {
         lv_slider_set_value(s_np_volume, info->volume_pct, LV_ANIM_OFF);
+        if (is_yudho_theme()) vol_page_dots_update(info->volume_pct);
+    }
     bsp_display_unlock();
 }
 
@@ -2150,13 +2671,20 @@ static void wifi_timer_cb(lv_timer_t *t)
         else if (rssi >= -75) bars = 2;
         else                  bars = 1;
     }
-    for (int i = 0; i < 4; i++) {
-        if (!s_wifi_bars[i]) continue;
-        lv_color_t c = (i < bars)
-            ? lv_color_hex(s_th->text)
-            : lv_color_hex(s_th->track);
-        lv_obj_set_style_bg_color(s_wifi_bars[i], c, 0);
+
+    if (is_yudho_theme()) {
+        /* Yudho: update orbiting dot cluster instead of bar indicators. */
+        wifi_dots_update_count(bars);
+    } else {
+        for (int i = 0; i < 4; i++) {
+            if (!s_wifi_bars[i]) continue;
+            lv_color_t c = (i < bars)
+                ? lv_color_hex(s_th->text)
+                : lv_color_hex(s_th->track);
+            lv_obj_set_style_bg_color(s_wifi_bars[i], c, 0);
+        }
     }
+
     /* Don't lie to the user with a stale track when WiFi is gone. On the
      * transition into offline, replace the title with "OFFLINE"; on the way
      * back, restore from the cached track (next successful poll overwrites it). */
@@ -2164,8 +2692,14 @@ static void wifi_timer_cb(lv_timer_t *t)
     if (now_offline != s_offline) {
         s_offline = now_offline;
         if (s_np_title) {
-            if (s_offline) lv_label_set_text(s_np_title, "OFFLINE");
-            else           lv_label_set_text(s_np_title, s_track.title);
+            if (is_yudho_theme()) {
+                /* Yudho: animated dissolve/reform instead of instant label swap. */
+                if (s_offline) title_dissolve();
+                else           title_reform();
+            } else {
+                if (s_offline) lv_label_set_text(s_np_title, "OFFLINE");
+                else           lv_label_set_text(s_np_title, s_track.title);
+            }
         }
     }
 }
