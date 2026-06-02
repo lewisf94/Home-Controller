@@ -42,6 +42,7 @@
 #include "bsp/esp-bsp.h"
 #include "spotify.h"
 #include "nvs.h"
+#include "esp_random.h"
 
 #include <string.h>
 
@@ -214,6 +215,10 @@ typedef struct {
 static const theme_t THEME_DARK  = { 0x121212, 0x1E1E1E, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x2C2C2C };
 static const theme_t THEME_BLACK = { 0x000000, 0x141414, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x242424 };
 static const theme_t THEME_LIGHT = { 0xECEAE6, 0xDAD6CF, 0x1A1A1A, 0x57534C, 0x8C877E, 0xC6C1B8 };
+/* Yudho: near-black + near-white, red accent; animated monochrome dot particles. */
+static const theme_t THEME_YUDHO  = { 0x080808, 0x111111, 0xF0F0F0, 0x7A7A7A, 0x383838, 0x1c1c1c };
+/* Fuhrer: deep navy-black + blue-tinted whites; animated chromatic glitch particles. */
+static const theme_t THEME_FUHRER = { 0x06060f, 0x0d0d1c, 0xDDDDFF, 0x5555AA, 0x28284a, 0x12122a };
 static const theme_t *s_th = &THEME_DARK;
 
 /* Light/Dark MODE (neutrals) is one setting; COLOUR THEME (accent) is a
@@ -221,11 +226,12 @@ static const theme_t *s_th = &THEME_DARK;
  * mid-tone saturated hues chosen to read on both the charcoal and cream
  * backgrounds (no pale/yellow). One accent drives selection highlights AND the
  * live elements (progress bar). */
-enum { THEME_DARK_IDX = 0, THEME_BLACK_IDX = 1, THEME_LIGHT_IDX = 2, THEME_COUNT = 3 };
+enum { THEME_DARK_IDX = 0, THEME_BLACK_IDX = 1, THEME_LIGHT_IDX = 2,
+       THEME_YUDHO_IDX = 3, THEME_FUHRER_IDX = 4, THEME_COUNT = 5 };
 static const theme_t *const k_theme_palettes[THEME_COUNT] = {
-    &THEME_DARK, &THEME_BLACK, &THEME_LIGHT,
+    &THEME_DARK, &THEME_BLACK, &THEME_LIGHT, &THEME_YUDHO, &THEME_FUHRER,
 };
-static uint8_t s_theme = THEME_DARK_IDX;   /* dark / black / light mode */
+static uint8_t s_theme = THEME_DARK_IDX;
 
 enum { ACCENT_ORANGE = 0, ACCENT_RED, ACCENT_GREEN, ACCENT_PURPLE, ACCENT_COUNT };
 static uint8_t s_accent = ACCENT_ORANGE;
@@ -253,6 +259,13 @@ static bool    s_show_sel_line = true;   /* centred-card underline (Settings tog
 #define BRIGHTNESS_MAX     100
 #define BRIGHTNESS_DEFAULT 100
 static uint8_t s_brightness = BRIGHTNESS_DEFAULT;
+
+/* Art-theme particle animation: scattered animated dots drawn beneath the
+ * browser content. Active only for THEME_YUDHO_IDX and THEME_FUHRER_IDX.
+ * Objects pre-allocated (no timer-path allocation); timer NULLed when inactive. */
+#define PARTICLE_COUNT    20
+static lv_obj_t   *s_particle_objs[PARTICLE_COUNT] = {0};
+static lv_timer_t *s_particle_timer = NULL;
 
 /* True for any style that transforms cards per scroll position (Focus + CF). */
 #define BROWSER_STYLE_TRANSFORMS(s) ((s) == BROWSER_FOCUS || (s) == BROWSER_COVERFLOW)
@@ -292,7 +305,7 @@ static lv_obj_t *s_brightness_val    = NULL;   /* "NN%" label beside it */
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
 };
-static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT" };
+static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT", "YUDHO", "FUHRER" };
 static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSEL", "FOCUS", "COVER FLOW" };
 
 /* Cached track state. The LVGL progress timer reads progress_ms /
@@ -351,6 +364,10 @@ static void on_vol_press(lv_event_t *e);
 static void on_vol_press_lost(lv_event_t *e);
 static void refresh_play_icon(void);
 static void position_seek_thumb(int32_t pct);
+static bool is_art_theme(void);
+static void particle_tick_cb(lv_timer_t *t);
+static void particles_start(lv_obj_t *screen);
+static void particles_stop(void);
 
 static lv_color_t card_color(size_t i)
 {
@@ -931,6 +948,79 @@ static void refresh_accent_selection(void)
     }
 }
 
+static bool is_art_theme(void)
+{
+    return s_theme == THEME_YUDHO_IDX || s_theme == THEME_FUHRER_IDX;
+}
+
+static void particle_tick_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_particle_objs[0]) return;
+
+    bool fuhrer = (s_theme == THEME_FUHRER_IDX);
+    int moves   = fuhrer ? 8 : 4;
+
+    for (int n = 0; n < moves; n++) {
+        int i = (int)(esp_random() % PARTICLE_COUNT);
+        lv_obj_t *dot = s_particle_objs[i];
+        if (!dot) continue;
+
+        lv_obj_set_pos(dot,
+                       (int)(esp_random() % (SCREEN_W - 4)),
+                       (int)(esp_random() % (SCREEN_H - 4)));
+
+        if (fuhrer) {
+            /* Chromatic glitch: dots cycle R/G/B with occasional white flash. */
+            static const uint32_t chroma[4] = { 0xFF2020, 0x20FF20, 0x2020FF, 0xE8E8FF };
+            lv_obj_set_style_bg_color(dot, lv_color_hex(chroma[esp_random() % 4]), 0);
+            lv_obj_set_style_bg_opa(dot, (lv_opa_t)(40 + esp_random() % 140), 0);
+            /* Occasional size spike for a glitch burst. */
+            int sz = (esp_random() % 10 == 0) ? 4 : 2;
+            lv_obj_set_size(dot, sz, sz);
+        } else {
+            /* Yudho: monochrome, gentle brightness variation. */
+            uint8_t v = (uint8_t)(160 + esp_random() % 96);
+            lv_obj_set_style_bg_color(dot, lv_color_make(v, v, v), 0);
+            lv_obj_set_style_bg_opa(dot, (lv_opa_t)(30 + esp_random() % 80), 0);
+        }
+    }
+}
+
+static void particles_stop(void)
+{
+    if (s_particle_timer) {
+        lv_timer_delete(s_particle_timer);
+        s_particle_timer = NULL;
+    }
+    memset(s_particle_objs, 0, sizeof s_particle_objs);
+}
+
+static void particles_start(lv_obj_t *screen)
+{
+    if (!screen) return;
+    particles_stop();   /* clear any previous timer/refs */
+
+    for (int i = 0; i < PARTICLE_COUNT; i++) {
+        lv_obj_t *dot = lv_obj_create(screen);
+        lv_obj_set_size(dot, 2, 2);
+        lv_obj_set_style_radius(dot, 0, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_40, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
+        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_pos(dot,
+                       (int)(esp_random() % (SCREEN_W - 4)),
+                       (int)(esp_random() % (SCREEN_H - 4)));
+        /* Push behind all other children so dots appear under the scroller. */
+        lv_obj_move_to_index(dot, 0);
+        s_particle_objs[i] = dot;
+    }
+
+    uint32_t period_ms = (s_theme == THEME_FUHRER_IDX) ? 150 : 400;
+    s_particle_timer = lv_timer_create(particle_tick_cb, period_ms, NULL);
+}
+
 static void build_settings_screen(void)
 {
     s_screen_settings = lv_obj_create(NULL);
@@ -990,12 +1080,14 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_letter_space(th_section, 2, 0);
     lv_obj_align(th_section, LV_ALIGN_TOP_LEFT, 24, 324);
 
-    /* Dark | Black | Light -- three buttons in a row (same layout as browser
-     * style below). Black is charcoal-dark with a pure #000 background. */
+    /* Row 0: Dark | Black | Light. Row 1: Yudho | Fuhrer (art themes w/ particles). */
     for (int i = 0; i < THEME_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(s_screen_settings);
         lv_obj_set_size(btn, 170, 48);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 176, 360);
+        int row   = i / 3;
+        int col   = i % 3;
+        int x_off = (row == 0) ? (col - 1) * 176 : (col == 0 ? -88 : 88);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, x_off, 360 + row * 54);
         lv_obj_set_style_radius(btn, 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         style_button_press(btn);
@@ -1016,13 +1108,13 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_color(col_section, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(col_section, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_letter_space(col_section, 2, 0);
-    lv_obj_align(col_section, LV_ALIGN_TOP_LEFT, 24, 420);
+    lv_obj_align(col_section, LV_ALIGN_TOP_LEFT, 24, 474);
 
     for (int i = 0; i < ACCENT_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(s_screen_settings);
         lv_obj_set_size(btn, 168, 48);
         /* Centres of four 168px swatches across the row. */
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 176) - 264, 456);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 176) - 264, 510);
         lv_obj_set_style_radius(btn, 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_add_event_cb(btn, on_accent_option, LV_EVENT_CLICKED,
@@ -1041,14 +1133,14 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_color(br_section, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(br_section, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_letter_space(br_section, 2, 0);
-    lv_obj_align(br_section, LV_ALIGN_TOP_LEFT, 24, 516);
+    lv_obj_align(br_section, LV_ALIGN_TOP_LEFT, 24, 570);
 
     /* Carousel | Focus | Cover Flow -- three buttons in a row. */
     for (int i = 0; i < BROWSER_STYLE_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(s_screen_settings);
         lv_obj_set_size(btn, 170, 48);
         /* Centres of three 170px buttons across the 520px content width. */
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 176, 552);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 176, 606);
         lv_obj_set_style_radius(btn, 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_add_event_cb(btn, on_browser_style_option, LV_EVENT_CLICKED,
@@ -1068,12 +1160,12 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_color(ln_section, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(ln_section, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_letter_space(ln_section, 2, 0);
-    lv_obj_align(ln_section, LV_ALIGN_TOP_LEFT, 24, 616);
+    lv_obj_align(ln_section, LV_ALIGN_TOP_LEFT, 24, 670);
 
     /* Single ON/OFF toggle for the centred-card underline (label + fill show state). */
     s_line_toggle_btn = lv_button_create(s_screen_settings);
     lv_obj_set_size(s_line_toggle_btn, 520, 48);
-    lv_obj_align(s_line_toggle_btn, LV_ALIGN_TOP_MID, 0, 652);
+    lv_obj_align(s_line_toggle_btn, LV_ALIGN_TOP_MID, 0, 706);
     lv_obj_set_style_radius(s_line_toggle_btn, 3, 0);
     lv_obj_set_style_shadow_width(s_line_toggle_btn, 0, 0);
     style_button_press(s_line_toggle_btn);
@@ -1090,12 +1182,12 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_color(bl_section, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(bl_section, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_letter_space(bl_section, 2, 0);
-    lv_obj_align(bl_section, LV_ALIGN_TOP_LEFT, 24, 716);
+    lv_obj_align(bl_section, LV_ALIGN_TOP_LEFT, 24, 770);
 
     s_brightness_val = lv_label_create(s_screen_settings);
     lv_obj_set_style_text_color(s_brightness_val, lv_color_hex(s_th->text), 0);
     lv_obj_set_style_text_font(s_brightness_val, &lv_font_montserrat_24, 0);
-    lv_obj_align(s_brightness_val, LV_ALIGN_TOP_RIGHT, -140, 716);
+    lv_obj_align(s_brightness_val, LV_ALIGN_TOP_RIGHT, -140, 770);
     {
         char b[8];
         snprintf(b, sizeof b, "%d%%", s_brightness);
@@ -1104,7 +1196,7 @@ static void build_settings_screen(void)
 
     s_brightness_slider = lv_slider_create(s_screen_settings);
     lv_obj_set_size(s_brightness_slider, 520, 16);
-    lv_obj_align(s_brightness_slider, LV_ALIGN_TOP_MID, 0, 752);
+    lv_obj_align(s_brightness_slider, LV_ALIGN_TOP_MID, 0, 806);
     lv_slider_set_range(s_brightness_slider, BRIGHTNESS_MIN, BRIGHTNESS_MAX);
     lv_slider_set_value(s_brightness_slider, s_brightness, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(s_brightness_slider, lv_color_hex(s_th->track), LV_PART_MAIN);
@@ -1257,6 +1349,9 @@ static void apply_theme_cb(void *unused)
     lv_obj_t *old_settings = s_screen_settings;
     lv_obj_t *old_devices  = s_screen_devices;
 
+    /* Stop particles before deleting old screens (objects on those screens). */
+    particles_stop();
+
     build_browser_screen();
     build_np_screen();
     build_settings_screen();
@@ -1286,6 +1381,9 @@ static void apply_theme_cb(void *unused)
     if (s_track.volume_pct >= 0 && s_np_volume)
         lv_slider_set_value(s_np_volume, s_track.volume_pct, LV_ANIM_OFF);
     update_progress_bar();
+
+    /* Start particle animation on browser screen if an art theme is selected. */
+    if (is_art_theme()) particles_start(s_screen_browser);
 
     /* Activate the equivalent new screen first -- the active screen can't be
      * deleted -- then drop the old ones. */
@@ -1426,6 +1524,7 @@ void ui_init(lv_image_dsc_t *art_dsc)
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
+    if (is_art_theme()) particles_start(s_screen_browser);
     lv_screen_load(s_screen_browser);
 
     /* Local-progress simulation -- ticks 200 ms of progress every 200 ms
