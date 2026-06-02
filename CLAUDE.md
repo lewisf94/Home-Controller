@@ -447,8 +447,13 @@ next steps are PPA hardware acceleration. A future
 
 ## Commit / push policy
 
-- Commit author should be **Lewis** (already in `git config user.name`),
-  **not "Claude"**
+- Commit author must be **Lewis**, not "Claude". In cloud/web sessions the git
+  config defaults to `Claude <noreply@anthropic.com>` — always fix it before
+  the first commit by running:
+  `git config user.name "Lewis" && git config user.email "lewisf94@users.noreply.github.com"`
+  If commits are already made with the wrong author, rewrite them with:
+  `git rebase <last-good-sha> --exec "git commit --amend --reset-author --no-edit"`
+  then force-push.
 - **Do NOT include the `https://claude.ai/code/session_…` footer** in commit
   messages
 - Push to `main` directly is fine for solo work; create a branch only if the
