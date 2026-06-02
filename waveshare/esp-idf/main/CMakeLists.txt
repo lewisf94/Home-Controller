@@ -11,6 +11,8 @@ idf_component_register(
         "album_thumbs.c"  # cp4: embedded browser thumbnails (+ EMBED_FILES album_thumbs.bin)
         "album_art.cpp"   # cp5: JPEGDEC now-playing art (+ bitbank2__jpegdec, vfs)
         "littlefs.c"      # cp5: album-art scratch (+ joltwallet__littlefs)
+        "lv_font_pixel_16.c"  # cp6: 1bpp Press Start 2P 16px for PIXEL retro theme
+        "lv_font_pixel_24.c"  # cp6: 1bpp Press Start 2P 24px for PIXEL retro theme
         # --- added in later checkpoints (see README.md roadmap) ---
         # "input.c"         # cp6: touch dispatch
     INCLUDE_DIRS "." "../include"

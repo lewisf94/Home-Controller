@@ -46,6 +46,7 @@
 
 #include <string.h>
 #include <math.h>
+#include "esp_heap_caps.h"
 
 static const char *TAG = "ui";
 
@@ -220,6 +221,11 @@ static const theme_t THEME_LIGHT = { 0xECEAE6, 0xDAD6CF, 0x1A1A1A, 0x57534C, 0x8
 static const theme_t THEME_YUDHO  = { 0x080808, 0x111111, 0xF0F0F0, 0x7A7A7A, 0x383838, 0x1c1c1c };
 /* Fuhrer: deep navy-black + blue-tinted whites; animated chromatic glitch particles. */
 static const theme_t THEME_FUHRER = { 0x06060f, 0x0d0d1c, 0xDDDDFF, 0x5555AA, 0x28284a, 0x12122a };
+/* PIXEL: dark CRT near-black with high-contrast off-white text; 1bpp pixel font +
+ * Bayer-dithered pixelated art. Accent drives progress bar and selection highlights.
+ * NOTE: porting to a future waveshare/esp-idf-ha/ is automatic (ui.c is copied);
+ * CYD cyd_shared/ui.c would require a separate port. */
+static const theme_t THEME_PIXEL  = { 0x0A0C0A, 0x161616, 0xE6E6E6, 0x8A8A8A, 0x4A4A4A, 0x1C1C1C };
 static const theme_t *s_th = &THEME_DARK;
 
 /* Light/Dark MODE (neutrals) is one setting; COLOUR THEME (accent) is a
@@ -228,9 +234,10 @@ static const theme_t *s_th = &THEME_DARK;
  * backgrounds (no pale/yellow). One accent drives selection highlights AND the
  * live elements (progress bar). */
 enum { THEME_DARK_IDX = 0, THEME_BLACK_IDX = 1, THEME_LIGHT_IDX = 2,
-       THEME_YUDHO_IDX = 3, THEME_FUHRER_IDX = 4, THEME_COUNT = 5 };
+       THEME_YUDHO_IDX = 3, THEME_FUHRER_IDX = 4, THEME_PIXEL_IDX = 5,
+       THEME_COUNT = 6 };
 static const theme_t *const k_theme_palettes[THEME_COUNT] = {
-    &THEME_DARK, &THEME_BLACK, &THEME_LIGHT, &THEME_YUDHO, &THEME_FUHRER,
+    &THEME_DARK, &THEME_BLACK, &THEME_LIGHT, &THEME_YUDHO, &THEME_FUHRER, &THEME_PIXEL,
 };
 static uint8_t s_theme = THEME_DARK_IDX;
 
@@ -298,6 +305,22 @@ static lv_timer_t *s_wifi_orbit_timer = NULL;
 #define DISSOLVE_DOT_COUNT  8
 static lv_obj_t *s_dissolve_dots[DISSOLVE_DOT_COUNT] = {0};
 
+/* === PIXEL retro theme state ===
+ * All pixelation is pre-computed once per art/thumbnail change; no per-frame cost.
+ * Thumbnail pool lives in PSRAM, allocated when PIXEL activates, freed on switch-away.
+ * Art buffer (8 KB) is allocated once and kept to avoid repeated alloc/free on art
+ * changes.  s_last_raw_* caches the current raw art pointer/dims so apply_theme_cb
+ * can re-pixelate immediately when switching into PIXEL without waiting for next poll.
+ */
+#define PIX_THUMB_RES  64                          /* logical pixels for browser thumbs */
+#define PIX_ART_RES    64                          /* logical pixels for now-playing art */
+static uint16_t       *s_pix_thumbs     = NULL;   /* PSRAM: s_card_count * PIX_THUMB_RES^2 */
+static uint16_t       *s_pix_art_buf   = NULL;    /* PSRAM: PIX_ART_RES^2 px art scratch */
+static lv_image_dsc_t  s_pix_art_dsc  = {0};
+static const uint8_t  *s_last_raw_art  = NULL;    /* pointer into PSRAM art decode buf */
+static uint16_t        s_last_raw_w    = 0;
+static uint16_t        s_last_raw_h    = 0;
+
 /* True for any style that transforms cards per scroll position (Focus + CF). */
 #define BROWSER_STYLE_TRANSFORMS(s) ((s) == BROWSER_FOCUS || (s) == BROWSER_COVERFLOW)
 
@@ -336,7 +359,7 @@ static lv_obj_t *s_brightness_val    = NULL;   /* "NN%" label beside it */
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
 };
-static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT", "YUDHO", "FUHRER" };
+static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT", "YUDHO", "FUHRER", "PIXEL" };
 static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSEL", "FOCUS", "COVER FLOW" };
 
 /* Cached track state. The LVGL progress timer reads progress_ms /
@@ -397,6 +420,12 @@ static void refresh_play_icon(void);
 static void position_seek_thumb(int32_t pct);
 static bool is_art_theme(void);
 static bool is_yudho_theme(void);
+static bool is_pixel_theme(void);
+static const lv_font_t *font_lg(void);
+static const lv_font_t *font_md(void);
+static const lv_font_t *font_sm(void);
+static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
+                             uint16_t *dst, uint16_t dw, uint16_t dh);
 static void particle_tick_cb(lv_timer_t *t);
 static void particles_start(lv_obj_t *screen);
 static void particles_stop(void);
@@ -519,7 +548,7 @@ static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t
     lv_obj_t *lbl = lv_label_create(pill);
     lv_label_set_text(lbl, txt);
     lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(lbl, font_sm(), 0);
     lv_obj_set_style_text_letter_space(lbl, 2, 0);
     lv_obj_center(lbl);
     return pill;
@@ -567,7 +596,7 @@ static void build_browser_screen(void)
         lv_obj_t *wlbl = lv_label_create(s_screen_browser);
         lv_label_set_text(wlbl, warn);
         lv_obj_set_style_text_color(wlbl, lv_color_hex(0xFFA000), 0);
-        lv_obj_set_style_text_font(wlbl, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(wlbl, font_sm(), 0);
         lv_obj_align(wlbl, LV_ALIGN_TOP_LEFT, 60, 4);
     }
 
@@ -579,6 +608,26 @@ static void build_browser_screen(void)
     for (size_t __j = 0; __j < (s_card_count < 4 ? s_card_count : 4); __j++) {
         const uint16_t *__t = album_thumb_data(__j);
         ESP_LOGI(TAG, "thumb[%zu]=%p", __j, (const void *)__t);
+    }
+
+    /* PIXEL theme: pre-pixelate all thumbnails into PSRAM pool (once here;
+     * no per-scroll work).  Free of any previous pool already done by
+     * apply_theme_cb before this call; allocate fresh here. */
+    if (is_pixel_theme()) {
+        size_t pix_pool_sz = s_card_count * PIX_THUMB_RES * PIX_THUMB_RES * sizeof(uint16_t);
+        s_pix_thumbs = heap_caps_malloc(pix_pool_sz, MALLOC_CAP_SPIRAM);
+        if (s_pix_thumbs) {
+            for (size_t __pi = 0; __pi < s_card_count; __pi++) {
+                const uint16_t *__src = album_thumb_data(__pi);
+                if (__src) {
+                    pixelate_rgb565(__src, ALBUM_THUMB_W, ALBUM_THUMB_H,
+                                    s_pix_thumbs + __pi * PIX_THUMB_RES * PIX_THUMB_RES,
+                                    PIX_THUMB_RES, PIX_THUMB_RES);
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "PIXEL: thumb pool alloc failed (%zu B SPIRAM)", pix_pool_sz);
+        }
     }
 
     for (size_t i = 0; i < s_card_count; i++) {
@@ -606,16 +655,36 @@ static void build_browser_screen(void)
              * this board's DIRECT-mode rotated DSI flush mis-composited,
              * blacking out the off-centre cards. The card object carries no
              * transform, so no layer is ever created. */
-            s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
-            s_card_dscs[i].header.w   = ALBUM_THUMB_W;
-            s_card_dscs[i].header.h   = ALBUM_THUMB_H;
-            s_card_dscs[i].data       = (const uint8_t *)thumb;
-            s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
+            bool pix_ok = is_pixel_theme() && s_pix_thumbs;
+            if (pix_ok) {
+                const uint16_t *pix = s_pix_thumbs + i * PIX_THUMB_RES * PIX_THUMB_RES;
+                s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
+                s_card_dscs[i].header.w   = PIX_THUMB_RES;
+                s_card_dscs[i].header.h   = PIX_THUMB_RES;
+                s_card_dscs[i].data       = (const uint8_t *)pix;
+                s_card_dscs[i].data_size  = PIX_THUMB_RES * PIX_THUMB_RES * sizeof(uint16_t);
+            } else {
+                s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
+                s_card_dscs[i].header.w   = ALBUM_THUMB_W;
+                s_card_dscs[i].header.h   = ALBUM_THUMB_H;
+                s_card_dscs[i].data       = (const uint8_t *)thumb;
+                s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
+            }
             lv_obj_t *img = lv_image_create(card);
             lv_image_set_src(img, &s_card_dscs[i]);
             lv_obj_center(img);
-            /* Scale about the image centre so side covers shrink inward. */
-            lv_image_set_pivot(img, ALBUM_THUMB_W / 2, ALBUM_THUMB_H / 2);
+            if (pix_ok) {
+                /* Scale 64x64 to fill the 220px card slot with hard pixel blocks.
+                 * pix_base_scale = CARD_SIZE * LV_SCALE_NONE / PIX_THUMB_RES = 880.
+                 * apply_card_transforms() multiplies relative transforms by this
+                 * ratio in Focus/CoverFlow so side cards still scale correctly. */
+                lv_image_set_pivot(img, PIX_THUMB_RES / 2, PIX_THUMB_RES / 2);
+                lv_image_set_scale(img, (uint32_t)CARD_SIZE * LV_SCALE_NONE / PIX_THUMB_RES);
+                lv_image_set_antialias(img, false);
+            } else {
+                /* Scale about the image centre so side covers shrink inward. */
+                lv_image_set_pivot(img, ALBUM_THUMB_W / 2, ALBUM_THUMB_H / 2);
+            }
             lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
             s_card_imgs[i] = img;
         } else {
@@ -627,7 +696,7 @@ static void build_browser_screen(void)
             char ini[2] = { a->title[0] ? a->title[0] : '?', '\0' };
             lv_label_set_text(letter, ini);
             lv_obj_set_style_text_color(letter, lv_color_white(), 0);
-            lv_obj_set_style_text_font(letter, &lv_font_montserrat_28, 0);
+            lv_obj_set_style_text_font(letter, font_lg(), 0);
             lv_obj_center(letter);
         }
 
@@ -635,13 +704,11 @@ static void build_browser_screen(void)
     }
 
     s_browser_title = lv_label_create(s_screen_browser);
-    style_label(s_browser_title,
-                s_font_28 ? s_font_28 : &lv_font_montserrat_28,
+    style_label(s_browser_title, font_lg(),
                 lv_color_hex(s_th->text), BR_TITLE_Y);
 
     s_browser_artist = lv_label_create(s_screen_browser);
-    style_label(s_browser_artist,
-                s_font_24 ? s_font_24 : &lv_font_montserrat_24,
+    style_label(s_browser_artist, font_md(),
                 lv_color_hex(s_th->text2), BR_ARTIST_Y);
 
     if (s_card_count > 0) {
@@ -743,7 +810,7 @@ static void build_browser_screen(void)
     lv_obj_t *devlbl = lv_label_create(devbtn);
     lv_label_set_text(devlbl, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_color(devlbl, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(devlbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(devlbl, font_md(), 0);
     lv_obj_center(devlbl);
 }
 
@@ -779,14 +846,12 @@ static void build_np_screen(void)
     }
 
     s_np_title = lv_label_create(s_screen_np);
-    style_label(s_np_title,
-                s_font_28 ? s_font_28 : &lv_font_montserrat_28,
+    style_label(s_np_title, font_lg(),
                 lv_color_hex(s_th->text), NP_TITLE_Y);
     lv_label_set_text(s_np_title, "Nothing playing");
 
     s_np_artist = lv_label_create(s_screen_np);
-    style_label(s_np_artist,
-                s_font_24 ? s_font_24 : &lv_font_montserrat_24,
+    style_label(s_np_artist, font_md(),
                 lv_color_hex(s_th->text2), NP_ARTIST_Y);
 
     s_np_device = lv_label_create(s_screen_np);
@@ -794,7 +859,7 @@ static void build_np_screen(void)
     lv_obj_set_width(s_np_device, SCREEN_W - 32);
     lv_obj_set_style_text_align(s_np_device, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_np_device, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_text_font(s_np_device, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_np_device, font_sm(), 0);
     lv_obj_set_pos(s_np_device, 16, NP_DEVICE_Y);
 
     s_np_progress = lv_bar_create(s_screen_np);
@@ -818,7 +883,7 @@ static void build_np_screen(void)
     lv_obj_set_width(s_np_elapsed, TS_W);
     lv_obj_set_style_text_align(s_np_elapsed, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_color(s_np_elapsed, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(s_np_elapsed, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_np_elapsed, font_sm(), 0);
     lv_obj_set_pos(s_np_elapsed, PROG_X - 8 - TS_W, TS_Y);
 
     s_np_remain = lv_label_create(s_screen_np);
@@ -826,7 +891,7 @@ static void build_np_screen(void)
     lv_obj_set_width(s_np_remain, TS_W);
     lv_obj_set_style_text_align(s_np_remain, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(s_np_remain, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(s_np_remain, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_np_remain, font_sm(), 0);
     lv_obj_set_pos(s_np_remain, PROG_X + PROG_W + 8, TS_Y);
 
     /* Transparent touch overlay on top of the bar. Reads raw finger X to compute
@@ -884,7 +949,7 @@ static void build_np_screen(void)
         lv_obj_t *lbl = lv_label_create(key);
         lv_label_set_text(lbl, keys[i].sym);
         lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_font(lbl, font_lg(), 0);
         lv_obj_center(lbl);
         if (i == 1) s_np_play_lbl = lbl;   /* centre key reflects play state */
     }
@@ -894,19 +959,19 @@ static void build_np_screen(void)
     lv_obj_t *ch_l = lv_label_create(s_screen_np);
     lv_label_set_text(ch_l, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(ch_l, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_text_font(ch_l, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(ch_l, font_sm(), 0);
     lv_obj_align(ch_l, LV_ALIGN_LEFT_MID, 6, -20);
 
     lv_obj_t *ch_r = lv_label_create(s_screen_np);
     lv_label_set_text(ch_r, LV_SYMBOL_RIGHT);
     lv_obj_set_style_text_color(ch_r, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_text_font(ch_r, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(ch_r, font_sm(), 0);
     lv_obj_align(ch_r, LV_ALIGN_RIGHT_MID, -6, -20);
 
     s_vol_hud = lv_label_create(s_screen_np);
     lv_label_set_text(s_vol_hud, "");
     lv_obj_set_style_text_color(s_vol_hud, lv_color_hex(0xFF4040), 0);
-    lv_obj_set_style_text_font(s_vol_hud, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_vol_hud, font_md(), 0);
     lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -8, 6);
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
 
@@ -918,7 +983,7 @@ static void build_np_screen(void)
     lv_obj_set_width(s_toast, SCREEN_W - 40);
     lv_obj_set_style_text_align(s_toast, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_toast, lv_color_hex(0xFFA000), 0);
-    lv_obj_set_style_text_font(s_toast, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_toast, font_md(), 0);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
 
@@ -929,7 +994,7 @@ static void build_np_screen(void)
     lv_obj_t *vol_ico = lv_label_create(s_screen_np);
     lv_label_set_text(vol_ico, LV_SYMBOL_VOLUME_MAX);
     lv_obj_set_style_text_color(vol_ico, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(vol_ico, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(vol_ico, font_sm(), 0);
     lv_obj_set_pos(vol_ico, 715, 40);
     /* In Yudho mode the icon is a tappable shortcut to the volume page. */
     if (is_yudho_theme()) {
@@ -1022,6 +1087,73 @@ static bool is_art_theme(void)
 static bool is_yudho_theme(void)
 {
     return s_theme == THEME_YUDHO_IDX;
+}
+
+static bool is_pixel_theme(void)
+{
+    return s_theme == THEME_PIXEL_IDX;
+}
+
+/* 1bpp bitmap fonts for the PIXEL retro theme (Press Start 2P + FA5 symbols).
+ * Generated offline by lv_font_conv; committed as .c files in main/. */
+extern const lv_font_t lv_font_pixel_16;
+extern const lv_font_t lv_font_pixel_24;
+
+/* Font accessor helpers: return the PIXEL 1bpp font when PIXEL theme is
+ * active, else the normal runtime TTF / bitmap font.  Route all
+ * lv_obj_set_style_text_font calls through these so a single theme change
+ * automatically updates every label on rebuild. */
+static const lv_font_t *font_lg(void)
+{
+    if (is_pixel_theme()) return &lv_font_pixel_24;
+    return s_font_28 ? s_font_28 : &lv_font_montserrat_28;
+}
+static const lv_font_t *font_md(void)
+{
+    if (is_pixel_theme()) return &lv_font_pixel_16;
+    return s_font_24 ? s_font_24 : &lv_font_montserrat_24;
+}
+static const lv_font_t *font_sm(void)
+{
+    if (is_pixel_theme()) return &lv_font_pixel_16;
+    return &lv_font_montserrat_20;
+}
+
+/* Pixelation pipeline: nearest-neighbour downsample + Bayer 4x4 ordered dither
+ * + RGB444 bit-mask quantize.  Applied once per art/thumbnail change; no
+ * per-frame cost.  Produces authentic retro dithered stipple on gradients.
+ * src/dst are RGB565 (little-endian, same as LVGL LV_COLOR_FORMAT_RGB565). */
+static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
+                             uint16_t *dst, uint16_t dw, uint16_t dh)
+{
+    static const uint8_t bayer4[4][4] = {
+        {  0,  8,  2, 10 },
+        { 12,  4, 14,  6 },
+        {  3, 11,  1,  9 },
+        { 15,  7, 13,  5 },
+    };
+    for (uint16_t dy = 0; dy < dh; dy++) {
+        for (uint16_t dx = 0; dx < dw; dx++) {
+            int sx = (int)dx * sw / dw;
+            int sy = (int)dy * sh / dh;
+            uint16_t pix = src[(size_t)sy * sw + sx];
+            /* Expand RGB565 → 8-bit per channel. */
+            int r = ((pix >> 11) & 0x1F) << 3;
+            int g = ((pix >>  5) & 0x3F) << 2;
+            int b = ( pix        & 0x1F) << 3;
+            /* Bayer dither: threshold 0..15, quantisation grid step = 16. */
+            int t = bayer4[dy & 3][dx & 3];
+            r += t; if (r > 255) r = 255;
+            g += t; if (g > 255) g = 255;
+            b += t; if (b > 255) b = 255;
+            /* RGB444 quantize: mask lower 4 bits of each 8-bit channel. */
+            r &= 0xF0;
+            g &= 0xF0;
+            b &= 0xF0;
+            /* Repack to RGB565. */
+            dst[(size_t)dy * dw + dx] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+        }
+    }
 }
 
 static void particle_tick_cb(lv_timer_t *t)
@@ -1525,13 +1657,13 @@ static void build_settings_screen(void)
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(s_th->text), 0);
-    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(back_lbl, font_sm(), 0);
     lv_obj_center(back_lbl);
 
     lv_obj_t *title = lv_label_create(s_screen_settings);
     lv_label_set_text(title, "SETTINGS");
     lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(title, font_lg(), 0);
     /* Letter-spacing gives the uppercase title a cleaner, more deliberate feel. */
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
@@ -1539,7 +1671,7 @@ static void build_settings_screen(void)
     lv_obj_t *section = lv_label_create(s_screen_settings);
     lv_label_set_text(section, "MENU TRANSITION");
     lv_obj_set_style_text_color(section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(section, font_md(), 0);
     lv_obj_set_style_text_letter_space(section, 2, 0);
     lv_obj_align(section, LV_ALIGN_TOP_LEFT, 24, 66);
 
@@ -1553,7 +1685,7 @@ static void build_settings_screen(void)
                             (void *)(uintptr_t)i);
 
         lv_obj_t *lbl = lv_label_create(btn);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(lbl, font_md(), 0);
         lv_obj_center(lbl);
 
         s_opt_btns[i]   = btn;
@@ -1563,17 +1695,17 @@ static void build_settings_screen(void)
     lv_obj_t *th_section = lv_label_create(s_screen_settings);
     lv_label_set_text(th_section, "MODE");
     lv_obj_set_style_text_color(th_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(th_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(th_section, font_md(), 0);
     lv_obj_set_style_text_letter_space(th_section, 2, 0);
     lv_obj_align(th_section, LV_ALIGN_TOP_LEFT, 24, 324);
 
-    /* Row 0: Dark | Black | Light. Row 1: Yudho | Fuhrer (art themes w/ particles). */
+    /* 6 themes in 2 rows of 3: row = i/3, col = i%3, uniform centering. */
     for (int i = 0; i < THEME_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(s_screen_settings);
         lv_obj_set_size(btn, 170, 48);
         int row   = i / 3;
         int col   = i % 3;
-        int x_off = (row == 0) ? (col - 1) * 176 : (col == 0 ? -88 : 88);
+        int x_off = (col - 1) * 176;   /* -176, 0, +176 -- same for both rows */
         lv_obj_align(btn, LV_ALIGN_TOP_MID, x_off, 360 + row * 54);
         lv_obj_set_style_radius(btn, 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
@@ -1582,7 +1714,7 @@ static void build_settings_screen(void)
                             (void *)(uintptr_t)i);
 
         lv_obj_t *lbl = lv_label_create(btn);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(lbl, font_md(), 0);
         lv_obj_center(lbl);
 
         s_theme_btns[i]   = btn;
@@ -1593,7 +1725,7 @@ static void build_settings_screen(void)
     lv_obj_t *col_section = lv_label_create(s_screen_settings);
     lv_label_set_text(col_section, "COLOUR");
     lv_obj_set_style_text_color(col_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(col_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(col_section, font_md(), 0);
     lv_obj_set_style_text_letter_space(col_section, 2, 0);
     lv_obj_align(col_section, LV_ALIGN_TOP_LEFT, 24, 474);
 
@@ -1608,7 +1740,7 @@ static void build_settings_screen(void)
                             (void *)(uintptr_t)i);
 
         lv_obj_t *lbl = lv_label_create(btn);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(lbl, font_sm(), 0);
         lv_obj_center(lbl);
 
         s_accent_btns[i]   = btn;
@@ -1618,7 +1750,7 @@ static void build_settings_screen(void)
     lv_obj_t *br_section = lv_label_create(s_screen_settings);
     lv_label_set_text(br_section, "BROWSER STYLE");
     lv_obj_set_style_text_color(br_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(br_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(br_section, font_md(), 0);
     lv_obj_set_style_text_letter_space(br_section, 2, 0);
     lv_obj_align(br_section, LV_ALIGN_TOP_LEFT, 24, 570);
 
@@ -1634,8 +1766,7 @@ static void build_settings_screen(void)
                             (void *)(uintptr_t)i);
 
         lv_obj_t *lbl = lv_label_create(btn);
-        /* 20px (not 24): "Cover Flow" + a checkmark must fit the 170px button. */
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(lbl, font_sm(), 0);
         lv_obj_center(lbl);
 
         s_brstyle_btns[i]   = btn;
@@ -1645,7 +1776,7 @@ static void build_settings_screen(void)
     lv_obj_t *ln_section = lv_label_create(s_screen_settings);
     lv_label_set_text(ln_section, "SELECTION LINE");
     lv_obj_set_style_text_color(ln_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(ln_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(ln_section, font_md(), 0);
     lv_obj_set_style_text_letter_space(ln_section, 2, 0);
     lv_obj_align(ln_section, LV_ALIGN_TOP_LEFT, 24, 670);
 
@@ -1658,7 +1789,7 @@ static void build_settings_screen(void)
     style_button_press(s_line_toggle_btn);
     lv_obj_add_event_cb(s_line_toggle_btn, on_line_toggle, LV_EVENT_CLICKED, NULL);
     s_line_toggle_lbl = lv_label_create(s_line_toggle_btn);
-    lv_obj_set_style_text_font(s_line_toggle_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_line_toggle_lbl, font_md(), 0);
     lv_obj_center(s_line_toggle_lbl);
 
     /* Backlight brightness: section header + live "NN%" readout on one line, a
@@ -1667,13 +1798,13 @@ static void build_settings_screen(void)
     lv_obj_t *bl_section = lv_label_create(s_screen_settings);
     lv_label_set_text(bl_section, "BRIGHTNESS");
     lv_obj_set_style_text_color(bl_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(bl_section, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(bl_section, font_md(), 0);
     lv_obj_set_style_text_letter_space(bl_section, 2, 0);
     lv_obj_align(bl_section, LV_ALIGN_TOP_LEFT, 24, 770);
 
     s_brightness_val = lv_label_create(s_screen_settings);
     lv_obj_set_style_text_color(s_brightness_val, lv_color_hex(s_th->text), 0);
-    lv_obj_set_style_text_font(s_brightness_val, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_brightness_val, font_md(), 0);
     lv_obj_align(s_brightness_val, LV_ALIGN_TOP_RIGHT, -140, 770);
     {
         char b[8];
@@ -1732,13 +1863,13 @@ static void build_devices_screen(void)
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(s_th->text), 0);
-    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(back_lbl, font_sm(), 0);
     lv_obj_center(back_lbl);
 
     lv_obj_t *title = lv_label_create(s_screen_devices);
     lv_label_set_text(title, "DEVICES");
     lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(title, font_lg(), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
@@ -1765,7 +1896,7 @@ static void on_open_devices(lv_event_t *e)
         lv_obj_t *lbl = lv_label_create(s_dev_list);
         lv_label_set_text(lbl, "Scanning...");
         lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(lbl, font_md(), 0);
     }
     lv_screen_load(s_screen_devices);   /* instant, like settings */
     ui_request_get_devices();
@@ -1850,6 +1981,10 @@ static void apply_theme_cb(void *unused)
     s_vol_page_label = NULL;
     memset(s_vol_page_dots, 0, sizeof s_vol_page_dots);
 
+    /* Free the pixelated thumbnail pool; build_browser_screen() will reallocate
+     * it if the new theme is PIXEL. */
+    if (s_pix_thumbs) { heap_caps_free(s_pix_thumbs); s_pix_thumbs = NULL; }
+
     build_browser_screen();
     build_np_screen();
     build_settings_screen();
@@ -1883,6 +2018,39 @@ static void apply_theme_cb(void *unused)
             vol_page_dots_update(s_track.volume_pct);
     }
     update_progress_bar();
+
+    /* If entering or leaving PIXEL, update the now-playing art image immediately
+     * from the cached raw art pointer (no need to wait for the next poll). */
+    if (s_last_raw_art && s_last_raw_w > 0 && s_np_art) {
+        if (is_pixel_theme()) {
+            if (!s_pix_art_buf)
+                s_pix_art_buf = heap_caps_malloc(
+                    PIX_ART_RES * PIX_ART_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+            if (s_pix_art_buf) {
+                pixelate_rgb565((const uint16_t *)s_last_raw_art,
+                                s_last_raw_w, s_last_raw_h,
+                                s_pix_art_buf, PIX_ART_RES, PIX_ART_RES);
+                s_pix_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+                s_pix_art_dsc.header.w   = PIX_ART_RES;
+                s_pix_art_dsc.header.h   = PIX_ART_RES;
+                s_pix_art_dsc.data       = (const uint8_t *)s_pix_art_buf;
+                s_pix_art_dsc.data_size  = PIX_ART_RES * PIX_ART_RES * sizeof(uint16_t);
+                lv_image_set_src(s_np_art, &s_pix_art_dsc);
+                lv_image_set_antialias(s_np_art, false);
+                lv_obj_invalidate(s_np_art);
+            }
+        } else {
+            /* Leaving PIXEL: restore full-resolution art. */
+            s_art_dsc->header.cf  = LV_COLOR_FORMAT_RGB565;
+            s_art_dsc->header.w   = s_last_raw_w;
+            s_art_dsc->header.h   = s_last_raw_h;
+            s_art_dsc->data       = s_last_raw_art;
+            s_art_dsc->data_size  = (uint32_t)s_last_raw_w * s_last_raw_h * 2;
+            lv_image_set_src(s_np_art, s_art_dsc);
+            lv_image_set_antialias(s_np_art, true);
+            lv_obj_invalidate(s_np_art);
+        }
+    }
 
     /* Start animated features for the new screens. */
     if (is_art_theme()) particles_start(s_screen_browser);
@@ -2145,14 +2313,43 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
 {
     if (!s_art_dsc || !rgb_data || w == 0 || h == 0) return;
     bsp_display_lock(-1);
-    s_art_dsc->header.cf  = LV_COLOR_FORMAT_RGB565;
-    s_art_dsc->header.w   = w;
-    s_art_dsc->header.h   = h;
-    s_art_dsc->data       = rgb_data;
-    s_art_dsc->data_size  = (uint32_t)w * h * 2;
-    if (s_np_art) {
-        lv_image_set_src(s_np_art, s_art_dsc);
-        lv_obj_invalidate(s_np_art);
+
+    /* Cache raw art pointer/dims for re-pixelation when switching into PIXEL
+     * mid-session (apply_theme_cb calls pix_art_update directly). */
+    s_last_raw_art = rgb_data;
+    s_last_raw_w   = w;
+    s_last_raw_h   = h;
+
+    if (is_pixel_theme()) {
+        /* Allocate the 8 KB PSRAM art scratch on first use. */
+        if (!s_pix_art_buf)
+            s_pix_art_buf = heap_caps_malloc(
+                PIX_ART_RES * PIX_ART_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+        if (s_pix_art_buf) {
+            pixelate_rgb565((const uint16_t *)rgb_data, w, h,
+                            s_pix_art_buf, PIX_ART_RES, PIX_ART_RES);
+            s_pix_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+            s_pix_art_dsc.header.w   = PIX_ART_RES;
+            s_pix_art_dsc.header.h   = PIX_ART_RES;
+            s_pix_art_dsc.data       = (const uint8_t *)s_pix_art_buf;
+            s_pix_art_dsc.data_size  = PIX_ART_RES * PIX_ART_RES * sizeof(uint16_t);
+            if (s_np_art) {
+                lv_image_set_src(s_np_art, &s_pix_art_dsc);
+                lv_image_set_antialias(s_np_art, false);
+                lv_obj_invalidate(s_np_art);
+            }
+        }
+    } else {
+        s_art_dsc->header.cf  = LV_COLOR_FORMAT_RGB565;
+        s_art_dsc->header.w   = w;
+        s_art_dsc->header.h   = h;
+        s_art_dsc->data       = rgb_data;
+        s_art_dsc->data_size  = (uint32_t)w * h * 2;
+        if (s_np_art) {
+            lv_image_set_src(s_np_art, s_art_dsc);
+            lv_image_set_antialias(s_np_art, true);
+            lv_obj_invalidate(s_np_art);
+        }
     }
     bsp_display_unlock();
 }
@@ -2169,7 +2366,7 @@ void ui_set_devices(const ui_device_t *list, int count)
             lv_obj_t *lbl = lv_label_create(s_dev_list);
             lv_label_set_text(lbl, "No devices found");
             lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
-            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+            lv_obj_set_style_text_font(lbl, font_md(), 0);
         }
         for (int i = 0; i < count; i++) {
             s_dev_entries[i] = list[i];
@@ -2193,13 +2390,13 @@ void ui_set_devices(const ui_device_t *list, int count)
             lv_label_set_text(nm, list[i].name);
             lv_obj_set_style_text_color(nm,
                 lv_color_hex(list[i].is_active ? accent_color() : s_th->text), 0);
-            lv_obj_set_style_text_font(nm, &lv_font_montserrat_24, 0);
+            lv_obj_set_style_text_font(nm, font_md(), 0);
             lv_obj_align(nm, LV_ALIGN_LEFT_MID, 12, -10);
 
             lv_obj_t *dt = lv_label_create(row);
             lv_label_set_text(dt, list[i].detail);
             lv_obj_set_style_text_color(dt, lv_color_hex(s_th->text2), 0);
-            lv_obj_set_style_text_font(dt, &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_font(dt, font_sm(), 0);
             lv_obj_align(dt, LV_ALIGN_LEFT_MID, 12, 14);
         }
         s_dev_entry_count = count;
@@ -2541,6 +2738,12 @@ static void apply_card_transforms(void)
         int32_t dist = card_cx - scr_center;
         if (dist < 0) dist = -dist;
 
+        /* PIXEL: images are 64px and need a base scale of ~880 to fill the 220px
+         * slot. Relative Focus/CF transforms are computed at 256-base then
+         * multiplied by the PIXEL ratio so proportions stay correct. */
+        uint32_t base = is_pixel_theme()
+                      ? (uint32_t)CARD_SIZE * LV_SCALE_NONE / PIX_THUMB_RES  /* 880 */
+                      : (uint32_t)LV_SCALE_NONE;                              /* 256 */
         if (cf) {
             /* Horizontal squash dominates (the "turning" illusion); vertical
              * shrinks only a little (depth). At one step out: ~40% wide, ~80%
@@ -2549,12 +2752,12 @@ static void apply_card_transforms(void)
             if (sx < 70) sx = 70;
             int32_t sy = LV_SCALE_NONE - dist * 55 / step;
             if (sy < 170) sy = 170;
-            lv_image_set_scale_x(s_card_imgs[i], (uint32_t)sx);
-            lv_image_set_scale_y(s_card_imgs[i], (uint32_t)sy);
+            lv_image_set_scale_x(s_card_imgs[i], (uint32_t)((int64_t)sx * base / LV_SCALE_NONE));
+            lv_image_set_scale_y(s_card_imgs[i], (uint32_t)((int64_t)sy * base / LV_SCALE_NONE));
         } else {
             int32_t scale = LV_SCALE_NONE - dist * 76 / step;
             if (scale < 150) scale = 150;
-            lv_image_set_scale(s_card_imgs[i], (uint32_t)scale);
+            lv_image_set_scale(s_card_imgs[i], (uint32_t)((int64_t)scale * base / LV_SCALE_NONE));
         }
         /* Dim side covers by recoloring toward black (image-draw path, no
          * layer). 0 at centre, rising with distance. */
@@ -2641,6 +2844,9 @@ static void rebuild_browser_cb(void *unused)
     int     saved_card  = s_centered_card;
     lv_obj_t *old_browser = s_screen_browser;
 
+    /* Free any existing pixel thumbnail pool; build_browser_screen() will
+     * reallocate it if PIXEL is still active. */
+    if (s_pix_thumbs) { heap_caps_free(s_pix_thumbs); s_pix_thumbs = NULL; }
     build_browser_screen();
 
     if (saved_card > 0 && s_browser_scroller) {
