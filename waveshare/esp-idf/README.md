@@ -111,6 +111,16 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
    album, on-screen `MAX_CARDS` warning, empty-list message, volume-HUD guard
    before first poll, JPEG SOI marker check, auto-dim/sleep. *(committed — needs
    hardware verify)*
+10. **PIXEL retro theme** — sixth MODE option: 1bpp Press Start 2P bitmap font
+    (16 px body / 24 px heading), Bayer-dithered pixelated art + all 64 browser
+    thumbnails, dark-CRT palette, chunky flat UI. PSRAM thumb pool (~0.5 MB)
+    allocated on PIXEL activation, freed on switch-away. `lv_font_pixel_16/24.c`
+    committed as generated build inputs (Press Start 2P + FontAwesome5 symbols,
+    `npx lv_font_conv --bpp 1`). *(committed — needs hardware verify)*
+11. **Code quality** — `_do_cmd` forward-declared + `spotify_play_album` routed
+    through it for keep-alive reuse; `MAX_DEVICES` constant replaces magic `16`s;
+    `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain;
+    `copy_str` used consistently throughout `main.c`. *(committed)*
 
 After all of the above is confirmed on hardware:
 - **PPA hardware acceleration** — `enable_ppa_accel = true` in

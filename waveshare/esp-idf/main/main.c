@@ -153,6 +153,24 @@ typedef struct {
     char         str[64];   /* album URI / device id / Sonos host -- copied, self-contained */
 } scmd_t;
 
+/* Per-command metadata: name for logging, and whether the handler already logs
+ * both the success and failure paths (so the generic fallback skips it). */
+typedef struct { const char *name; bool self_logs; } scmd_meta_t;
+static const scmd_meta_t k_scmd_meta[] = {
+    [SCMD_PLAY_ALBUM]     = { "play_album",       true  },
+    [SCMD_TOGGLE_PLAY]    = { "toggle_play_pause", false },
+    [SCMD_PREV_TRACK]     = { "prev_track",        false },
+    [SCMD_NEXT_TRACK]     = { "next_track",        false },
+    [SCMD_SEEK_MS]        = { "seek",              false },
+    [SCMD_SET_VOLUME]     = { "set_volume",        false },
+    [SCMD_GET_DEVICES]    = { "get_devices",       true  },
+    [SCMD_TRANSFER]       = { "transfer",          true  },
+    [SCMD_SELECT_SONOS]   = { "select_sonos",      true  },
+    [SCMD_TOGGLE_SHUFFLE] = { "toggle_shuffle",    false },
+};
+_Static_assert(sizeof k_scmd_meta / sizeof k_scmd_meta[0] == SCMD_TOGGLE_SHUFFLE + 1,
+               "k_scmd_meta is missing an entry -- update when adding a new scmd_type_t");
+
 static QueueHandle_t s_cmd_queue = NULL;
 
 /* Now-playing art handed to the UI. Double-buffered in PSRAM: the Spotify task
@@ -206,7 +224,7 @@ static void _post_cmd(scmd_type_t type, uint32_t param, const char *str)
 {
     if (!s_cmd_queue) return;
     scmd_t cmd = { .type = type, .param = param };
-    if (str) { strncpy(cmd.str, str, sizeof cmd.str - 1); cmd.str[sizeof cmd.str - 1] = '\0'; }
+    if (str) { copy_str(cmd.str, sizeof cmd.str, str); }
     (void)xQueueSend(s_cmd_queue, &cmd, 0);
 }
 
@@ -414,14 +432,12 @@ static bool poll_and_publish(spotify_track_t *info)
             if (spotify_download_to_file(info->album_art_url, ART_JPEG_PATH, &bytes)) {
                 ESP_LOGI(TAG, "downloaded %u bytes -> %s", (unsigned)bytes, ART_JPEG_PATH);
                 if (decode_and_publish_art()) {
-                    strncpy(s_art_url_loaded, info->album_art_url, sizeof(s_art_url_loaded) - 1);
-                    s_art_url_loaded[sizeof(s_art_url_loaded) - 1] = '\0';
+                    copy_str(s_art_url_loaded, sizeof s_art_url_loaded, info->album_art_url);
                 } else {
                     /* Decode is deterministic -- a malformed JPEG fails the
                      * same way every time. Record so the next poll doesn't
                      * re-download the same broken file every 5 s. */
-                    strncpy(s_art_url_failed, info->album_art_url, sizeof(s_art_url_failed) - 1);
-                    s_art_url_failed[sizeof(s_art_url_failed) - 1] = '\0';
+                    copy_str(s_art_url_failed, sizeof s_art_url_failed, info->album_art_url);
                     ESP_LOGW(TAG, "art decode failed, not retrying this url");
                 }
             }
@@ -529,11 +545,11 @@ static void spotify_task(void *arg)
                         /* Combined picker: Spotify Connect devices (transfer
                          * targets) + configured Sonos speakers (UPnP targets).
                          * Static locals keep these arrays off the TLS stack. */
-                        static ui_device_t      list[16];
+                        static ui_device_t      list[MAX_DEVICES];
                         static spotify_device_t sp[8];
                         int n = 0, sc = 0;
                         if (spotify_get_devices(sp, 8, &sc)) {
-                            for (int i = 0; i < sc && n < 16; i++, n++) {
+                            for (int i = 0; i < sc && n < MAX_DEVICES; i++, n++) {
                                 copy_str(list[n].name,   sizeof list[n].name,   sp[i].name);
                                 copy_str(list[n].detail, sizeof list[n].detail, sp[i].type);
                                 copy_str(list[n].id,     sizeof list[n].id,     sp[i].id);
@@ -543,7 +559,7 @@ static void spotify_task(void *arg)
                         }
 #if defined(SONOS_DEVICES)
                         for (size_t i = 0;
-                             i < sizeof s_sonos_devices / sizeof s_sonos_devices[0] && n < 16;
+                             i < sizeof s_sonos_devices / sizeof s_sonos_devices[0] && n < MAX_DEVICES;
                              i++, n++) {
                             snprintf(list[n].name,   sizeof list[n].name,   "%s", s_sonos_devices[i].name);
                             snprintf(list[n].detail, sizeof list[n].detail, "Sonos");
@@ -552,7 +568,7 @@ static void spotify_task(void *arg)
                             list[n].is_sonos  = true;
                         }
 #elif defined(SONOS_HOST)
-                        if (SONOS_HOST[0] && n < 16) {
+                        if (SONOS_HOST[0] && n < MAX_DEVICES) {
                             snprintf(list[n].name,   sizeof list[n].name,   "Sonos");
                             snprintf(list[n].detail, sizeof list[n].detail, "Sonos");
                             snprintf(list[n].id,     sizeof list[n].id,     "%s", SONOS_HOST);
@@ -590,35 +606,18 @@ static void spotify_task(void *arg)
                         break;
                 }
                 /* Surface silent transport failures so a "button did nothing"
-                 * complaint is debuggable from the serial log. Cases that
-                 * already log both outcomes (PLAY_ALBUM, GET_DEVICES, TRANSFER,
-                 * SELECT_SONOS) are skipped here to avoid double-logging. */
-                if (!ok && cmd.type != SCMD_PLAY_ALBUM &&
-                           cmd.type != SCMD_GET_DEVICES &&
-                           cmd.type != SCMD_TRANSFER &&
-                           cmd.type != SCMD_SELECT_SONOS) {
-                    static const char *const names[] = {
-                        [SCMD_PLAY_ALBUM]    = "play_album",
-                        [SCMD_TOGGLE_PLAY]   = "toggle_play_pause",
-                        [SCMD_PREV_TRACK]    = "prev_track",
-                        [SCMD_NEXT_TRACK]    = "next_track",
-                        [SCMD_SEEK_MS]       = "seek",
-                        [SCMD_SET_VOLUME]    = "set_volume",
-                        [SCMD_GET_DEVICES]      = "get_devices",
-                        [SCMD_TRANSFER]         = "transfer",
-                        [SCMD_SELECT_SONOS]     = "select_sonos",
-                        [SCMD_TOGGLE_SHUFFLE]   = "toggle_shuffle",
-                    };
+                 * complaint is debuggable from the serial log. Commands whose
+                 * handlers already log both outcomes set self_logs=true in
+                 * k_scmd_meta, so the generic fallback skips them. */
+                if (!ok && !k_scmd_meta[cmd.type].self_logs)
                     ESP_LOGW(TAG, "cmd %s FAILED (route=%s)",
-                             names[cmd.type], sh ? "sonos" : "spotify");
-                }
+                             k_scmd_meta[cmd.type].name, sh ? "sonos" : "spotify");
                 /* Arm settle on the commands that change the current track, so the
                  * loop top re-polls until the new title lands. */
                 if (cmd.type == SCMD_NEXT_TRACK || cmd.type == SCMD_PREV_TRACK ||
                     cmd.type == SCMD_PLAY_ALBUM  || cmd.type == SCMD_TRANSFER ||
                     cmd.type == SCMD_SELECT_SONOS) {
-                    strncpy(prev_title, info.title, sizeof prev_title - 1);
-                    prev_title[sizeof prev_title - 1] = '\0';
+                    copy_str(prev_title, sizeof prev_title, info.title);
                     settle = true;
                 }
                 break;

@@ -341,7 +341,7 @@ static lv_obj_t *s_sel_line        = NULL;   /* the centred-card underline objec
  * id/host + kind by index (the button user_data is that index). */
 static lv_obj_t   *s_screen_devices  = NULL;
 static lv_obj_t   *s_dev_list        = NULL;
-static ui_device_t s_dev_entries[16];
+static ui_device_t s_dev_entries[MAX_DEVICES];
 static int         s_dev_entry_count = 0;
 static lv_obj_t *s_line_toggle_btn = NULL;   /* Settings ON/OFF toggle for it */
 static lv_obj_t *s_line_toggle_lbl = NULL;
@@ -2356,7 +2356,7 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
 
 void ui_set_devices(const ui_device_t *list, int count)
 {
-    if (count > 16) count = 16;
+    if (count > MAX_DEVICES) count = MAX_DEVICES;
     if (count < 0)  count = 0;
     bsp_display_lock(-1);
     s_dev_entry_count = 0;

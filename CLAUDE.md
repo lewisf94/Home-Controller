@@ -262,10 +262,14 @@ What's in `ui.c` as committed:
 - Three browser styles (Carousel / Focus / Cover Flow), NVS-persisted. Cover Flow
   uses `lv_image_set_scale_x/y` + image recolor (no object-layer transforms — the
   only safe per-scroll transform path on this board; see CRITICAL NOTE below).
-- Settings screen with four sections: Menu Transition, Mode (Dark/Light),
-  Colour (accent), Browser Style. All NVS-persisted.
+- Settings screen with six MODE options: Dark / Black / Light / Yudho / Fuhrer /
+  **PIXEL**. All NVS-persisted. (Previously four sections; updated to six with PIXEL.)
 - Colour accent system: four accents (Orange / Red / Green / Purple), drives
-  selection highlights and progress bar. Separate from Dark/Light neutral palette.
+  selection highlights and progress bar. Separate from MODE palette.
+- **PIXEL retro theme** — 1bpp Press Start 2P bitmap font (16 px body / 24 px
+  heading), Bayer 4×4 ordered dither + RGB444 quantize on all album art and browser
+  thumbnails, dark-CRT palette. PSRAM thumb pool (~0.5 MB) allocated on PIXEL entry,
+  freed on switch-away. Generated font files `lv_font_pixel_16/24.c` committed.
 - Charcoal palette, flat buttons (radius 3, no shadow), uppercase letter-spaced
   section headers.
 - **Crash fix:** `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, 128)` on
@@ -516,10 +520,11 @@ git log --oneline -10          # recent history
   cp1–3 verified: display renders at 800×480 landscape, WiFi via onboard C6,
   Spotify token refresh + poll every 5 s. The UI (`ui.c`) has been committed with:
   full LVGL browser + now-playing, three browser styles (Carousel/Focus/Cover Flow),
-  settings screen (Menu Transition / Mode / Colour / Browser Style), charcoal
+  settings screen (six MODE options: Dark/Black/Light/Yudho/Fuhrer/PIXEL), charcoal
   palette, flat buttons, colour accent system (Orange/Red/Green/Purple),
-  tiny_ttf kerning crash fix. **All of this still needs a hardware verification
-  pass.** Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
+  tiny_ttf kerning crash fix, PIXEL retro theme (1bpp Press Start 2P font,
+  Bayer-dithered pixelated art/thumbnails, dark-CRT palette). **All of this still
+  needs a hardware verification pass.** Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
   5.5.4 PowerShell profile, `idf.py set-target esp32p4`, `idf.py build flash
   monitor`. Board enumerates as CH343 USB-serial (COM3/COM4). Creds in
   `waveshare/esp-idf/include/secrets.h` (gitignored; template at

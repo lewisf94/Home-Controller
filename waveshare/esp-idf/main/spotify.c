@@ -414,6 +414,7 @@ static void poll_client_close(void)
  * always go to api.spotify.com so the connection stays eligible for reuse.
  * Cleared on any transport error or 401 so the next call opens a fresh handle. */
 static esp_http_client_handle_t s_cmd_client = NULL;
+static int _do_cmd(esp_http_client_method_t method, const char *url, const char *body);
 
 static void cmd_client_close(void)
 {
@@ -728,52 +729,22 @@ bool spotify_download_to_file(const char *url, const char *path, size_t *out_len
 bool spotify_play_album(const char *context_uri)
 {
     if (!context_uri || context_uri[0] == '\0') return false;
-    if (!ensure_token()) return false;
 
     char body[160];
     int body_len = snprintf(body, sizeof(body),
                             "{\"context_uri\":\"%s\"}", context_uri);
     if (body_len <= 0 || body_len >= (int)sizeof(body)) return false;
 
-    resp_buf_t resp = {0};
-    esp_http_client_config_t cfg = {
-        .url               = "https://api.spotify.com/v1/me/player/play",
-        .method            = HTTP_METHOD_PUT,
-        .event_handler     = http_event_handler,
-        .user_data         = &resp,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms        = 5000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return false;
-
-    char bearer[320];
-    snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
-    esp_http_client_set_header(client, "Authorization", bearer);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_post_field(client, body, body_len);
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
+    /* Route through _do_cmd so the request reuses s_cmd_client's keep-alive
+     * TLS session (saves the ~0.5-2 s handshake vs. opening a fresh handle).
+     * 401/4xx handling and token invalidation are already inside _do_cmd. */
+    int status = _do_cmd(HTTP_METHOD_PUT,
+                         "https://api.spotify.com/v1/me/player/play", body);
     /* Spotify returns 204 No Content on success. 202 Accepted is also
-     * reported on some devices. 404 means no active device. */
-    bool ok = (err == ESP_OK && (status == 204 || status == 202));
-    if (status == 401) {
-        /* Same fix as _do_cmd / fetch_player -- otherwise the press silently
-         * fails until the next poll refreshes the token. */
-        ESP_LOGW(TAG, "play_album(%s) got 401, invalidating cached token: %s",
-                 context_uri, resp.data ? resp.data : "(no body)");
-        s_token_expiry_us = 0;
-        s_access_token[0]  = '\0';
-    } else if (!ok) {
-        /* Error body is small JSON with no secrets -- log the reason (403 =
-         * PREMIUM_REQUIRED vs a scope error; 404 = no active device). */
-        ESP_LOGW(TAG, "play_album(%s) failed err=%d status=%d: %s",
-                 context_uri, (int)err, status, resp.data ? resp.data : "(no body)");
-    }
-    free(resp.data);
+     * reported on some devices. */
+    bool ok = (status == 204 || status == 202);
+    if (!ok)
+        ESP_LOGW(TAG, "play_album(%s) failed status=%d", context_uri, status);
     return ok;
 }
 

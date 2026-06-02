@@ -40,6 +40,12 @@ items, see [`PENDING.md`](PENDING.md).
   retries exhaust (no more permanent dead-end after a router blip).
 - **Dispatcher logging** — every failed Spotify command gets a named
   `ESP_LOGW` so silent presses are debuggable.
+- **PIXEL retro theme** — sixth MODE (cp10); Press Start 2P 1bpp font, Bayer-
+  dithered art + thumbnails, dark-CRT palette. PSRAM thumb pool freed on
+  switch-away. Needs hardware verify.
+- **Code quality** — `_do_cmd` forward-decl + `spotify_play_album` keep-alive
+  reuse; `MAX_DEVICES` constant; `scmd_meta_t` table + `_Static_assert`; `copy_str`
+  consistency in `main.c`.
 
 ---
 

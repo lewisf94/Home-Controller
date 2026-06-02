@@ -68,6 +68,7 @@ void ui_request_select_sonos(const char *host);
 /* One row in the device selector: a Spotify Connect device (is_sonos=false,
  * id = Spotify device id) or a configured Sonos speaker (is_sonos=true,
  * id = LAN IP). `detail` is the device type / "Sonos". */
+#define MAX_DEVICES 16
 typedef struct {
     char name[40];
     char detail[24];
