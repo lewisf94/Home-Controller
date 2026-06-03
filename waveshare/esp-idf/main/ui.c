@@ -279,10 +279,15 @@ static lv_timer_t *s_particle_timer = NULL;
 /* 1. Gas-particle progress bar: 24 dots confined to the played zone, bouncing
  *    elastically inside the expanding container as the song progresses. */
 #define PROG_PART_COUNT  24
+/* The dots live inside a black "tank" box with white walls that encloses the
+ * thin progress bar (taller than the bar so the gas has headroom). */
+#define PROG_TANK_H   (PROG_H + 16)
+#define PROG_TANK_Y   (PROG_Y + PROG_H / 2 - PROG_TANK_H / 2)
 typedef struct { int16_t x, y; int8_t vx, vy; } prog_pt_t;
 static prog_pt_t   s_prog_pts[PROG_PART_COUNT]   = {0};
 static lv_obj_t   *s_prog_objs[PROG_PART_COUNT]  = {0};
 static lv_timer_t *s_prog_particle_timer         = NULL;
+static lv_obj_t   *s_prog_tank                   = NULL;   /* black box, white walls */
 
 /* 2. Volume page: full-screen dot-matrix volume display. */
 #define VOL_PAGE_COLS   8
@@ -1239,12 +1244,29 @@ static void prog_particles_stop(void)
         s_prog_particle_timer = NULL;
     }
     memset(s_prog_objs, 0, sizeof s_prog_objs);
+    /* The tank is a child of the screen and is freed when the screen is torn
+     * down (same as the dots); just drop our reference. */
+    s_prog_tank = NULL;
 }
 
 static void prog_particles_start(lv_obj_t *screen)
 {
     if (!screen) return;
     prog_particles_stop();
+
+    /* The "tank": a black box with white walls enclosing the bar. Created
+     * before the dots so they render inside it, and opaque so it hides the
+     * plain bar -- in Yudho the gas IS the progress indicator. */
+    s_prog_tank = lv_obj_create(screen);
+    lv_obj_set_size(s_prog_tank, PROG_W + 4, PROG_TANK_H);
+    lv_obj_set_pos(s_prog_tank, PROG_X - 2, PROG_TANK_Y);
+    lv_obj_set_style_bg_color(s_prog_tank, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_prog_tank, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_prog_tank, lv_color_white(), 0);
+    lv_obj_set_style_border_width(s_prog_tank, 2, 0);
+    lv_obj_set_style_radius(s_prog_tank, 2, 0);
+    lv_obj_set_style_pad_all(s_prog_tank, 0, 0);
+    lv_obj_remove_flag(s_prog_tank, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
     for (int i = 0; i < PROG_PART_COUNT; i++) {
         lv_obj_t *dot = lv_obj_create(screen);
@@ -1254,13 +1276,14 @@ static void prog_particles_start(lv_obj_t *screen)
         lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_60, 0);
         lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        /* All dots start packed at the left wall (song hasn't started). */
+        /* All dots start packed at the left wall (song hasn't started),
+         * inside the tank's white walls. */
         lv_obj_set_pos(dot, PROG_X + 2,
-                       PROG_Y - 5 + (int)(esp_random() % (PROG_H + 10)));
+                       PROG_TANK_Y + 4 + (int)(esp_random() % (PROG_TANK_H - 10)));
         s_prog_objs[i] = dot;
         /* Random velocity: mostly horizontal with slight vertical wobble. */
         s_prog_pts[i].x  = (int16_t)(PROG_X + 2);
-        s_prog_pts[i].y  = (int16_t)(PROG_Y - 5 + (int)(esp_random() % (PROG_H + 10)));
+        s_prog_pts[i].y  = (int16_t)(PROG_TANK_Y + 4 + (int)(esp_random() % (PROG_TANK_H - 10)));
         s_prog_pts[i].vx = (int8_t)(2 + (int)(esp_random() % 3));   /* +2..+4 */
         if (esp_random() % 2) s_prog_pts[i].vx = -s_prog_pts[i].vx;
         s_prog_pts[i].vy = (int8_t)(esp_random() % 3) - 1;          /* -1..+1 */
@@ -1279,8 +1302,8 @@ static void prog_particle_tick_cb(lv_timer_t *t)
     int32_t right_wall  = PROG_X + progress_px;
     if (right_wall < PROG_X + 6) right_wall = PROG_X + 6;   /* min box */
 
-    int16_t ymin = (int16_t)(PROG_Y - 6);
-    int16_t ymax = (int16_t)(PROG_Y + PROG_H + 6);
+    int16_t ymin = (int16_t)(PROG_TANK_Y + 4);
+    int16_t ymax = (int16_t)(PROG_TANK_Y + PROG_TANK_H - 6);
 
     for (int i = 0; i < PROG_PART_COUNT; i++) {
         lv_obj_t *dot = s_prog_objs[i];

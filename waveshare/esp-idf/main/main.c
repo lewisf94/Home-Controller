@@ -501,7 +501,7 @@ static void spotify_task(void *arg)
                             ok = sonos_play_spotify_album(target, cmd.str);
                             ESP_LOGI(TAG, "album-on-Sonos[%s] %s -> %s",
                                      target, cmd.str, ok ? "ok" : "FAILED");
-                            if (ok) snprintf(s_sonos_active, sizeof s_sonos_active, "%s", target);
+                            if (ok && target != s_sonos_active) snprintf(s_sonos_active, sizeof s_sonos_active, "%s", target);
                             else {
                                 sonos_log_diag(target);  /* dump state to debug */
                                 ui_show_toast("Sonos play failed", 3000);
