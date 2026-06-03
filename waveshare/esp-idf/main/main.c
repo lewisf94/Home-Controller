@@ -208,23 +208,13 @@ static bool            s_sonos_has_audio  = false;
  * keeps a powered-off speaker from being hammered with connect attempts. */
 static TickType_t      s_sonos_probe_next = 0;
 
-/* Bounded, always-NUL-terminating copy via an explicit loop. Hand-rolled (not
- * snprintf/strncpy) so GCC's -Werror=format-truncation / -Werror=stringop-
- * truncation -- which can't bound array/struct sources and reject any
- * potentially-truncating copy -- don't fail the build. Intentional truncation. */
-static void copy_str(char *dst, size_t dstsz, const char *src)
-{
-    if (dstsz == 0) return;
-    size_t i = 0;
-    if (src) for (; i + 1 < dstsz && src[i] != '\0'; i++) dst[i] = src[i];
-    dst[i] = '\0';
-}
+
 
 static void _post_cmd(scmd_type_t type, uint32_t param, const char *str)
 {
     if (!s_cmd_queue) return;
     scmd_t cmd = { .type = type, .param = param };
-    if (str) { copy_str(cmd.str, sizeof cmd.str, str); }
+    if (str) { strlcpy(cmd.str, str, sizeof cmd.str); }
     (void)xQueueSend(s_cmd_queue, &cmd, 0);
 }
 
@@ -432,12 +422,12 @@ static bool poll_and_publish(spotify_track_t *info)
             if (spotify_download_to_file(info->album_art_url, ART_JPEG_PATH, &bytes)) {
                 ESP_LOGI(TAG, "downloaded %u bytes -> %s", (unsigned)bytes, ART_JPEG_PATH);
                 if (decode_and_publish_art()) {
-                    copy_str(s_art_url_loaded, sizeof s_art_url_loaded, info->album_art_url);
+                    strlcpy(s_art_url_loaded, info->album_art_url, sizeof s_art_url_loaded);
                 } else {
                     /* Decode is deterministic -- a malformed JPEG fails the
                      * same way every time. Record so the next poll doesn't
                      * re-download the same broken file every 5 s. */
-                    copy_str(s_art_url_failed, sizeof s_art_url_failed, info->album_art_url);
+                    strlcpy(s_art_url_failed, info->album_art_url, sizeof s_art_url_failed);
                     ESP_LOGW(TAG, "art decode failed, not retrying this url");
                 }
             }
@@ -550,9 +540,9 @@ static void spotify_task(void *arg)
                         int n = 0, sc = 0;
                         if (spotify_get_devices(sp, 8, &sc)) {
                             for (int i = 0; i < sc && n < MAX_DEVICES; i++, n++) {
-                                copy_str(list[n].name,   sizeof list[n].name,   sp[i].name);
-                                copy_str(list[n].detail, sizeof list[n].detail, sp[i].type);
-                                copy_str(list[n].id,     sizeof list[n].id,     sp[i].id);
+                                strlcpy(list[n].name,   sp[i].name, sizeof list[n].name);
+                                strlcpy(list[n].detail, sp[i].type, sizeof list[n].detail);
+                                strlcpy(list[n].id,     sp[i].id,   sizeof list[n].id);
                                 list[n].is_active = sp[i].is_active;
                                 list[n].is_sonos  = false;
                             }
@@ -590,7 +580,7 @@ static void spotify_task(void *arg)
                         ESP_LOGI(TAG, "transfer -> %s: %s", cmd.str, ok ? "ok" : "FAILED");
                         break;
                     case SCMD_SELECT_SONOS:
-                        copy_str(s_sonos_active, sizeof s_sonos_active, cmd.str);
+                        strlcpy(s_sonos_active, cmd.str, sizeof s_sonos_active);
                         s_sonos_explicit   = true;   /* user chose this -- poll won't clear it */
                         s_sonos_probe_next = 0;      /* fetch its now-playing now */
                         /* Resume the Sonos queue if something was previously loaded on it.
@@ -617,7 +607,7 @@ static void spotify_task(void *arg)
                 if (cmd.type == SCMD_NEXT_TRACK || cmd.type == SCMD_PREV_TRACK ||
                     cmd.type == SCMD_PLAY_ALBUM  || cmd.type == SCMD_TRANSFER ||
                     cmd.type == SCMD_SELECT_SONOS) {
-                    copy_str(prev_title, sizeof prev_title, info.title);
+                    strlcpy(prev_title, info.title, sizeof prev_title);
                     settle = true;
                 }
                 break;

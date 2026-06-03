@@ -366,6 +366,7 @@ static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSE
  * duration_ms / is_playing from here and ticks the bar between
  * Spotify polls so the bar moves at ~5 Hz instead of 0.2 Hz. */
 static spotify_track_t s_track = {0};
+static uint32_t        s_last_progress_tick = 0; /* lv_tick_get() at last server sync */
 
 static void on_gesture(lv_event_t *e);
 static void on_card_clicked(lv_event_t *e);
@@ -2230,7 +2231,10 @@ void ui_init(lv_image_dsc_t *art_dsc)
 
 void ui_set_track_info(const spotify_track_t *info)
 {
-    bsp_display_lock(-1);
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_set_track_info: display lock timeout, skipping");
+        return;
+    }
     if (!info) {
         /* No active playback (HTTP 204) or transient error -- stop the
          * progress simulation but keep the last track title/artist visible
@@ -2257,6 +2261,7 @@ void ui_set_track_info(const spotify_track_t *info)
         }
         s_track = *info;
         s_track.progress_ms = keep_progress;
+        s_last_progress_tick = lv_tick_get();
         if (s_np_title)  lv_label_set_text(s_np_title, info->title);
         if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
         if (s_np_device) lv_label_set_text(s_np_device, info->device_name[0] ? info->device_name : "");
@@ -2312,7 +2317,10 @@ void ui_set_track_info(const spotify_track_t *info)
 void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
 {
     if (!s_art_dsc || !rgb_data || w == 0 || h == 0) return;
-    bsp_display_lock(-1);
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_art_refresh: display lock timeout, skipping");
+        return;
+    }
 
     /* Cache raw art pointer/dims for re-pixelation when switching into PIXEL
      * mid-session (apply_theme_cb calls pix_art_update directly). */
@@ -2358,7 +2366,10 @@ void ui_set_devices(const ui_device_t *list, int count)
 {
     if (count > MAX_DEVICES) count = MAX_DEVICES;
     if (count < 0)  count = 0;
-    bsp_display_lock(-1);
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_set_devices: display lock timeout, skipping");
+        return;
+    }
     s_dev_entry_count = 0;
     if (s_dev_list) {
         lv_obj_clean(s_dev_list);
@@ -2695,10 +2706,15 @@ static void update_progress_bar(void)
 static void progress_timer_cb(lv_timer_t *t)
 {
     (void)t;
+    /* Always advance the tick reference so a long pause (seeking / not playing)
+     * doesn't cause a sudden jump when playback resumes. */
+    uint32_t now = lv_tick_get();
+    uint32_t delta = now - s_last_progress_tick;
+    s_last_progress_tick = now;
     if (s_seeking || !s_track.is_playing || s_track.duration_ms == 0) return;
-    /* Advance the cached progress at the timer rate. The next spotify
-     * poll will overwrite this value with the server's truth. */
-    s_track.progress_ms += 200;
+    /* Advance using wall-clock delta so the bar doesn't drift under UI load.
+     * The next Spotify poll overwrites this with the server's authoritative value. */
+    s_track.progress_ms += delta;
     if (s_track.progress_ms > s_track.duration_ms) {
         s_track.progress_ms = s_track.duration_ms;
     }
@@ -2997,7 +3013,10 @@ void ui_show_toast(const char *msg, uint32_t ms_dur)
 {
     if (!msg) return;
     /* Called from spotify_task (no LVGL lock held), so we must take it. */
-    bsp_display_lock(-1);
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_show_toast: display lock timeout, skipping");
+        return;
+    }
     if (s_toast) {
         lv_label_set_text(s_toast, msg);
         lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
