@@ -955,7 +955,10 @@ static void build_np_screen(void)
         lv_obj_t *lbl = lv_label_create(key);
         lv_label_set_text(lbl, keys[i].sym);
         lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text), 0);
-        lv_obj_set_style_text_font(lbl, font_lg(), 0);
+        /* LV_SYMBOL_* are FontAwesome glyphs that the runtime tiny_ttf Montserrat
+         * (font_lg) doesn't carry -- use the compiled Montserrat, which bundles
+         * the symbol range, so the keys show real prev/play/next icons. */
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
         lv_obj_center(lbl);
         if (i == 1) s_np_play_lbl = lbl;   /* centre key reflects play state */
     }
