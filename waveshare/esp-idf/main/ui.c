@@ -395,6 +395,13 @@ static lv_obj_t *s_line_toggle_lbl = NULL;
 static lv_obj_t *s_brightness_slider = NULL;   /* Settings backlight slider */
 static lv_obj_t *s_brightness_val    = NULL;   /* "NN%" label beside it */
 
+/* Live FPS counter -- browser top-bar label updated every 1 s. */
+static lv_obj_t  *s_fps_label      = NULL;
+static lv_obj_t  *s_fps_toggle_btn = NULL;
+static lv_obj_t  *s_fps_toggle_lbl = NULL;
+static bool       s_fps_enabled    = false;
+static uint32_t   s_fps_count      = 0;   /* flush-ready events since last 1 s snapshot */
+
 #define NVS_SETTINGS_NS       "settings"
 #define NVS_KEY_TRANSITION    "transition"
 #define NVS_KEY_THEME         "theme"
@@ -403,6 +410,7 @@ static lv_obj_t *s_brightness_val    = NULL;   /* "NN%" label beside it */
 #define NVS_KEY_SEL_LINE      "sel_line"
 #define NVS_KEY_BRIGHTNESS    "brightness"
 #define NVS_KEY_FONT          "font"
+#define NVS_KEY_FPS           "fps_disp"
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
@@ -452,6 +460,10 @@ static void on_line_toggle(lv_event_t *e);
 static void refresh_line_selection(void);
 static void on_font_option(lv_event_t *e);
 static void refresh_font_selection(void);
+static void on_fps_toggle(lv_event_t *e);
+static void refresh_fps_selection(void);
+static void fps_flush_cb(lv_event_t *e);
+static void fps_timer_cb(lv_timer_t *t);
 static void on_brightness_changed(lv_event_t *e);
 static void on_brightness_released(lv_event_t *e);
 static void idle_timer_cb(lv_timer_t *t);
@@ -520,9 +532,11 @@ static lv_color_t card_color(size_t i)
 
 /* All browser styles use the same card slot size + gap; Focus and Cover Flow
  * differ only by the per-card transform applied at scroll time, not the layout
- * footprint (so the 220px card always fits the 244px scroller -- no clipping). */
-static int cs(void) { return CARD_SIZE; }
-static int cg(void) { return CARD_GAP; }
+ * footprint (so the 220px card always fits the 244px scroller -- no clipping).
+ * Cover Flow uses a smaller card (180 px) and tighter gap (16 px) so two side
+ * covers fit on screen: step=196, card ±2 centre at 400±392=8/792 px. */
+static int cs(void) { return (s_browser_style == BROWSER_COVERFLOW) ? 180 : CARD_SIZE; }
+static int cg(void) { return (s_browser_style == BROWSER_COVERFLOW) ?  16 : CARD_GAP; }
 
 static void style_label(lv_obj_t *label, const lv_font_t *font,
                         lv_color_t color, int16_t y)
@@ -618,6 +632,11 @@ static void build_browser_screen(void)
     lv_obj_set_pos(s_browser_scroller, 0, SCROLLER_Y);
     lv_obj_set_style_bg_color(s_browser_scroller, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_COVER, 0);
+    /* For art themes (Yudho/Fuhrer), the VFX canvas sits behind the screen;
+     * making the scroller transparent lets the vortex/emission show through the
+     * gaps between cards and the padding bands. Cards keep their own opaque bg. */
+    if (is_art_theme())
+        lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_browser_scroller, 0, 0);
     lv_obj_set_style_pad_top(s_browser_scroller, 0, 0);
     lv_obj_set_style_pad_bottom(s_browser_scroller, 0, 0);
@@ -725,12 +744,12 @@ static void build_browser_screen(void)
             lv_image_set_src(img, &s_card_dscs[i]);
             lv_obj_center(img);
             if (pix_ok) {
-                /* Scale 64x64 to fill the 220px card slot with hard pixel blocks.
-                 * pix_base_scale = CARD_SIZE * LV_SCALE_NONE / PIX_THUMB_RES = 880.
+                /* Scale 64x64 to fill the card slot with hard pixel blocks.
+                 * cs() is the actual slot size (220 normally, 180 in CF mode).
                  * apply_card_transforms() multiplies relative transforms by this
                  * ratio in Focus/CoverFlow so side cards still scale correctly. */
                 lv_image_set_pivot(img, PIX_THUMB_RES / 2, PIX_THUMB_RES / 2);
-                lv_image_set_scale(img, (uint32_t)CARD_SIZE * LV_SCALE_NONE / PIX_THUMB_RES);
+                lv_image_set_scale(img, (uint32_t)cs() * LV_SCALE_NONE / PIX_THUMB_RES);
                 lv_image_set_antialias(img, false);
             } else {
                 /* Scale about the image centre so side covers shrink inward. */
@@ -807,6 +826,16 @@ static void build_browser_screen(void)
             s_wifi_bars[i] = bar;
         }
     }
+
+    /* Live FPS readout: sits right of the WiFi bars in the top strip.
+     * Hidden unless s_fps_enabled; updated every second by fps_timer_cb. */
+    s_fps_label = lv_label_create(s_screen_browser);
+    lv_label_set_text(s_fps_label, "--");
+    lv_obj_set_style_text_color(s_fps_label, lv_color_hex(s_th->dim), 0);
+    lv_obj_set_style_text_font(s_fps_label, font_sm(), 0);
+    lv_obj_align(s_fps_label, LV_ALIGN_TOP_LEFT, 44, 6);
+    lv_obj_remove_flag(s_fps_label, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    if (!s_fps_enabled) lv_obj_add_flag(s_fps_label, LV_OBJ_FLAG_HIDDEN);
 
     /* Tappable "now playing" hint pill at the bottom edge (matches the "albums"
      * pill on now-playing). Tap or swipe up to open now-playing. Bounces once on
@@ -2075,12 +2104,32 @@ static void build_settings_screen(void)
         s_font_labels[i] = lbl;
     }
 
+    /* FPS display: single ON/OFF toggle for the live frame-rate counter. */
+    lv_obj_t *fps_section = lv_label_create(s_screen_settings);
+    lv_label_set_text(fps_section, "FPS DISPLAY");
+    lv_obj_set_style_text_color(fps_section, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(fps_section, font_md(), 0);
+    lv_obj_set_style_text_letter_space(fps_section, 2, 0);
+    lv_obj_align(fps_section, LV_ALIGN_TOP_LEFT, 24, 946);
+
+    s_fps_toggle_btn = lv_button_create(s_screen_settings);
+    lv_obj_set_size(s_fps_toggle_btn, 520, 48);
+    lv_obj_align(s_fps_toggle_btn, LV_ALIGN_TOP_MID, 0, 982);
+    lv_obj_set_style_radius(s_fps_toggle_btn, 3, 0);
+    lv_obj_set_style_shadow_width(s_fps_toggle_btn, 0, 0);
+    style_button_press(s_fps_toggle_btn);
+    lv_obj_add_event_cb(s_fps_toggle_btn, on_fps_toggle, LV_EVENT_CLICKED, NULL);
+    s_fps_toggle_lbl = lv_label_create(s_fps_toggle_btn);
+    lv_obj_set_style_text_font(s_fps_toggle_lbl, font_md(), 0);
+    lv_obj_center(s_fps_toggle_lbl);
+
     refresh_settings_selection();
     refresh_theme_selection();
     refresh_accent_selection();
     refresh_browser_style_selection();
     refresh_line_selection();
     refresh_font_selection();
+    refresh_fps_selection();
 }
 
 static void on_open_settings(lv_event_t *e)
@@ -2361,6 +2410,8 @@ static void load_settings(void)
     if (nvs_get_u8(h, NVS_KEY_FONT, &fn) == ESP_OK && fn <= FONT_SLAB) {
         s_font_choice = fn;
     }
+    uint8_t fps = 0;
+    if (nvs_get_u8(h, NVS_KEY_FPS, &fps) == ESP_OK) s_fps_enabled = (fps != 0);
     nvs_close(h);
 }
 
@@ -2423,6 +2474,15 @@ static void save_font(uint8_t v)
     nvs_handle_t h;
     if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_u8(h, NVS_KEY_FONT, v);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void save_fps(uint8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_FPS, v);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -2498,6 +2558,14 @@ void ui_init(lv_image_dsc_t *art_dsc)
     /* Auto-dim: 1 s tick gives a snappy "wake on touch" while the dim/restore
      * itself is cheap (one LEDC duty update on state change only). */
     lv_timer_create(idle_timer_cb, 1000, NULL);
+
+    /* FPS counter: hook every flush-complete event on the default display and
+     * snapshot once per second. Counter is always running; label is only shown
+     * and updated when s_fps_enabled is set via the Settings toggle. */
+    lv_display_t *fps_disp = lv_display_get_default();
+    if (fps_disp)
+        lv_display_add_event_cb(fps_disp, fps_flush_cb, LV_EVENT_FLUSH_READY, NULL);
+    lv_timer_create(fps_timer_cb, 1000, NULL);
 
     bsp_display_unlock();
 }
@@ -3015,8 +3083,10 @@ static void apply_card_transforms(void)
 {
     if (!BROWSER_STYLE_TRANSFORMS(s_browser_style) || !s_browser_scroller) return;
     bool cf = (s_browser_style == BROWSER_COVERFLOW);
-    int32_t dim_rise   = cf ? 150 : 95;   /* per-step recolor-toward-black */
-    int32_t dim_max    = cf ? 160 : 110;
+    /* CF uses tighter dimming so the 2nd side card is still readable.
+     * Squash rate and floor are also eased so 2 covers fit without disappearing. */
+    int32_t dim_rise   = cf ?  80 : 95;   /* per-step recolor-toward-black */
+    int32_t dim_max    = cf ? 130 : 110;
     int32_t scroll_x   = lv_obj_get_scroll_left(s_browser_scroller);
     int32_t pad_left   = (SCREEN_W - cs()) / 2;
     int32_t step       = cs() + cg();
@@ -3027,18 +3097,18 @@ static void apply_card_transforms(void)
         int32_t dist = card_cx - scr_center;
         if (dist < 0) dist = -dist;
 
-        /* PIXEL: images are 64px and need a base scale of ~880 to fill the 220px
-         * slot. Relative Focus/CF transforms are computed at 256-base then
-         * multiplied by the PIXEL ratio so proportions stay correct. */
+        /* PIXEL: images are 64px and need a base scale to fill the slot (cs() px).
+         * Relative Focus/CF transforms are computed at 256-base then multiplied
+         * by the PIXEL ratio so proportions stay correct. */
         uint32_t base = is_pixel_theme()
-                      ? (uint32_t)CARD_SIZE * LV_SCALE_NONE / PIX_THUMB_RES  /* 880 */
-                      : (uint32_t)LV_SCALE_NONE;                              /* 256 */
+                      ? (uint32_t)cs() * LV_SCALE_NONE / PIX_THUMB_RES
+                      : (uint32_t)LV_SCALE_NONE;
         if (cf) {
             /* Horizontal squash dominates (the "turning" illusion); vertical
-             * shrinks only a little (depth). At one step out: ~40% wide, ~80%
-             * tall. Both 100% at centre. */
-            int32_t sx = LV_SCALE_NONE - dist * 150 / step;
-            if (sx < 70) sx = 70;
+             * shrinks only a little (depth). Squash rate 100 (was 150) and
+             * floor 85 (was 70) so the 2nd side card still reads on-screen. */
+            int32_t sx = LV_SCALE_NONE - dist * 100 / step;
+            if (sx < 85) sx = 85;
             int32_t sy = LV_SCALE_NONE - dist * 55 / step;
             if (sy < 170) sy = 170;
             lv_image_set_scale_x(s_card_imgs[i], (uint32_t)((int64_t)sx * base / LV_SCALE_NONE));
@@ -3150,6 +3220,48 @@ static void on_font_option(lv_event_t *e)
     /* Trigger a full theme rebuild so all screens pick up the new font. */
     lv_async_call(apply_theme_cb, NULL);
     ESP_LOGI(TAG, "font -> %s", idx == FONT_SLAB ? "SLAB (Arvo)" : "SANS (Montserrat)");
+}
+
+static void refresh_fps_selection(void)
+{
+    if (!s_fps_toggle_btn || !s_fps_toggle_lbl) return;
+    lv_obj_set_style_bg_color(s_fps_toggle_btn,
+        s_fps_enabled ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_text_color(s_fps_toggle_lbl,
+        s_fps_enabled ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+    lv_label_set_text(s_fps_toggle_lbl, s_fps_enabled ? "ON" : "OFF");
+}
+
+static void on_fps_toggle(lv_event_t *e)
+{
+    (void)e;
+    s_fps_enabled = !s_fps_enabled;
+    save_fps(s_fps_enabled ? 1 : 0);
+    if (s_fps_label) {
+        if (s_fps_enabled) lv_obj_remove_flag(s_fps_label, LV_OBJ_FLAG_HIDDEN);
+        else               lv_obj_add_flag(s_fps_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    refresh_fps_selection();
+    ESP_LOGI(TAG, "fps display -> %s", s_fps_enabled ? "ON" : "OFF");
+}
+
+/* Incremented on every display flush-complete event. */
+static void fps_flush_cb(lv_event_t *e)
+{
+    (void)e;
+    s_fps_count++;
+}
+
+/* 1-second tick: snapshot the counter and update the browser label. */
+static void fps_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    uint32_t fps = s_fps_count;
+    s_fps_count = 0;
+    if (!s_fps_enabled || !s_fps_label) return;
+    char buf[12];
+    snprintf(buf, sizeof buf, "%lu FPS", (unsigned long)fps);
+    lv_label_set_text(s_fps_label, buf);
 }
 
 static void rebuild_browser_cb(void *unused)

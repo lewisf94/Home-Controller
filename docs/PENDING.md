@@ -37,6 +37,10 @@ is "done":
 | Code quality (2026-06-02) | `_do_cmd` forward-declared so `spotify_play_album` can route through it (keep-alive reuse); `MAX_DEVICES` replaces 5 magic `16`s across `main.c`/`ui.c`/`ui.h`; `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain; `strlcpy` replaces `copy_str`; finite `bsp_display_lock(1000)` timeout; progress-timer drift fix. | `479c986` + `85324e9` |
 | VFX canvas particle system | Yudho: 200 Keplerian vortex particles on 400×240 PSRAM canvas (192 KB), 2× scaled, per-frame fade trails. Fuhrer: 300 art-sourced emission particles sampling album art pixels. Replaces the old 20-dot random-jump LVGL-object system. | `05137ae` |
 | FONT setting | Settings → FONT → SANS (Montserrat) or SLAB (Arvo Bold, OFL). NVS-persisted. PIXEL theme still overrides to Press Start 2P regardless. | `c64f543` |
+| PPA hardware acceleration | `.enable_ppa_accel = true` in vendored BSP; offloads 90° software rotation to the P4 hardware 2D accelerator. | pending |
+| Art theme scroller transparency | Yudho/Fuhrer: browser scroller `bg_opa = LV_OPA_TRANSP` so VFX canvas shows through card gaps and padding bands. | pending |
+| Cover Flow 2-side | CF card slot 220→180 px, gap 28→16 px (step 248→196). Card ±2 centres at 792/8 px — fully on-screen. Squash rate 150→100, floor 70→85, dim_rise 150→80 so second side card still reads. | pending |
+| FPS display | Settings → FPS DISPLAY toggle (ON/OFF); live `N FPS` label in browser top bar updated every 1 s via `LV_EVENT_FLUSH_READY` counter. NVS-persisted. | pending |
 
 Sanity-check menu for next flash (waveshare):
 1. **Sonos album-start** — pick a Sonos in device selector, tap an album from
@@ -77,6 +81,19 @@ Sanity-check menu for next flash (waveshare):
 12. **SLAB font** — Settings → FONT → SLAB: all title/artist/settings labels switch
     to Arvo Bold immediately. SANS reverts to Montserrat. NVS persists across reboot.
     PIXEL theme still overrides to Press Start 2P regardless of FONT setting.
+13. **PPA rotation** — boot; confirm display renders correctly (no corruption or
+    colour shift). Watch serial log for any PPA errors. Compare idle render speed
+    vs before: should run noticeably cooler / faster in VFX themes.
+14. **Art theme scroller transparency** — Settings → MODE → YUDHO, open browser:
+    the VFX vortex should be visible through the gaps between cards and the padding
+    bands on the left/right of the carousel. Cards themselves remain opaque (album
+    art visible). Same for FUHRER.
+15. **Cover Flow 2-side** — Settings → BROWSER STYLE → COVER FLOW: two covers
+    should be visible on each side of the centre card (total 5 visible). Side cards
+    squash and dim as before but the 2nd card peeks in from the edge.
+16. **FPS display** — Settings → FPS DISPLAY → ON: a `N FPS` readout appears in
+    the browser top bar (right of the WiFi bars). Should update every ~1 s. NVS
+    persists across reboot. Toggle OFF: label disappears.
 
 ### CYD (board not available 2026-05-30)
 
