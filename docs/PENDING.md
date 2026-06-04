@@ -33,8 +33,10 @@ is "done":
 | UX — bucket B | On-screen `MAX_CARDS` warning; OFFLINE indicator on WiFi drop; generic `ui_show_toast` + play-failure toast; auto-snap browser to playing album + accent border | `aa7405b` |
 | UX — bucket C | Auto-dim/sleep (waveshare only — CYD deferred); ramps `bsp_display_brightness_set` down at 60 s / 300 s idle, snaps back on touch | `434d3ea` |
 | Reliability — code review (2026-05-31) | WiFi init-fail no longer early-returns (UI + reconnect timer come up regardless of initial connect failure); 401 token-clear in `_do_cmd`, `spotify_play_album`, `spotify_get_devices` (consistency with the poll path) | `25d2ab8` |
-| PIXEL retro theme | Sixth MODE option (cp6): 1bpp Press Start 2P font, Bayer-dithered pixelated art + thumbnails, dark-CRT palette. `lv_font_pixel_16/24.c` added; font accessors route through `is_pixel_theme()`; PSRAM thumb pool (~0.5 MB) freed on switch-away. | pending commit |
-| Code quality (2026-06-02) | `_do_cmd` forward-declared so `spotify_play_album` can route through it (keep-alive reuse); `MAX_DEVICES` replaces 5 magic `16`s across `main.c`/`ui.c`/`ui.h`; `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain; `copy_str` used consistently (4 `strncpy` sites removed). | pending commit |
+| PIXEL retro theme | Sixth MODE option (cp6): 1bpp Press Start 2P font, Bayer-dithered pixelated art + thumbnails, dark-CRT palette. `lv_font_pixel_16/24.c` added; font accessors route through `is_pixel_theme()`; PSRAM thumb pool (~0.5 MB) freed on switch-away. | `570c7a3` |
+| Code quality (2026-06-02) | `_do_cmd` forward-declared so `spotify_play_album` can route through it (keep-alive reuse); `MAX_DEVICES` replaces 5 magic `16`s across `main.c`/`ui.c`/`ui.h`; `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain; `strlcpy` replaces `copy_str`; finite `bsp_display_lock(1000)` timeout; progress-timer drift fix. | `479c986` + `85324e9` |
+| VFX canvas particle system | Yudho: 200 Keplerian vortex particles on 400×240 PSRAM canvas (192 KB), 2× scaled, per-frame fade trails. Fuhrer: 300 art-sourced emission particles sampling album art pixels. Replaces the old 20-dot random-jump LVGL-object system. | `05137ae` |
+| FONT setting | Settings → FONT → SANS (Montserrat) or SLAB (Arvo Bold, OFL). NVS-persisted. PIXEL theme still overrides to Press Start 2P regardless. | `c64f543` |
 
 Sanity-check menu for next flash (waveshare):
 1. **Sonos album-start** — pick a Sonos in device selector, tap an album from
@@ -65,6 +67,16 @@ Sanity-check menu for next flash (waveshare):
    now-playing art is pixelated; transport icons are pixel shapes. Switch back to
    DARK: full-res art and smooth fonts return, no crash. Check PSRAM heap log to
    confirm thumb pool allocated then freed correctly.
+10. **Yudho vortex** — Settings → MODE → YUDHO: browser and NP screens show white
+    spiral particles on pure black, spinning inward with glowing trails. PSRAM heap
+    +192 KB. Switch away: canvas freed, no crash. Idle ~60 s: auto-dim still fires.
+11. **Fuhrer art emission** — Settings → MODE → FUHRER, play a track with album art:
+    NP background fills with coloured drifting dots matching the art palette. No art:
+    rainbow fallback visible. Art changes (new track): particle colours shift within
+    ~5–10 s. PSRAM heap +192 KB while active.
+12. **SLAB font** — Settings → FONT → SLAB: all title/artist/settings labels switch
+    to Arvo Bold immediately. SANS reverts to Montserrat. NVS persists across reboot.
+    PIXEL theme still overrides to Press Start 2P regardless of FONT setting.
 
 ### CYD (board not available 2026-05-30)
 

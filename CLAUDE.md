@@ -270,11 +270,21 @@ What's in `ui.c` as committed:
   heading), Bayer 4×4 ordered dither + RGB444 quantize on all album art and browser
   thumbnails, dark-CRT palette. PSRAM thumb pool (~0.5 MB) allocated on PIXEL entry,
   freed on switch-away. Generated font files `lv_font_pixel_16/24.c` committed.
+- **VFX canvas particle system** — Yudho theme: 200 Keplerian spiral vortex
+  particles on a 400×240 PSRAM pixel buffer (192 KB), presented as a 2× scaled
+  `lv_image` behind both browser and NP screens; per-frame exponential fade creates
+  glowing white trails. Fuhrer theme: 300 art-sourced emission particles sampling
+  album art pixels (`s_last_raw_art`), drifting outward from canvas centre. Replaces
+  the old 20-dot random-jump LVGL-object system.
+- **FONT setting** — Settings → FONT: SANS (Montserrat) or SLAB (Arvo Bold, OFL,
+  Google Fonts, embedded). NVS-persisted. All title/artist/settings labels route
+  through `font_lg()`/`font_md()` which check `s_font_choice`. PIXEL theme overrides
+  to Press Start 2P regardless of FONT setting.
 - Charcoal palette, flat buttons (radius 3, no shadow), uppercase letter-spaced
   section headers.
 - **Crash fix:** `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, 128)` on
-  all four font instances. LVGL 9.4 kerning cache (upstream #6304) corrupts the
-  heap under sustained scrolling; KERNING_NONE bypasses the cache entirely.
+  all font instances. LVGL 9.4 kerning cache (upstream #6304) corrupts the heap
+  under sustained scrolling; KERNING_NONE bypasses the cache entirely.
 - JPEGDEC third-party warnings silenced via `CMakeLists.txt` `target_compile_options`.
 
 CRITICAL constraints on this board (never regress):
@@ -528,8 +538,10 @@ git log --oneline -10          # recent history
   settings screen (six MODE options: Dark/Black/Light/Yudho/Fuhrer/PIXEL), charcoal
   palette, flat buttons, colour accent system (Orange/Red/Green/Purple),
   tiny_ttf kerning crash fix, PIXEL retro theme (1bpp Press Start 2P font,
-  Bayer-dithered pixelated art/thumbnails, dark-CRT palette). **All of this still
-  needs a hardware verification pass.** Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
+  Bayer-dithered pixelated art/thumbnails, dark-CRT palette), VFX canvas
+  particle system (Keplerian vortex for Yudho, art-sourced emission for Fuhrer),
+  FONT setting (SANS/SLAB chip row in Settings, Arvo Bold embedded). **All of this
+  still needs a hardware verification pass.** Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
   5.5.4 PowerShell profile, `idf.py set-target esp32p4`, `idf.py build flash
   monitor`. Board enumerates as CH343 USB-serial (COM3/COM4). Creds in
   `waveshare/esp-idf/include/secrets.h` (gitignored; template at
