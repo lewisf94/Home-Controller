@@ -5,7 +5,10 @@
 ## vendored BSP pulls lvgl 9.4.0 + st7701 + gt911 + esp_lvgl_adapter itself.
 dependencies:
   idf: ">=5.4"
-  lvgl/lvgl: "9.4.*"
+  # Keep Waveshare on LVGL 9.5.x to match the hardware-verified CYD build and
+  # avoid the older 9.4.0 pin from the vendored BSP. Runtime tiny_ttf is still
+  # disabled in ui.c because the bundled stb_truetype rasterizer crashes on P4.
+  lvgl/lvgl: "^9.5.0"
   # --- re-add per checkpoint ---
   # WiFi (cp2): ESP32-P4 has no radio; the onboard ESP32-C6 provides it over SDIO.
   espressif/esp_wifi_remote: "0.14.*"

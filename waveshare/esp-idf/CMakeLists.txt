@@ -2,3 +2,13 @@
 cmake_minimum_required(VERSION 3.16)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(music_controller_p4)
+
+# Force LV_USE_OBSERVER=1 on the LVGL component. LVGL 9.5.0 compiles
+# lv_observer.c unconditionally but the types it uses live behind
+# #if LV_USE_OBSERVER in the headers; the Kconfig default doesn't reach
+# lv_conf_internal.h reliably here, so define the macro directly. (Same
+# workaround as the CYD esp-idf build.)
+idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
+if(lvgl_lib)
+    target_compile_definitions(${lvgl_lib} PUBLIC LV_USE_OBSERVER=1)
+endif()

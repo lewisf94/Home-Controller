@@ -2370,6 +2370,11 @@ static void apply_theme_cb(void *unused)
                    was_devices ? s_screen_devices :
                    was_volume  ? (s_screen_volume ? s_screen_volume : s_screen_browser) :
                    s_screen_browser);
+    /* Clear any input-device reference to a widget on the screens about to be
+     * deleted. Without this, rapidly switching font/theme (which deletes the
+     * settings screen the user is still touching) leaves the indev pointing at
+     * a freed object -> use-after-free crash. */
+    lv_indev_reset(NULL, NULL);
     lv_obj_delete(old_browser);
     lv_obj_delete(old_np);
     lv_obj_delete(old_settings);
@@ -2491,46 +2496,21 @@ void ui_init(lv_image_dsc_t *art_dsc)
 {
     s_art_dsc = art_dsc;
 
-    /* Build runtime TTF fonts from the embedded flash blobs.  The data pointers
-     * stay valid forever (read-only flash segment), so lv_tiny_ttf can reference
-     * them without copying.  DejaVu covers accented Latin, Cyrillic, Greek, etc.;
-     * it is chained as a fallback so Montserrat handles ASCII and DejaVu fills in
-     * any glyph Montserrat lacks. */
-    extern const uint8_t mont_start[] asm("_binary_Montserrat_Medium_ttf_start");
-    extern const uint8_t mont_end[]   asm("_binary_Montserrat_Medium_ttf_end");
-    extern const uint8_t deja_start[] asm("_binary_DejaVuSans_ttf_start");
-    extern const uint8_t deja_end[]   asm("_binary_DejaVuSans_ttf_end");
-
-    /* KERNING DISABLED on purpose. lv_tiny_ttf's kerning cache (an lv_rb tree)
-     * corrupts the heap in LVGL 9.4 (upstream issue #6304) -- it crashed here
-     * under sustained scrolling, sometimes in tiny_ttf_kerning_cache_compare_cb
-     * directly, sometimes as a later double-free (tlsf_free "block already
-     * marked as free") once the damaged metadata was freed. create_data()
-     * defaults to LV_FONT_KERNING_NORMAL; the _ex form lets us pass NONE, which
-     * skips the kerning cache path entirely. Visual cost is negligible (slightly
-     * looser spacing on a few letter pairs). */
-    s_font_28 = lv_tiny_ttf_create_data_ex(mont_start, (size_t)(mont_end - mont_start), 28,
-                                           LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
-    s_font_24 = lv_tiny_ttf_create_data_ex(mont_start, (size_t)(mont_end - mont_start), 24,
-                                           LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
-
-    lv_font_t *deja_28 = lv_tiny_ttf_create_data_ex(deja_start, (size_t)(deja_end - deja_start), 28,
-                                                    LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
-    lv_font_t *deja_24 = lv_tiny_ttf_create_data_ex(deja_start, (size_t)(deja_end - deja_start), 24,
-                                                    LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
-
-    if (s_font_28 && deja_28) s_font_28->fallback = deja_28;
-    if (s_font_24 && deja_24) s_font_24->fallback = deja_24;
-
-    extern const uint8_t arvo_start[] asm("_binary_Arvo_Bold_ttf_start");
-    extern const uint8_t arvo_end[]   asm("_binary_Arvo_Bold_ttf_end");
-    s_font_arvo_28 = lv_tiny_ttf_create_data_ex(arvo_start, (size_t)(arvo_end - arvo_start), 28,
-                                                LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
-    s_font_arvo_24 = lv_tiny_ttf_create_data_ex(arvo_start, (size_t)(arvo_end - arvo_start), 24,
-                                                LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
-    /* Chain DejaVu fallback for accented characters. */
-    if (s_font_arvo_28 && deja_28) s_font_arvo_28->fallback = deja_28;
-    if (s_font_arvo_24 && deja_24) s_font_arvo_24->fallback = deja_24;
+    /* Runtime tiny_ttf fonts are DISABLED on this target. LVGL's bundled
+     * stb_truetype rasterizer asserts (stb_truetype_htcw.h:3673,
+     * "z->ey >= scan_y_top") while rasterizing Montserrat at 24/28 px on the
+     * ESP32-P4, crashing on the first text render -- and its glyph cache also
+     * fails first ("cache not allocated"). This reproduces on both LVGL 9.4.0
+     * and 9.5.0 and is independent of the glyph-cache count or LV_CACHE_DEF_SIZE.
+     * Until tiny_ttf is fixed, fall back to the compiled lv_font_montserrat_*
+     * bitmap fonts -- the same approach the hardware-verified CYD build uses.
+     * The font_lg/md/sm accessors already return the compiled fonts when the
+     * s_font_* pointers are NULL, so leaving them unset (their static default)
+     * selects bitmap rendering everywhere. Caveats while disabled: glyphs the
+     * compiled Montserrat lacks (most accented/non-Latin chars) won't render,
+     * and the Settings font choice (Arvo/Slab) is inert. The embedded
+     * Montserrat/DejaVu/Arvo TTF blobs and the EMBED_TXTFILES entries are kept
+     * so re-enabling is a one-spot change once the rasterizer is sorted. */
 
     bsp_display_lock(-1);
 
@@ -2564,7 +2544,7 @@ void ui_init(lv_image_dsc_t *art_dsc)
      * and updated when s_fps_enabled is set via the Settings toggle. */
     lv_display_t *fps_disp = lv_display_get_default();
     if (fps_disp)
-        lv_display_add_event_cb(fps_disp, fps_flush_cb, LV_EVENT_FLUSH_READY, NULL);
+        lv_display_add_event_cb(fps_disp, fps_flush_cb, LV_EVENT_FLUSH_FINISH, NULL);
     lv_timer_create(fps_timer_cb, 1000, NULL);
 
     bsp_display_unlock();
