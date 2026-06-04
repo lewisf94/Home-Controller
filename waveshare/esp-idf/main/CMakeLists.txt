@@ -20,6 +20,7 @@ idf_component_register(
         "album_thumbs.bin"          # cp4: browser thumbnail blob (gitignored; baked in private)
         "Montserrat-Medium.ttf"     # runtime TTF for title/artist labels (primary)
         "DejaVuSans.ttf"            # runtime TTF fallback for accented/non-Latin glyphs
+        "Arvo-Bold.ttf"             # cp7: slab-serif font choice (Settings → FONT → SLAB)
     PRIV_REQUIRES
         nvs_flash
         lvgl__lvgl

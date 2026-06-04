@@ -107,7 +107,12 @@ static const char *TAG = "ui";
  * because it carries the LVGL symbol glyphs). */
 static lv_font_t *s_font_28 = NULL;   /* Montserrat 28 + DejaVu fallback */
 static lv_font_t *s_font_24 = NULL;   /* Montserrat 24 + DejaVu fallback */
+static lv_font_t *s_font_arvo_28 = NULL;   /* Arvo Bold 28 + DejaVu fallback */
+static lv_font_t *s_font_arvo_24 = NULL;   /* Arvo Bold 24 + DejaVu fallback */
 #define TTF_GLYPH_CACHE_CNT 128        /* matches LVGL's tiny_ttf default */
+#define FONT_SANS  0
+#define FONT_SLAB  1
+static uint8_t s_font_choice = FONT_SANS;
 
 static lv_obj_t *s_screen_np      = NULL;
 static lv_obj_t *s_screen_browser = NULL;
@@ -375,6 +380,8 @@ static lv_obj_t *s_accent_labels[ACCENT_COUNT]           = {0};
 static lv_obj_t *s_brstyle_btns[BROWSER_STYLE_COUNT]      = {0};
 static lv_obj_t *s_brstyle_labels[BROWSER_STYLE_COUNT]    = {0};
 static lv_obj_t *s_sel_line        = NULL;   /* the centred-card underline object */
+static lv_obj_t *s_font_btns[2]   = {0};    /* Settings FONT row: SANS | SLAB */
+static lv_obj_t *s_font_labels[2] = {0};
 
 /* Device selector screen: a scrollable list rebuilt by ui_set_devices().
  * s_dev_entries caches the current rows so a row's click handler can look up its
@@ -395,6 +402,7 @@ static lv_obj_t *s_brightness_val    = NULL;   /* "NN%" label beside it */
 #define NVS_KEY_BROWSER_STYLE "browser_style"
 #define NVS_KEY_SEL_LINE      "sel_line"
 #define NVS_KEY_BRIGHTNESS    "brightness"
+#define NVS_KEY_FONT          "font"
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
@@ -438,9 +446,12 @@ static void save_accent(uint8_t idx);
 static void save_browser_style(uint8_t idx);
 static void save_sel_line(uint8_t v);
 static void save_brightness(uint8_t v);
+static void save_font(uint8_t v);
 static void on_browser_style_option(lv_event_t *e);
 static void on_line_toggle(lv_event_t *e);
 static void refresh_line_selection(void);
+static void on_font_option(lv_event_t *e);
+static void refresh_font_selection(void);
 static void on_brightness_changed(lv_event_t *e);
 static void on_brightness_released(lv_event_t *e);
 static void idle_timer_cb(lv_timer_t *t);
@@ -1149,11 +1160,13 @@ extern const lv_font_t lv_font_pixel_24;
 static const lv_font_t *font_lg(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_24;
+    if (s_font_choice == FONT_SLAB && s_font_arvo_28) return s_font_arvo_28;
     return s_font_28 ? s_font_28 : &lv_font_montserrat_28;
 }
 static const lv_font_t *font_md(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_16;
+    if (s_font_choice == FONT_SLAB && s_font_arvo_24) return s_font_arvo_24;
     return s_font_24 ? s_font_24 : &lv_font_montserrat_24;
 }
 static const lv_font_t *font_sm(void)
@@ -2034,11 +2047,40 @@ static void build_settings_screen(void)
     lv_obj_add_event_cb(s_brightness_slider, on_brightness_changed,  LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_brightness_slider, on_brightness_released, LV_EVENT_RELEASED,      NULL);
 
+    /* Font choice: SANS (Montserrat) | SLAB (Arvo Bold). Two equal-width chips. */
+    lv_obj_t *fn_section = lv_label_create(s_screen_settings);
+    lv_label_set_text(fn_section, "FONT");
+    lv_obj_set_style_text_color(fn_section, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(fn_section, font_md(), 0);
+    lv_obj_set_style_text_letter_space(fn_section, 2, 0);
+    lv_obj_align(fn_section, LV_ALIGN_TOP_LEFT, 24, 840);
+
+    static const char *const k_font_names[] = { "SANS", "SLAB" };
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *btn = lv_button_create(s_screen_settings);
+        lv_obj_set_size(btn, 256, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -132 : 132, 876);
+        lv_obj_set_style_radius(btn, 3, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        style_button_press(btn);
+        lv_obj_add_event_cb(btn, on_font_option, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, k_font_names[i]);
+        lv_obj_set_style_text_font(lbl, font_md(), 0);
+        lv_obj_center(lbl);
+
+        s_font_btns[i]   = btn;
+        s_font_labels[i] = lbl;
+    }
+
     refresh_settings_selection();
     refresh_theme_selection();
     refresh_accent_selection();
     refresh_browser_style_selection();
     refresh_line_selection();
+    refresh_font_selection();
 }
 
 static void on_open_settings(lv_event_t *e)
@@ -2315,6 +2357,10 @@ static void load_settings(void)
         if (br > BRIGHTNESS_MAX) br = BRIGHTNESS_MAX;
         s_brightness = br;
     }
+    uint8_t fn = FONT_SANS;
+    if (nvs_get_u8(h, NVS_KEY_FONT, &fn) == ESP_OK && fn <= FONT_SLAB) {
+        s_font_choice = fn;
+    }
     nvs_close(h);
 }
 
@@ -2372,6 +2418,15 @@ static void save_brightness(uint8_t v)
     nvs_close(h);
 }
 
+static void save_font(uint8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_FONT, v);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 void ui_init(lv_image_dsc_t *art_dsc)
 {
     s_art_dsc = art_dsc;
@@ -2406,6 +2461,16 @@ void ui_init(lv_image_dsc_t *art_dsc)
 
     if (s_font_28 && deja_28) s_font_28->fallback = deja_28;
     if (s_font_24 && deja_24) s_font_24->fallback = deja_24;
+
+    extern const uint8_t arvo_start[] asm("_binary_Arvo_Bold_ttf_start");
+    extern const uint8_t arvo_end[]   asm("_binary_Arvo_Bold_ttf_end");
+    s_font_arvo_28 = lv_tiny_ttf_create_data_ex(arvo_start, (size_t)(arvo_end - arvo_start), 28,
+                                                LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
+    s_font_arvo_24 = lv_tiny_ttf_create_data_ex(arvo_start, (size_t)(arvo_end - arvo_start), 24,
+                                                LV_FONT_KERNING_NONE, TTF_GLYPH_CACHE_CNT);
+    /* Chain DejaVu fallback for accented characters. */
+    if (s_font_arvo_28 && deja_28) s_font_arvo_28->fallback = deja_28;
+    if (s_font_arvo_24 && deja_24) s_font_arvo_24->fallback = deja_24;
 
     bsp_display_lock(-1);
 
@@ -3060,6 +3125,31 @@ static void on_brightness_released(lv_event_t *e)
     (void)e;
     save_brightness(s_brightness);              /* persist once, on release */
     ESP_LOGI(TAG, "brightness -> %d%%", s_brightness);
+}
+
+static void refresh_font_selection(void)
+{
+    for (int i = 0; i < 2; i++) {
+        if (!s_font_btns[i]) continue;
+        bool sel = ((uint8_t)i == s_font_choice);
+        lv_obj_set_style_bg_color(s_font_btns[i],
+            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_bg_opa(s_font_btns[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(s_font_labels[i],
+            sel ? lv_color_white() : lv_color_hex(s_th->text), 0);
+    }
+}
+
+static void on_font_option(lv_event_t *e)
+{
+    uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx == s_font_choice) return;
+    s_font_choice = idx;
+    save_font(idx);
+    refresh_font_selection();
+    /* Trigger a full theme rebuild so all screens pick up the new font. */
+    lv_async_call(apply_theme_cb, NULL);
+    ESP_LOGI(TAG, "font -> %s", idx == FONT_SLAB ? "SLAB (Arvo)" : "SANS (Montserrat)");
 }
 
 static void rebuild_browser_cb(void *unused)
