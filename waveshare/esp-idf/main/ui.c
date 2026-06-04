@@ -268,11 +268,46 @@ static bool    s_show_sel_line = true;   /* centred-card underline (Settings tog
 #define BRIGHTNESS_DEFAULT 100
 static uint8_t s_brightness = BRIGHTNESS_DEFAULT;
 
-/* Background particle animation: scattered dots drawn beneath browser content.
- * Active for both art themes. Objects pre-allocated; timer NULLed when inactive. */
-#define PARTICLE_COUNT    20
-static lv_obj_t   *s_particle_objs[PARTICLE_COUNT] = {0};
-static lv_timer_t *s_particle_timer = NULL;
+/* Background VFX canvas: a PSRAM-backed 400×240 RGB565 buffer presented as a
+ * 2× scaled lv_image behind both browser and NP screens.
+ *
+ * Yudho theme: spiral vortex — 200 particles in polar coords, Keplerian spin,
+ * per-frame exponential fade creates glowing trails.
+ *
+ * Fuhrer (art) theme: art-sourced particle emission — pixels sampled from the
+ * decoded album art drift outward from the image centre.
+ *
+ * Both share the same buffer/dsc/img infrastructure; only the tick callback
+ * and particle data differ. The old LVGL-object particle system (20 dots,
+ * random jumps) is replaced entirely.
+ */
+#define VFX_W  400
+#define VFX_H  240
+
+static uint16_t       *s_vfx_buf   = NULL;
+static lv_image_dsc_t  s_vfx_dsc   = {0};
+static lv_obj_t       *s_vfx_img_browser = NULL;
+static lv_obj_t       *s_vfx_img_np     = NULL;
+static lv_timer_t     *s_vfx_timer = NULL;
+
+/* ---- Yudho vortex particles ---- */
+#define VORTEX_COUNT   200
+#define VORTEX_R_MAX  100.0f
+#define VORTEX_R_MIN    5.0f
+#define VORTEX_SPEED    0.025f   /* rad/tick at R_MAX; inner faster (Keplerian) */
+#define VORTEX_INWARD   0.12f    /* px/tick inward pull */
+typedef struct { float angle; float radius; } vortex_pt_t;
+static vortex_pt_t s_vortex[VORTEX_COUNT];
+
+/* ---- Fuhrer art-emission particles ---- */
+#define ART_PART_COUNT  300
+typedef struct {
+    float    x, y;
+    float    vx, vy;
+    uint16_t color;
+    uint8_t  life;     /* 255→0; respawn at 0 */
+} art_pt_t;
+static art_pt_t s_art_pts[ART_PART_COUNT];
 
 /* === Yudho-only integrated particle features === */
 
@@ -432,7 +467,6 @@ static const lv_font_t *font_md(void);
 static const lv_font_t *font_sm(void);
 static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                              uint16_t *dst, uint16_t dw, uint16_t dh);
-static void particle_tick_cb(lv_timer_t *t);
 static void particles_start(lv_obj_t *screen);
 static void particles_stop(void);
 /* Gas-particle progress bar */
@@ -1165,72 +1199,220 @@ static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
     }
 }
 
-static void particle_tick_cb(lv_timer_t *t)
+/* Write one pixel into the VFX buffer (bounds-checked). */
+static inline void vfx_set_px(int x, int y, uint16_t color)
+{
+    if ((unsigned)x < VFX_W && (unsigned)y < VFX_H)
+        s_vfx_buf[y * VFX_W + x] = color;
+}
+
+/* Fade every non-black pixel by ~87.5% (14/16 = 0.875) to create glowing
+ * trails. Skipping zero pixels keeps this fast since most of the canvas is
+ * black at any given moment. */
+static void vfx_fade(uint8_t keep_num, uint8_t keep_den)
+{
+    uint16_t *p = s_vfx_buf;
+    uint16_t *end = p + VFX_W * VFX_H;
+    for (; p < end; p++) {
+        uint16_t px = *p;
+        if (!px) continue;
+        uint8_t r = (uint8_t)(((px >> 11) & 0x1F) * keep_num >> keep_den);
+        uint8_t g = (uint8_t)(((px >>  5) & 0x3F) * keep_num >> keep_den);
+        uint8_t b = (uint8_t)((px & 0x1F)          * keep_num >> keep_den);
+        *p = (uint16_t)((r << 11) | (g << 5) | b);
+    }
+}
+
+/* Invalidate both VFX image widgets so LVGL flushes the updated buffer. */
+static void vfx_invalidate(void)
+{
+    if (s_vfx_img_browser) lv_obj_invalidate(s_vfx_img_browser);
+    if (s_vfx_img_np)      lv_obj_invalidate(s_vfx_img_np);
+}
+
+/* ---- Yudho vortex tick ---- */
+static void vortex_tick_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!s_particle_objs[0]) return;
+    if (!s_vfx_buf) return;
 
-    bool fuhrer = (s_theme == THEME_FUHRER_IDX);
-    int moves   = fuhrer ? 8 : 4;
+    /* Fade trails (~87.5% retention = 14/16). */
+    vfx_fade(14, 4);
 
-    for (int n = 0; n < moves; n++) {
-        int i = (int)(esp_random() % PARTICLE_COUNT);
-        lv_obj_t *dot = s_particle_objs[i];
-        if (!dot) continue;
+    const float cx = VFX_W * 0.5f;
+    const float cy = VFX_H * 0.5f;
 
-        lv_obj_set_pos(dot,
-                       (int)(esp_random() % (SCREEN_W - 4)),
-                       (int)(esp_random() % (SCREEN_H - 4)));
+    for (int i = 0; i < VORTEX_COUNT; i++) {
+        vortex_pt_t *p = &s_vortex[i];
 
-        if (fuhrer) {
-            /* Chromatic glitch: dots cycle R/G/B with occasional white flash. */
-            static const uint32_t chroma[4] = { 0xFF2020, 0x20FF20, 0x2020FF, 0xE8E8FF };
-            lv_obj_set_style_bg_color(dot, lv_color_hex(chroma[esp_random() % 4]), 0);
-            lv_obj_set_style_bg_opa(dot, (lv_opa_t)(40 + esp_random() % 140), 0);
-            /* Occasional size spike for a glitch burst. */
-            int sz = (esp_random() % 10 == 0) ? 4 : 2;
-            lv_obj_set_size(dot, sz, sz);
-        } else {
-            /* Yudho: monochrome, gentle brightness variation. */
-            uint8_t v = (uint8_t)(160 + esp_random() % 96);
-            lv_obj_set_style_bg_color(dot, lv_color_make(v, v, v), 0);
-            lv_obj_set_style_bg_opa(dot, (lv_opa_t)(30 + esp_random() % 80), 0);
+        /* Keplerian speed: inner particles orbit faster. */
+        float spd = VORTEX_SPEED * sqrtf(VORTEX_R_MAX / p->radius);
+        p->angle  += spd;
+        p->radius -= VORTEX_INWARD;
+
+        /* Respawn near outer edge when too close to centre. */
+        if (p->radius < VORTEX_R_MIN) {
+            p->radius = VORTEX_R_MAX * (0.65f + 0.35f * ((float)(esp_random() & 0xFF) / 255.0f));
+            p->angle  = 6.2832f * ((float)(esp_random() & 0xFFFF) / 65535.0f);
         }
+
+        int px = (int)(cx + p->radius * cosf(p->angle));
+        int py = (int)(cy + p->radius * sinf(p->angle));
+
+        /* Brightness varies with radius: brighter near centre for a glowing core. */
+        uint8_t brt = (uint8_t)(100 + (uint8_t)((1.0f - p->radius / VORTEX_R_MAX) * 155.0f));
+        uint16_t color = (uint16_t)(((brt >> 3) << 11) | ((brt >> 2) << 5) | (brt >> 3));
+        vfx_set_px(px, py, color);
     }
+    vfx_invalidate();
 }
 
-static void particles_stop(void)
+/* ---- Fuhrer art-emission tick ---- */
+static void art_emission_tick_cb(lv_timer_t *t)
 {
-    if (s_particle_timer) {
-        lv_timer_delete(s_particle_timer);
-        s_particle_timer = NULL;
+    (void)t;
+    if (!s_vfx_buf) return;
+
+    /* Faster fade (~75% = 12/16) for the dissolving-cloud look. */
+    vfx_fade(12, 4);
+
+    const float cx = VFX_W * 0.5f;
+    const float cy = VFX_H * 0.5f;
+
+    for (int i = 0; i < ART_PART_COUNT; i++) {
+        art_pt_t *p = &s_art_pts[i];
+
+        if (p->life == 0 ||
+            p->x < 0 || p->x >= VFX_W ||
+            p->y < 0 || p->y >= VFX_H) {
+            /* Respawn: sample a pixel from the album art (or use rainbow fallback). */
+            uint16_t src_color;
+            if (s_last_raw_art && s_last_raw_w > 0 && s_last_raw_h > 0) {
+                uint32_t sx = esp_random() % s_last_raw_w;
+                uint32_t sy = esp_random() % s_last_raw_h;
+                src_color = ((const uint16_t *)s_last_raw_art)[sy * s_last_raw_w + sx];
+            } else {
+                /* Rainbow gradient from hue based on vertical position. */
+                uint32_t ry = esp_random() % VFX_H;
+                uint16_t hue = (uint16_t)(ry * 360 / VFX_H);
+                lv_color_t c = lv_color_hsv_to_rgb(hue, 100, 100);
+                src_color = (uint16_t)(((c.red >> 3) << 11) | ((c.green >> 2) << 5) | (c.blue >> 3));
+            }
+            p->color = src_color;
+            p->x     = cx + ((float)(int)(esp_random() & 0x3F) - 32) * 0.8f;
+            p->y     = cy + ((float)(int)(esp_random() & 0x3F) - 32) * 0.8f;
+            /* Velocity: small outward vector + slight downward drift. */
+            p->vx    = ((float)(int)(esp_random() & 0xFF) - 128) / 128.0f * 1.2f;
+            p->vy    = ((float)(int)(esp_random() & 0xFF) - 128) / 128.0f * 1.2f + 0.3f;
+            p->life  = (uint8_t)(180 + esp_random() % 75);
+            continue;
+        }
+
+        p->x    += p->vx;
+        p->y    += p->vy;
+        p->life  = (p->life > 3) ? p->life - 3 : 0;
+
+        /* Scale colour brightness by remaining life. */
+        uint8_t life_scale = p->life;
+        uint8_t r = (uint8_t)(((p->color >> 11) & 0x1F) * life_scale >> 8);
+        uint8_t g = (uint8_t)(((p->color >>  5) & 0x3F) * life_scale >> 8);
+        uint8_t b = (uint8_t)((p->color & 0x1F)          * life_scale >> 8);
+        vfx_set_px((int)p->x, (int)p->y,
+                   (uint16_t)((r << 11) | (g << 5) | b));
     }
-    memset(s_particle_objs, 0, sizeof s_particle_objs);
+    vfx_invalidate();
 }
 
+/* Create the VFX image on a screen at z=0 (background). */
+static lv_obj_t *vfx_create_img(lv_obj_t *screen)
+{
+    lv_obj_t *img = lv_image_create(screen);
+    lv_image_set_src(img, &s_vfx_dsc);
+    /* 2× nearest-neighbour upscale: 400×240 → 800×480. */
+    lv_image_set_scale(img, LV_SCALE_NONE * 2);
+    lv_image_set_antialias(img, false);
+    lv_obj_set_pos(img, 0, 0);
+    lv_obj_remove_flag(img, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_move_to_index(img, 0);   /* push behind all other children */
+    return img;
+}
+
+static void vfx_stop(void)
+{
+    if (s_vfx_timer) {
+        lv_timer_delete(s_vfx_timer);
+        s_vfx_timer = NULL;
+    }
+    /* Image objects are children of their screens; they are deleted when the
+     * screen is deleted in apply_theme_cb. Just clear our references. */
+    s_vfx_img_browser = NULL;
+    s_vfx_img_np      = NULL;
+    if (s_vfx_buf) {
+        free(s_vfx_buf);
+        s_vfx_buf = NULL;
+    }
+    memset(&s_vfx_dsc, 0, sizeof s_vfx_dsc);
+}
+
+static void vortex_start(void)
+{
+    vfx_stop();
+    s_vfx_buf = heap_caps_malloc((size_t)VFX_W * VFX_H * 2, MALLOC_CAP_SPIRAM);
+    if (!s_vfx_buf) { ESP_LOGW(TAG, "vortex_start: PSRAM alloc failed"); return; }
+    memset(s_vfx_buf, 0, (size_t)VFX_W * VFX_H * 2);
+
+    s_vfx_dsc.header.cf   = LV_COLOR_FORMAT_RGB565;
+    s_vfx_dsc.header.w    = VFX_W;
+    s_vfx_dsc.header.h    = VFX_H;
+    s_vfx_dsc.data        = (const uint8_t *)s_vfx_buf;
+    s_vfx_dsc.data_size   = (uint32_t)VFX_W * VFX_H * 2;
+
+    /* Scatter particles around the canvas to avoid a cold-start burst from centre. */
+    for (int i = 0; i < VORTEX_COUNT; i++) {
+        s_vortex[i].radius = VORTEX_R_MIN + ((float)(esp_random() & 0xFFFF) / 65535.0f)
+                             * (VORTEX_R_MAX - VORTEX_R_MIN);
+        s_vortex[i].angle  = 6.2832f * ((float)(esp_random() & 0xFFFF) / 65535.0f);
+    }
+
+    if (s_screen_browser) s_vfx_img_browser = vfx_create_img(s_screen_browser);
+    if (s_screen_np)      s_vfx_img_np      = vfx_create_img(s_screen_np);
+
+    s_vfx_timer = lv_timer_create(vortex_tick_cb, 50, NULL);
+    ESP_LOGI(TAG, "vortex started (PSRAM %u B)", (unsigned)((size_t)VFX_W * VFX_H * 2));
+}
+
+static void art_emission_start(void)
+{
+    vfx_stop();
+    s_vfx_buf = heap_caps_malloc((size_t)VFX_W * VFX_H * 2, MALLOC_CAP_SPIRAM);
+    if (!s_vfx_buf) { ESP_LOGW(TAG, "art_emission_start: PSRAM alloc failed"); return; }
+    memset(s_vfx_buf, 0, (size_t)VFX_W * VFX_H * 2);
+
+    s_vfx_dsc.header.cf   = LV_COLOR_FORMAT_RGB565;
+    s_vfx_dsc.header.w    = VFX_W;
+    s_vfx_dsc.header.h    = VFX_H;
+    s_vfx_dsc.data        = (const uint8_t *)s_vfx_buf;
+    s_vfx_dsc.data_size   = (uint32_t)VFX_W * VFX_H * 2;
+
+    /* Zero-life forces respawn on first tick for all particles. */
+    memset(s_art_pts, 0, sizeof s_art_pts);
+
+    if (s_screen_np) s_vfx_img_np = vfx_create_img(s_screen_np);
+
+    s_vfx_timer = lv_timer_create(art_emission_tick_cb, 40, NULL);
+    ESP_LOGI(TAG, "art emission started (PSRAM %u B)", (unsigned)((size_t)VFX_W * VFX_H * 2));
+}
+
+/* Compatibility shims — called from apply_theme_cb and rebuild_browser_cb.
+ * The old particles_start/stop were called with a screen argument; the new
+ * VFX system manages its own screen references via s_screen_browser/np. */
+static void particles_stop(void)  { vfx_stop(); }
 static void particles_start(lv_obj_t *screen)
 {
-    if (!screen) return;
-    particles_stop();   /* clear any previous timer/refs */
-
-    for (int i = 0; i < PARTICLE_COUNT; i++) {
-        lv_obj_t *dot = lv_obj_create(screen);
-        lv_obj_set_size(dot, 2, 2);
-        lv_obj_set_style_radius(dot, 0, 0);
-        lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_40, 0);
-        lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
-        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_pos(dot,
-                       (int)(esp_random() % (SCREEN_W - 4)),
-                       (int)(esp_random() % (SCREEN_H - 4)));
-        /* Push behind all other children so dots appear under the scroller. */
-        lv_obj_move_to_index(dot, 0);
-        s_particle_objs[i] = dot;
-    }
-
-    uint32_t period_ms = (s_theme == THEME_FUHRER_IDX) ? 150 : 400;
-    s_particle_timer = lv_timer_create(particle_tick_cb, period_ms, NULL);
+    (void)screen;  /* ignored — vortex/art_emission use s_screen_* directly */
+    /* is_art_theme() is true for both Yudho and Fuhrer; check Yudho first. */
+    if (is_yudho_theme())    vortex_start();
+    else if (is_art_theme()) art_emission_start();   /* Fuhrer */
 }
 
 /* =====================================================================
@@ -2889,7 +3071,13 @@ static void rebuild_browser_cb(void *unused)
     /* Free any existing pixel thumbnail pool; build_browser_screen() will
      * reallocate it if PIXEL is still active. */
     if (s_pix_thumbs) { heap_caps_free(s_pix_thumbs); s_pix_thumbs = NULL; }
+    /* Clear the stale VFX browser image ref — it is a child of old_browser and
+     * will be freed when we delete it below. Recreate on the new screen if the
+     * vortex is running. */
+    s_vfx_img_browser = NULL;
     build_browser_screen();
+    if (is_yudho_theme() && s_vfx_buf)
+        s_vfx_img_browser = vfx_create_img(s_screen_browser);
 
     if (saved_card > 0 && s_browser_scroller) {
         lv_obj_update_layout(s_browser_scroller);
