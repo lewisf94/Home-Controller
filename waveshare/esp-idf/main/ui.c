@@ -533,10 +533,15 @@ static lv_color_t card_color(size_t i)
 /* All browser styles use the same card slot size + gap; Focus and Cover Flow
  * differ only by the per-card transform applied at scroll time, not the layout
  * footprint (so the 220px card always fits the 244px scroller -- no clipping).
- * Cover Flow uses a smaller card (180 px) and tighter gap (16 px) so two side
- * covers fit on screen: step=196, card ±2 centre at 400±392=8/792 px. */
-static int cs(void) { return (s_browser_style == BROWSER_COVERFLOW) ? 180 : CARD_SIZE; }
-static int cg(void) { return (s_browser_style == BROWSER_COVERFLOW) ?  16 : CARD_GAP; }
+ * Cover Flow uses cs=120 + gap=4 (step=124) so three side covers fit on screen:
+ *   ±1 centre at ±124 px, ±2 at ±248 px, ±3 at ±372 px (28/772 px — both on screen).
+ * Cards on dark backgrounds are 120 px in a 244 px scroller; the surrounding area
+ * matches s_th->bg so there is no visible border.  The non-PIXEL apply_card_transforms
+ * base scale is cs/ALBUM_THUMB_W × LV_SCALE_NONE so the center image still fills the
+ * 120 px slot.  Horizontal-squash-only (no sy reduction) keeps side cards tall and
+ * narrow, matching the iPod Cover Flow aesthetic. */
+static int cs(void) { return (s_browser_style == BROWSER_COVERFLOW) ? 120 : CARD_SIZE; }
+static int cg(void) { return (s_browser_style == BROWSER_COVERFLOW) ?   4 : CARD_GAP; }
 
 static void style_label(lv_obj_t *label, const lv_font_t *font,
                         lv_color_t color, int16_t y)
@@ -3063,10 +3068,10 @@ static void apply_card_transforms(void)
 {
     if (!BROWSER_STYLE_TRANSFORMS(s_browser_style) || !s_browser_scroller) return;
     bool cf = (s_browser_style == BROWSER_COVERFLOW);
-    /* CF uses tighter dimming so the 2nd side card is still readable.
-     * Squash rate and floor are also eased so 2 covers fit without disappearing. */
-    int32_t dim_rise   = cf ?  80 : 95;   /* per-step recolor-toward-black */
-    int32_t dim_max    = cf ? 130 : 110;
+    /* CF dims aggressively: ±1 ~35 % black, ±2 ~70 %, ±3 capped at 200/255 (~78 %).
+     * Focus is gentler so both side cards stay readable. */
+    int32_t dim_rise   = cf ?  90 : 95;   /* per-step recolor-toward-black */
+    int32_t dim_max    = cf ? 200 : 110;
     int32_t scroll_x   = lv_obj_get_scroll_left(s_browser_scroller);
     int32_t pad_left   = (SCREEN_W - cs()) / 2;
     int32_t step       = cs() + cg();
@@ -3077,22 +3082,22 @@ static void apply_card_transforms(void)
         int32_t dist = card_cx - scr_center;
         if (dist < 0) dist = -dist;
 
-        /* PIXEL: images are 64px and need a base scale to fill the slot (cs() px).
-         * Relative Focus/CF transforms are computed at 256-base then multiplied
-         * by the PIXEL ratio so proportions stay correct. */
+        /* Base scale to fit the image (ALBUM_THUMB_W / PIX_THUMB_RES px) into the
+         * cs()-wide card slot.  CF shrinks cs to 120 px while thumbs are still 220 px,
+         * so we need base = cs*256/ALBUM_THUMB_W; PIXEL already uses cs*256/PIX_THUMB_RES.
+         * Focus (cs==CARD_SIZE==ALBUM_THUMB_W) and Carousel use LV_SCALE_NONE (1:1). */
         uint32_t base = is_pixel_theme()
                       ? (uint32_t)cs() * LV_SCALE_NONE / PIX_THUMB_RES
-                      : (uint32_t)LV_SCALE_NONE;
+                      : (cf ? (uint32_t)cs() * LV_SCALE_NONE / ALBUM_THUMB_W
+                             : (uint32_t)LV_SCALE_NONE);
         if (cf) {
-            /* Horizontal squash dominates (the "turning" illusion); vertical
-             * shrinks only a little (depth). Squash rate 100 (was 150) and
-             * floor 85 (was 70) so the 2nd side card still reads on-screen. */
-            int32_t sx = LV_SCALE_NONE - dist * 100 / step;
-            if (sx < 85) sx = 85;
-            int32_t sy = LV_SCALE_NONE - dist * 55 / step;
-            if (sy < 170) sy = 170;
+            /* iPod-style CF: horizontal squash only (no vertical reduction), so side
+             * covers appear tall and narrow — the foreshortened-depth look.
+             * ±1: ~65 %, ±2: ~30 %, ±3: sliver (~12 %) at screen edge. */
+            int32_t sx = LV_SCALE_NONE - dist * 90 / step;
+            if (sx < 30) sx = 30;
             lv_image_set_scale_x(s_card_imgs[i], (uint32_t)((int64_t)sx * base / LV_SCALE_NONE));
-            lv_image_set_scale_y(s_card_imgs[i], (uint32_t)((int64_t)sy * base / LV_SCALE_NONE));
+            lv_image_set_scale_y(s_card_imgs[i], base);   /* full height at all distances */
         } else {
             int32_t scale = LV_SCALE_NONE - dist * 76 / step;
             if (scale < 150) scale = 150;
