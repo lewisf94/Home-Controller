@@ -1516,7 +1516,8 @@ static void particles_start(lv_obj_t *screen)
 /* Tilt geometry constants */
 #define CF_WIDTH_SHRINK  0.64f   /* w_disp = src_w*(1-tilt*0.64): ~80 px at tilt=1 */
 #define CF_HEIGHT_SHRINK 0.70f   /* h_outer = src_h*(1-tilt*0.70): ~66 px at tilt=1 */
-#define CF_NEAR_THRESH   0.45f   /* adist below this → near-centre pass */
+#define CF_NEAR_THRESH   0.45f   /* adist below this → near-centre passes */
+#define CF_CENTRE_THRESH 0.20f   /* adist below this → centre-card pass (always on top) */
 
 static void cf_draw_col(int dx, int h_col, int cy_mid,
                         const uint16_t *src, int src_w, int src_h, int src_x)
@@ -1588,9 +1589,11 @@ static void cf_render(void)
     int32_t step     = cs() + cg();
     int32_t scr_cx   = SCREEN_W / 2;
 
-    /* Two-pass draw: far cards first so the near-centre card overwrites any
-     * overlap at the inner edges (centre appears in front of turned covers). */
-    for (int pass = 0; pass < 2; pass++) {
+    /* Three-pass draw guarantees correct z-order:
+     *   pass 0 — outer cards  (adist >= CF_NEAR_THRESH)
+     *   pass 1 — adjacent     (CF_CENTRE_THRESH <= adist < CF_NEAR_THRESH)
+     *   pass 2 — centre card  (adist < CF_CENTRE_THRESH, always on top) */
+    for (int pass = 0; pass < 3; pass++) {
         for (size_t i = 0; i < s_card_count; i++) {
             int32_t card_cx  = pad_left + (int32_t)i * step + cs() / 2 - scroll_x;
 
@@ -1600,10 +1603,10 @@ static void cf_render(void)
 
             float dist_norm = (float)(card_cx - scr_cx) / (float)step;
             float adist     = dist_norm < 0.0f ? -dist_norm : dist_norm;
-            bool  near      = (adist < CF_NEAR_THRESH);
 
-            if (pass == 0 && near)  continue;   /* save near-centre for pass 1 */
-            if (pass == 1 && !near) continue;   /* far cards already drawn */
+            if (pass == 0 && adist < CF_NEAR_THRESH)   continue;
+            if (pass == 1 && (adist < CF_CENTRE_THRESH || adist >= CF_NEAR_THRESH)) continue;
+            if (pass == 2 && adist >= CF_CENTRE_THRESH) continue;
 
             const uint16_t *src;
             int src_w, src_h;
