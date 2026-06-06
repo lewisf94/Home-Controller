@@ -1,0 +1,64 @@
+name: ESP-IDF build (Waveshare P4)
+
+# Compile-check the Waveshare ESP32-P4 build on every push / PR. GitHub's
+# runners can reach the Espressif component registry (components.espressif.com),
+# so the IDF Component Manager resolves lvgl / esp_wifi_remote / esp_hosted /
+# jpegdec / littlefs normally -- unlike the restricted cloud dev environment,
+# whose egress proxy blocks *.espressif.com (x-deny-reason: host_not_allowed).
+#
+# Two build inputs are gitignored (copyright art + private credentials), so CI
+# generates throwaway placeholders. This verifies the code COMPILES and LINKS;
+# it does not produce a flashable image with real assets.
+#   - include/secrets.h     : copied from the committed secrets.h.example
+#   - main/album_thumbs.bin : zero-filled blob sized to the album count so
+#                             album_thumb_count() matches albums_count()
+
+on:
+  push:
+    paths:
+      - 'waveshare/esp-idf/**'
+      - '.github/workflows/esp-idf-build.yml'
+  pull_request:
+    paths:
+      - 'waveshare/esp-idf/**'
+      - '.github/workflows/esp-idf-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Generate placeholder build inputs (gitignored assets)
+        working-directory: waveshare/esp-idf
+        run: |
+          set -euo pipefail
+          # Private credentials: placeholder values compile + link fine.
+          cp include/secrets.h.example include/secrets.h
+          # Embedded thumbnail blob: zero-fill N * 220*220*2 bytes so the
+          # positional index in album_thumbs.c lines up with albums_count().
+          N=$(grep -cE '"spotify:album:' main/albums.c)
+          python3 -c "import sys; open('main/album_thumbs.bin','wb').write(b'\0' * $N * 220 * 220 * 2)"
+          echo "Generated album_thumbs.bin for $N albums ($((N*220*220*2)) bytes)"
+
+      # Reuse fetched managed components across runs (keyed on the manifest +
+      # lock so it busts when dependencies change).
+      - name: Cache managed components
+        uses: actions/cache@v4
+        with:
+          path: |
+            waveshare/esp-idf/managed_components
+          key: idf-p4-${{ hashFiles('waveshare/esp-idf/main/idf_component.yml', 'waveshare/esp-idf/dependencies.lock') }}
+          restore-keys: |
+            idf-p4-
+
+      - name: ESP-IDF build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.4
+          target: esp32p4
+          path: waveshare/esp-idf
