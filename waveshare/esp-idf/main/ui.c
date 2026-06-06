@@ -252,12 +252,16 @@ static const uint32_t k_accents[ACCENT_COUNT] = { 0xFF5A00, 0xE0301E, 0x2FB344, 
 static const char *const k_accent_names[ACCENT_COUNT] = { "ORANGE", "RED", "GREEN", "PURPLE" };
 static uint32_t accent_color(void) { return k_accents[s_accent]; }
 
-/* Browser styles (all use uniform scale + opacity -- see apply_card_transforms
- * for why skew/matrix transforms were reverted):
- *  - CAROUSEL: flat row, all cards same size (the original).
- *  - FOCUS:    centre card full size, side cards scale down + dim gently.
- *  - COVERFLOW: side covers shrink harder + dim more, so they recede strongly
- *               from the centre (depth via scale, not a true 3D tilt).
+/* Browser styles:
+ *  - CAROUSEL:  flat row, all cards same size (the original).
+ *  - FOCUS:     centre card full size, side cards scale down + dim gently.
+ *  - COVERFLOW: true 3D perspective tilt via a PSRAM column rasteriser.
+ *               Each card is rendered as a trapezoid (inner edge full height,
+ *               outer edge foreshortened) into a 800×244 pixel buffer that
+ *               sits on top of the transparent LVGL scroller.  Centre card
+ *               drawn last so it always appears in front of turned side covers.
+ *               LVGL card objects are hidden; scroll physics use the flex layout
+ *               unchanged (step = cs() + cg() = 130 px).
  * NVS persists the index; the old build's "Cover Flow" (index 1) is now FOCUS,
  * which is the correct migration -- index 1 was always the scale+dim mode. */
 enum { BROWSER_CAROUSEL = 0, BROWSER_FOCUS = 1, BROWSER_COVERFLOW = 2,
@@ -402,6 +406,14 @@ static lv_obj_t  *s_fps_toggle_lbl = NULL;
 static bool       s_fps_enabled    = false;
 static uint32_t   s_fps_count      = 0;   /* flush-ready events since last 1 s snapshot */
 
+/* CF perspective canvas: SCREEN_W × SCROLLER_H PSRAM RGB565 buffer rasterized
+ * on each scroll event.  Only allocated when BROWSER_COVERFLOW is active. */
+#define CF_PERSP_W   SCREEN_W    /* 800 */
+#define CF_PERSP_H   SCROLLER_H  /* 244 */
+static uint16_t       *s_cf_buf = NULL;
+static lv_image_dsc_t  s_cf_dsc = {0};
+static lv_obj_t       *s_cf_img = NULL;
+
 #define NVS_SETTINGS_NS       "settings"
 #define NVS_KEY_TRANSITION    "transition"
 #define NVS_KEY_THEME         "theme"
@@ -464,6 +476,9 @@ static void on_fps_toggle(lv_event_t *e);
 static void refresh_fps_selection(void);
 static void fps_flush_cb(lv_event_t *e);
 static void fps_timer_cb(lv_timer_t *t);
+static void cf_init(lv_obj_t *screen);
+static void cf_deinit(void);
+static void cf_render(void);
 static void on_brightness_changed(lv_event_t *e);
 static void on_brightness_released(lv_event_t *e);
 static void idle_timer_cb(lv_timer_t *t);
@@ -798,7 +813,20 @@ static void build_browser_screen(void)
                           "edit spotify-albums-list.txt + reflash");
     }
 
-    /* Apply initial cover flow scales (index-based, scroll_x=0 = card 0 centred). */
+    /* CF perspective mode: make scroller transparent, hide the LVGL card images
+     * (scroll physics still use the flex layout), then init the PSRAM canvas.
+     * Must happen before apply_card_transforms() which calls cf_render().
+     * The canvas is added as a child here so the selection line / wifi bars
+     * created after it have a higher z-index and draw on top. */
+    if (s_browser_style == BROWSER_COVERFLOW) {
+        lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_TRANSP, 0);
+        for (size_t i = 0; i < s_card_count; i++) {
+            if (s_card_imgs[i])
+                lv_obj_add_flag(s_card_imgs[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        cf_init(s_screen_browser);
+    }
+    /* Apply initial transforms (CF calls cf_render; Focus uses image scales). */
     apply_card_transforms();
 
     /* Selection marker: a short accent underline fixed beneath the centred card
@@ -1460,6 +1488,171 @@ static void particles_start(lv_obj_t *screen)
     /* is_art_theme() is true for both Yudho and Fuhrer; check Yudho first. */
     if (is_yudho_theme())    vortex_start();
     else if (is_art_theme()) art_emission_start();   /* Fuhrer */
+}
+
+/* =====================================================================
+ * Cover Flow perspective rasteriser
+ *
+ * A PSRAM-backed CF_PERSP_W×CF_PERSP_H (800×244) RGB565 canvas covers the
+ * browser scroller strip at 1:1 scale.  On every scroll event cf_render()
+ * clears the canvas to the theme background, then rasterises each visible
+ * album as a trapezoid using per-column perspective math:
+ *
+ *   inner edge (facing centre): full source height
+ *   outer edge:                 height × (1 − tilt × HEIGHT_SHRINK)
+ *   display width:              width  × (1 − tilt × WIDTH_SHRINK)
+ *
+ * where tilt = min(|dist_norm|, 1.0), dist_norm = signed distance from
+ * the scroll centre in units of one card step.
+ *
+ * Drawing order: far cards first, near-centre card last, so the centre
+ * cover renders on top of turned side covers at their overlap edges —
+ * exactly the iPod Cover Flow z-order.
+ *
+ * LVGL card images are hidden; scroll snapping/momentum continue via the
+ * flex layout (step = cs() + cg() = 130 px).
+ * ===================================================================== */
+
+/* Tilt geometry constants */
+#define CF_WIDTH_SHRINK  0.64f   /* w_disp = src_w*(1-tilt*0.64): ~80 px at tilt=1 */
+#define CF_HEIGHT_SHRINK 0.70f   /* h_outer = src_h*(1-tilt*0.70): ~66 px at tilt=1 */
+#define CF_NEAR_THRESH   0.45f   /* adist below this → near-centre pass */
+
+static void cf_draw_col(int dx, int h_col, int cy_mid,
+                        const uint16_t *src, int src_w, int src_h, int src_x)
+{
+    if ((unsigned)dx >= CF_PERSP_W || h_col <= 0) return;
+    if (src_x < 0) src_x = 0;
+    if (src_x >= src_w) src_x = src_w - 1;
+    int y_top = cy_mid - h_col / 2;
+    for (int dy = y_top; dy < y_top + h_col; dy++) {
+        if ((unsigned)dy >= CF_PERSP_H) continue;
+        int src_y = (dy - y_top) * src_h / h_col;
+        s_cf_buf[(size_t)dy * CF_PERSP_W + (size_t)dx] =
+            src[(size_t)src_y * (size_t)src_w + (size_t)src_x];
+    }
+}
+
+/* Render one card into s_cf_buf at its current scroll position.
+ * src_t_mirror: true for left-side cards (mirror source x so the inner edge
+ * of the turned cover shows the correct side of the album art). */
+static void cf_render_card(int32_t card_cx, float dist_norm,
+                           const uint16_t *src, int src_w, int src_h)
+{
+    float adist    = dist_norm < 0.0f ? -dist_norm : dist_norm;
+    bool  left     = (dist_norm < 0.0f);
+    float tilt     = adist > 1.0f ? 1.0f : adist;
+
+    int w_disp  = (int)((float)src_w * (1.0f - tilt * CF_WIDTH_SHRINK));
+    if (w_disp < 4) w_disp = 4;
+    int h_inner = src_h;
+    int h_outer = (int)((float)src_h * (1.0f - tilt * CF_HEIGHT_SHRINK));
+    if (h_outer < 6) h_outer = 6;
+
+    int x_start = (int)card_cx - w_disp / 2;
+    int x_end   = x_start + w_disp;
+    int cy_mid  = CF_PERSP_H / 2;
+
+    for (int dx = x_start; dx < x_end; dx++) {
+        /* t: 0 = inner edge, 1 = outer edge. */
+        float t = (w_disp > 1)
+                ? (float)(dx - x_start) / (float)(w_disp - 1)
+                : 0.0f;
+
+        /* Right-side card: inner edge on left (t=0 → src_x=0).
+         * Left-side card:  inner edge on right (mirror t for source). */
+        float src_t = left ? (1.0f - t) : t;
+        int   src_x = (int)(src_t * (float)(src_w - 1));
+
+        int h_col = h_inner + (int)((float)(h_outer - h_inner) * t);
+        if (h_col < 1) h_col = 1;
+
+        cf_draw_col(dx, h_col, cy_mid, src, src_w, src_h, src_x);
+    }
+}
+
+static void cf_render(void)
+{
+    if (!s_cf_buf || !s_cf_img || !s_browser_scroller) return;
+
+    /* Clear canvas to theme background (convert 0xRRGGBB → RGB565). */
+    uint32_t bg    = s_th->bg;
+    uint16_t bg_px = (uint16_t)(((bg >> 19) & 0x1Fu) << 11)
+                   | (uint16_t)(((bg >> 10) & 0x3Fu) << 5)
+                   | (uint16_t) ((bg >>  3) & 0x1Fu);
+    uint16_t *p = s_cf_buf, *end = p + (size_t)CF_PERSP_W * CF_PERSP_H;
+    while (p < end) *p++ = bg_px;
+
+    int32_t scroll_x = lv_obj_get_scroll_left(s_browser_scroller);
+    int32_t pad_left = (SCREEN_W - cs()) / 2;
+    int32_t step     = cs() + cg();
+    int32_t scr_cx   = SCREEN_W / 2;
+
+    /* Two-pass draw: far cards first so the near-centre card overwrites any
+     * overlap at the inner edges (centre appears in front of turned covers). */
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < s_card_count; i++) {
+            int32_t card_cx  = pad_left + (int32_t)i * step + cs() / 2 - scroll_x;
+
+            /* Cull cards fully off-screen. */
+            if (card_cx < -(int32_t)SCREEN_W || card_cx > 2 * (int32_t)SCREEN_W)
+                continue;
+
+            float dist_norm = (float)(card_cx - scr_cx) / (float)step;
+            float adist     = dist_norm < 0.0f ? -dist_norm : dist_norm;
+            bool  near      = (adist < CF_NEAR_THRESH);
+
+            if (pass == 0 && near)  continue;   /* save near-centre for pass 1 */
+            if (pass == 1 && !near) continue;   /* far cards already drawn */
+
+            const uint16_t *src;
+            int src_w, src_h;
+            if (is_pixel_theme() && s_pix_thumbs) {
+                src   = s_pix_thumbs + i * PIX_THUMB_RES * PIX_THUMB_RES;
+                src_w = PIX_THUMB_RES;
+                src_h = PIX_THUMB_RES;
+            } else {
+                src   = album_thumb_data(i);
+                src_w = ALBUM_THUMB_W;
+                src_h = ALBUM_THUMB_H;
+            }
+            if (!src) continue;
+
+            cf_render_card(card_cx, dist_norm, src, src_w, src_h);
+        }
+    }
+
+    lv_obj_invalidate(s_cf_img);
+}
+
+static void cf_init(lv_obj_t *screen)
+{
+    s_cf_buf = heap_caps_malloc((size_t)CF_PERSP_W * CF_PERSP_H * 2, MALLOC_CAP_SPIRAM);
+    if (!s_cf_buf) { ESP_LOGW(TAG, "cf_init: PSRAM alloc failed"); return; }
+    memset(s_cf_buf, 0, (size_t)CF_PERSP_W * CF_PERSP_H * 2);
+
+    s_cf_dsc.header.cf   = LV_COLOR_FORMAT_RGB565;
+    s_cf_dsc.header.w    = CF_PERSP_W;
+    s_cf_dsc.header.h    = CF_PERSP_H;
+    s_cf_dsc.data        = (const uint8_t *)s_cf_buf;
+    s_cf_dsc.data_size   = (uint32_t)CF_PERSP_W * CF_PERSP_H * 2;
+
+    s_cf_img = lv_image_create(screen);
+    lv_image_set_src(s_cf_img, &s_cf_dsc);
+    lv_obj_set_pos(s_cf_img, 0, SCROLLER_Y);
+    lv_obj_remove_flag(s_cf_img, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_image_set_antialias(s_cf_img, false);
+
+    ESP_LOGI(TAG, "cf_init: %u B PSRAM", (unsigned)((size_t)CF_PERSP_W * CF_PERSP_H * 2));
+}
+
+static void cf_deinit(void)
+{
+    /* s_cf_img is a child of s_screen_browser which is deleted by the caller;
+     * just null our reference.  Free the PSRAM backing buffer explicitly. */
+    s_cf_img = NULL;
+    if (s_cf_buf) { free(s_cf_buf); s_cf_buf = NULL; }
+    memset(&s_cf_dsc, 0, sizeof s_cf_dsc);
 }
 
 /* =====================================================================
@@ -2274,6 +2467,7 @@ static void apply_theme_cb(void *unused)
 
     /* Stop all animated features before deleting old screens. */
     particles_stop();
+    cf_deinit();   /* free CF canvas PSRAM; lv_image is a child of old_browser */
     prog_particles_stop();
     wifi_dots_stop();
     memset(s_wifi_bars, 0, sizeof s_wifi_bars);
@@ -3047,32 +3241,26 @@ static void progress_timer_cb(lv_timer_t *t)
     update_progress_bar();
 }
 
-/* Scale + dim each album cover by its distance from the viewport centre, per
- * style. Layout math only (scroller pad + step), no lv_obj_get_coords, so it's
- * correct before first paint and immune to the transforms feeding back in.
+/* Apply per-card transforms based on distance from the viewport centre.
  *
- * IMPORTANT: the transform is applied to the child lv_image (scale + recolor),
- * NOT to the card object. Setting transform_scale/opa on an lv_obj forces LVGL
- * to snapshot it into a per-frame layer, which this board's DIRECT-mode rotated
- * DSI flush mis-composited -- side cards faded to black as you scrolled. Image
- * transforms draw directly (no layer), so they render correctly. (We also tried
- * the 3x3 matrix path for a real iPod skew/tilt, but it crashed the SW blender
- * outright -- see git history; no true 3D tilt is possible safely here.)
- *
- *  - FOCUS:    uniform shrink + dim, centre cover prominent.
- *  - COVERFLOW: side covers squash HORIZONTALLY (scale_x falls faster than
- *               scale_y) so they read as rotated away on a vertical axis -- the
- *               iPod "turning cover" look, faked with non-uniform image scale
- *               since real skew/perspective isn't available safely here. */
+ *  - FOCUS:     scale + dim the child lv_image (safe image-draw path; no layer).
+ *               IMPORTANT: transforms are on lv_image, NOT the card object.
+ *               Object-level transform_scale/opa forces a per-frame snapshot
+ *               that this board's DIRECT-mode rotated DSI flush mis-composited.
+ *  - COVERFLOW: delegates entirely to cf_render() — LVGL card images are hidden;
+ *               the PSRAM column rasteriser draws the perspective trapezoids.
+ */
 static void apply_card_transforms(void)
 {
     if (!BROWSER_STYLE_TRANSFORMS(s_browser_style) || !s_browser_scroller) return;
-    bool cf = (s_browser_style == BROWSER_COVERFLOW);
-    /* CF: no dimming (the depth reads purely from the turn + size, matching the
-     * iPod reference where every cover stays fully lit).  Focus keeps a gentle
-     * dim so its two side cards recede. */
-    int32_t dim_rise   = cf ?   0 : 95;   /* per-step recolor-toward-black */
-    int32_t dim_max    = cf ?   0 : 110;
+
+    if (s_browser_style == BROWSER_COVERFLOW) {
+        /* CF uses its own PSRAM rasteriser; LVGL card images are hidden. */
+        cf_render();
+        return;
+    }
+
+    /* Focus mode: scale each card image by distance from centre, dim gently. */
     int32_t scroll_x   = lv_obj_get_scroll_left(s_browser_scroller);
     int32_t pad_left   = (SCREEN_W - cs()) / 2;
     int32_t step       = cs() + cg();
@@ -3083,32 +3271,17 @@ static void apply_card_transforms(void)
         int32_t dist = card_cx - scr_center;
         if (dist < 0) dist = -dist;
 
-        /* Base scale to fit the image (ALBUM_THUMB_W / PIX_THUMB_RES px) into the
-         * cs()-wide card slot.  CF shrinks cs to 160 px while thumbs are still 220 px,
-         * so we need base = cs*256/ALBUM_THUMB_W; PIXEL already uses cs*256/PIX_THUMB_RES.
-         * Focus (cs==CARD_SIZE==ALBUM_THUMB_W) and Carousel use LV_SCALE_NONE (1:1). */
+        /* 1:1 base for Focus (cs == CARD_SIZE == ALBUM_THUMB_W); PIXEL scales
+         * the 64 px pixelated thumb up to the card slot size. */
         uint32_t base = is_pixel_theme()
                       ? (uint32_t)cs() * LV_SCALE_NONE / PIX_THUMB_RES
-                      : (cf ? (uint32_t)cs() * LV_SCALE_NONE / ALBUM_THUMB_W
-                             : (uint32_t)LV_SCALE_NONE);
-        if (cf) {
-            /* iPod-style CF: horizontal squash only (full height retained), so side
-             * covers read as turned-away rectangles receding from the flat centre.
-             * Rate 103/step gives ±1 ~60 % wide, ±2 ~20 %, ±3 a thin sliver (floor
-             * 30/256 ~12 %) at the screen edge. */
-            int32_t sx = LV_SCALE_NONE - dist * 103 / step;
-            if (sx < 30) sx = 30;
-            lv_image_set_scale_x(s_card_imgs[i], (uint32_t)((int64_t)sx * base / LV_SCALE_NONE));
-            lv_image_set_scale_y(s_card_imgs[i], base);   /* full height at all distances */
-        } else {
-            int32_t scale = LV_SCALE_NONE - dist * 76 / step;
-            if (scale < 150) scale = 150;
-            lv_image_set_scale(s_card_imgs[i], (uint32_t)((int64_t)scale * base / LV_SCALE_NONE));
-        }
-        /* Dim side covers by recoloring toward black (image-draw path, no
-         * layer). 0 at centre, rising with distance. */
-        int32_t dim = dist * dim_rise / step;
-        if (dim > dim_max) dim = dim_max;
+                      : (uint32_t)LV_SCALE_NONE;
+        int32_t scale = LV_SCALE_NONE - dist * 76 / step;
+        if (scale < 150) scale = 150;
+        lv_image_set_scale(s_card_imgs[i], (uint32_t)((int64_t)scale * base / LV_SCALE_NONE));
+
+        int32_t dim = dist * 95 / step;
+        if (dim > 110) dim = 110;
         lv_obj_set_style_image_recolor(s_card_imgs[i], lv_color_black(), 0);
         lv_obj_set_style_image_recolor_opa(s_card_imgs[i], (lv_opa_t)dim, 0);
     }
@@ -3264,6 +3437,9 @@ static void rebuild_browser_cb(void *unused)
      * will be freed when we delete it below. Recreate on the new screen if the
      * vortex is running. */
     s_vfx_img_browser = NULL;
+    /* Same for the CF canvas: free the PSRAM buffer; the lv_image widget is a
+     * child of old_browser and is freed when that screen is deleted below. */
+    cf_deinit();
     build_browser_screen();
     if (is_yudho_theme() && s_vfx_buf)
         s_vfx_img_browser = vfx_create_img(s_screen_browser);
