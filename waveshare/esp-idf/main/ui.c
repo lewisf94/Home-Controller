@@ -1985,6 +1985,11 @@ static void wifi_dots_start(lv_obj_t *screen)
  * fades in after. On reconnect the reverse happens and the real title
  * is restored.
  * ===================================================================== */
+static void anim_set_bg_opa(void *obj, int32_t val)
+{
+    lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
+}
+
 static void dissolve_done_cb(lv_anim_t *a)
 {
     (void)a;
@@ -2039,7 +2044,7 @@ static void title_dissolve(void)
         lv_anim_t ao;
         lv_anim_init(&ao);
         lv_anim_set_var(&ao, dot);
-        lv_anim_set_exec_cb(&ao, (lv_anim_exec_xcb_t)lv_obj_set_style_bg_opa);
+        lv_anim_set_exec_cb(&ao, anim_set_bg_opa);
         lv_anim_set_values(&ao, 200, 0);
         lv_anim_set_time(&ao, 450);
         lv_anim_set_delay(&ao, (uint32_t)(i * 55));
@@ -2081,7 +2086,7 @@ static void title_reform(void)
         lv_anim_t ao;
         lv_anim_init(&ao);
         lv_anim_set_var(&ao, dot);
-        lv_anim_set_exec_cb(&ao, (lv_anim_exec_xcb_t)lv_obj_set_style_bg_opa);
+        lv_anim_set_exec_cb(&ao, anim_set_bg_opa);
         lv_anim_set_values(&ao, 0, 200);
         lv_anim_set_time(&ao, 400);
         lv_anim_set_delay(&ao, (uint32_t)(i * 45));
