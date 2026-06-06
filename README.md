@@ -31,7 +31,7 @@ The two CYD IDF builds share UI/input/MCP/album-art/LittleFS code via the [`cyd/
 **Waveshare ESP32-P4 (lead build) — additional features:**
 
 - **Touch-first UI** — GT911 capacitive touch, on-screen transport + volume controls, settings gear button.
-- **Three browser styles** — Carousel, Focus, iPod-style Cover Flow (image-direct scale to avoid DSI layer-snapshot artefact).
+- **Three browser styles** — Carousel, Focus, iPod-style Cover Flow (true 3D perspective via PSRAM column rasteriser — trapezoid foreshortening, correct z-order, no LVGL transform paths).
 - **Settings screen** — Menu Transition, Mode (Dark/Black/Light), Colour accent (Orange/Red/Green/Purple), Browser Style, Selection Line, Backlight Brightness — all NVS-persisted.
 - **Auto-dim / sleep** — backlight ramps to 30 % at 1 min idle, 10 % at 5 min, restores on touch.
 - **Sonos** — direct UPnP/SOAP control of a Sonos speaker on the LAN: transport, volume, and full album-start. Device selector merges Spotify Connect targets with configured Sonos speakers.

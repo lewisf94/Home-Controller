@@ -37,6 +37,8 @@ is "done":
 | Code quality (2026-06-02) | `_do_cmd` forward-declared so `spotify_play_album` can route through it (keep-alive reuse); `MAX_DEVICES` replaces 5 magic `16`s across `main.c`/`ui.c`/`ui.h`; `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain; `strlcpy` replaces `copy_str`; finite `bsp_display_lock(1000)` timeout; progress-timer drift fix. | `479c986` + `85324e9` |
 | VFX canvas particle system | Yudho: 200 Keplerian vortex particles on 400×240 PSRAM canvas (192 KB), 2× scaled, per-frame fade trails. Fuhrer: 300 art-sourced emission particles sampling album art pixels. Replaces the old 20-dot random-jump LVGL-object system. | `05137ae` |
 | FONT setting | Settings → FONT → SANS (Montserrat) or SLAB (Arvo Bold, OFL). NVS-persisted. PIXEL theme still overrides to Press Start 2P regardless. | `c64f543` |
+| Cover Flow 3D perspective | Replaced image-scale CF with a PSRAM column rasteriser (800×244 RGB565, 390 KB). Per-column perspective math produces true trapezoid foreshortening; three-pass draw guarantees centre-card z-order. Dissolve-animation cast bug fixed (`anim_set_bg_opa` wrapper). | `70812a0`, `c79aea4`, `5dd44a4` |
+| CI — GitHub Actions | ESP-IDF build workflow (`.github/workflows/esp-idf-build.yml`) runs `idf.py build` on GitHub's servers (which can reach the Espressif registry) on every push to `waveshare/esp-idf/`. Placeholder `secrets.h` and zero-filled `album_thumbs.bin` generated before build. Currently green. | `9d92764`–`c79aea4` |
 | PPA hardware acceleration | `.enable_ppa_accel = true` in vendored BSP; offloads 90° software rotation to the P4 hardware 2D accelerator. | pending |
 | Art theme scroller transparency | Yudho/Fuhrer: browser scroller `bg_opa = LV_OPA_TRANSP` so VFX canvas shows through card gaps and padding bands. | pending |
 | Cover Flow 2-side | CF card slot 220→180 px, gap 28→16 px (step 248→196). Card ±2 centres at 792/8 px — fully on-screen. Squash rate 150→100, floor 70→85, dim_rise 150→80 so second side card still reads. | pending |
@@ -88,7 +90,13 @@ Sanity-check menu for next flash (waveshare):
     the VFX vortex should be visible through the gaps between cards and the padding
     bands on the left/right of the carousel. Cards themselves remain opaque (album
     art visible). Same for FUHRER.
-15. **Cover Flow 2-side** — Settings → BROWSER STYLE → COVER FLOW: two covers
+15. **Cover Flow 3D perspective** — Settings → BROWSER STYLE → COVER FLOW: side
+    albums should appear as genuine trapezoids (inner edge tall, outer edge
+    noticeably shorter), not just squished rectangles. Centre card must always
+    render in front of both adjacent cards regardless of album index order.
+    Scrolling should feel immediate — no lag waiting for the canvas to redraw.
+    Check PSRAM heap for the expected 390 KB allocation while CF is active.
+16. **Cover Flow 2-side** — Settings → BROWSER STYLE → COVER FLOW: two covers
     should be visible on each side of the centre card (total 5 visible). Side cards
     squash and dim as before but the 2nd card peeks in from the edge.
 16. **FPS display** — Settings → FPS DISPLAY → ON: a `N FPS` readout appears in
