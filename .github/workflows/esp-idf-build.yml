@@ -30,8 +30,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        # No submodules: the vendored BSP lives as plain files under
+        # components/, and docs/ contains a third-party repo dump with a
+        # broken nested submodule ref that breaks recursive checkout.
 
       - name: Generate placeholder build inputs (gitignored assets)
         working-directory: waveshare/esp-idf
