@@ -45,6 +45,7 @@
 #include "ui.h"
 #include "album_art.h"
 #include "littlefs.h"
+#include "audio.h"
 
 static const char *TAG = "main";
 
@@ -276,6 +277,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         if (s_wifi_reconnect_timer && esp_timer_is_active(s_wifi_reconnect_timer)) {
             esp_timer_stop(s_wifi_reconnect_timer);
         }
+        /* Connect chime, first successful connect only (not on later reconnects). */
+        static bool chimed = false;
+        if (!chimed) { chimed = true; audio_play(AUDIO_SFX_CONNECT); }
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -662,6 +666,9 @@ void app_main(void)
     };
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
+
+    /* Bring up the ES8311 speaker + UI-sound task (independent of WiFi/display). */
+    audio_init();
 
     bsp_display_lock(-1);
     lv_obj_t *status_label = lv_label_create(lv_screen_active());

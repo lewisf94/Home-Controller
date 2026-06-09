@@ -28,6 +28,24 @@ Home Assistant, exactly like the CYD split.
 > started as a copy of `../../cyd/esp-idf/` and has diverged where the P4's
 > extras require it (Sonos integration, settings UI, larger display layout).
 
+## Cover Flow geometry (canonical — do not regress)
+Drawn by a PSRAM column rasteriser (`cf_render`/`cf_render_card` in `main/ui.c`),
+blitted as one `lv_image` (no LVGL per-cover scaling). The intended look:
+
+- **Centre** album: flat, facing the viewer, on top, largest.
+- **Side albums face the centre**: the **OUTER** edge is nearest the viewer (drawn
+  tallest), the inner edge recedes (shortest) and tucks **behind** the more-central
+  neighbour. Left covers → left edge near; right covers → right edge near.
+- **Z-order**: centre on top, each cover under the one nearer centre (stack
+  outward + overlap). Art is perspective-foreshortened toward the far/inner edge.
+- `CF_LEAN_FLIP` flips the lean if the rotated panel mirrors it.
+- **Perf:** `cf_render` runs in the scroll handler, so its cost does **not** show
+  in the FPS readout (which only times the blit). The converging fan keeps every
+  cover on-screen, so `CF_MAX_SIDE` caps how many covers rasterise per scroll
+  event — without it all albums draw each event and scrolling goes sluggish.
+- Tuning dials: `CF_FAN_SPREAD`, `CF_FAN_RATE`, `CF_WIDTH_SHRINK`,
+  `CF_HEIGHT_SHRINK`, `CF_MAX_SIDE`, `CF_CARD_SCALE`.
+
 ## Reference
 Waveshare official component + demos:
 https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3

@@ -259,9 +259,23 @@ verification pass before it is considered stable.**
 
 What's in `ui.c` as committed:
 - Full LVGL browser + now-playing + volume HUD + WiFi bars, laid out for 800×480.
-- Three browser styles (Carousel / Focus / Cover Flow), NVS-persisted. Cover Flow
-  uses `lv_image_set_scale_x/y` + image recolor (no object-layer transforms — the
-  only safe per-scroll transform path on this board; see CRITICAL NOTE below).
+- Three browser styles (Carousel / Focus / Cover Flow), NVS-persisted. Carousel/
+  Focus transform the child `lv_image` (scale + recolor; no object-layer transforms
+  — the only safe per-scroll transform path on this board; see CRITICAL NOTE).
+  Cover Flow is drawn by a PSRAM **column rasteriser** (`cf_render`/`cf_render_card`)
+  into one buffer that is blitted as a single `lv_image` — no LVGL per-cover
+  scaling.
+- **Cover Flow canonical geometry (do not regress — full note in `ui.c` above
+  `cf_render_card`, and `memory/project_coverflow_geometry.md`):** centre album
+  flat/on-top/largest; each side album rotated to FACE THE CENTRE — its OUTER edge
+  nearest (drawn tallest), INNER edge receding (shortest) and tucked BEHIND its
+  more-central neighbour (left: left edge near; right: right edge near). Z-order
+  centre→±1→±2 outward; art perspective-foreshortened toward the far/inner edge.
+  `CF_LEAN_FLIP` flips the lean if the panel mirrors it. **Perf:** `cf_render`
+  runs in the scroll handler (its cost is invisible to the FPS readout, which only
+  times the blit), and the converging fan keeps every cover on-screen, so
+  `CF_MAX_SIDE` caps how many covers rasterise per scroll event — without it all
+  ~56 draw and scrolling is sluggish.
 - Settings screen with six MODE options: Dark / Black / Light / Yudho / Fuhrer /
   **PIXEL**. All NVS-persisted. (Previously four sections; updated to six with PIXEL.)
 - Colour accent system: four accents (Orange / Red / Green / Purple), drives

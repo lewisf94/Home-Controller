@@ -37,6 +37,7 @@
 
 #include "albums.h"
 #include "album_thumbs.h"
+#include "audio.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "bsp/esp-bsp.h"
@@ -47,16 +48,19 @@
 #include <string.h>
 #include <math.h>
 #include "esp_heap_caps.h"
+#include "esp_timer.h"   /* esp_timer_get_time() for FPS render-duration timing */
 
 static const char *TAG = "ui";
 
 #define SCREEN_W 800
 #define SCREEN_H 480
 
-#define CARD_SIZE     220
+/* Centre album is drawn at 286 px in ALL browser styles (matches Cover Flow's
+ * 220px thumb x CF_CARD_SCALE 1.30). The flex scroller is sized to fit it. */
+#define CARD_SIZE     286
 #define CARD_GAP       28
-#define SCROLLER_Y     40
-#define SCROLLER_H    244
+#define SCROLLER_Y     30
+#define SCROLLER_H    296
 
 /* Now-playing layout, 8px grid. Art is centred up top; below it the title,
  * artist, a thin progress bar flanked by elapsed/remaining timestamps, then a
@@ -98,18 +102,24 @@ static const char *TAG = "ui";
 #define NP_ARTIST_Y   348
 #define NP_DEVICE_Y   374   /* small device-name text below artist */
 
-#define BR_TITLE_Y    298
-#define BR_ARTIST_Y   340
+/* All browser styles now share one strip geometry (286px cover, taller
+ * scroller), so title/artist sit at one position below it. CF_* kept equal for
+ * the per-style call sites. */
+#define BR_TITLE_Y    332
+#define BR_ARTIST_Y   374
+#define CF_TITLE_Y    332
+#define CF_ARTIST_Y   374
 
 
 /* Runtime TTF fonts -- created once from embedded flash blobs, shared across
  * all screen builds (title/artist labels; hints keep the built-in bitmap font
  * because it carries the LVGL symbol glyphs). */
-static lv_font_t *s_font_28 = NULL;   /* Montserrat 28 + DejaVu fallback */
-static lv_font_t *s_font_24 = NULL;   /* Montserrat 24 + DejaVu fallback */
-static lv_font_t *s_font_arvo_28 = NULL;   /* Arvo Bold 28 + DejaVu fallback */
-static lv_font_t *s_font_arvo_24 = NULL;   /* Arvo Bold 24 + DejaVu fallback */
-#define TTF_GLYPH_CACHE_CNT 128        /* matches LVGL's tiny_ttf default */
+/* Fonts are all compiled-in: runtime tiny_ttf is disabled on this target (its
+ * stb_truetype rasteriser crashes on the P4). SANS = LVGL's built-in Montserrat;
+ * SLAB = Arvo Bold baked by scripts/gen_lvgl_font.py (with a Montserrat fallback
+ * for accented glyphs outside its ASCII range). */
+extern const lv_font_t lv_font_arvo_28;
+extern const lv_font_t lv_font_arvo_24;
 #define FONT_SANS  0
 #define FONT_SLAB  1
 static uint8_t s_font_choice = FONT_SANS;
@@ -152,7 +162,10 @@ static lv_obj_t *s_browser_title    = NULL;
 static lv_obj_t *s_browser_artist   = NULL;
 static lv_obj_t *s_wifi_bars[4]     = {0};
 
-#define MAX_CARDS 64
+/* Upper bound on browsable albums. s_card_count tracks albums_count() (derived
+ * from the generated albums.c, itself from spotify-albums-list.txt) -- this cap
+ * only bounds the static card arrays; raise it if the list ever grows past it. */
+#define MAX_CARDS 128
 static lv_obj_t       *s_cards[MAX_CARDS]    = {0};
 static lv_obj_t       *s_card_imgs[MAX_CARDS] = {0};  /* child lv_image per card */
 static lv_image_dsc_t  s_card_dscs[MAX_CARDS] = {0};
@@ -222,10 +235,10 @@ typedef struct {
 static const theme_t THEME_DARK  = { 0x121212, 0x1E1E1E, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x2C2C2C };
 static const theme_t THEME_BLACK = { 0x000000, 0x141414, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x242424 };
 static const theme_t THEME_LIGHT = { 0xECEAE6, 0xDAD6CF, 0x1A1A1A, 0x57534C, 0x8C877E, 0xC6C1B8 };
-/* Yudho: near-black + near-white, red accent; animated monochrome dot particles. */
-static const theme_t THEME_YUDHO  = { 0x080808, 0x111111, 0xF0F0F0, 0x7A7A7A, 0x383838, 0x1c1c1c };
-/* Fuhrer: deep navy-black + blue-tinted whites; animated chromatic glitch particles. */
-static const theme_t THEME_FUHRER = { 0x06060f, 0x0d0d1c, 0xDDDDFF, 0x5555AA, 0x28284a, 0x12122a };
+/* GLYPH: near-black + near-white, red accent. A "dot-matrix" theme -- text uses
+ * a bespoke round-dot font and the chrome (gas-tank progress, dot volume page,
+ * WiFi dot strength meter) is built from dots. No full-screen backdrop. */
+static const theme_t THEME_GLYPH  = { 0x080808, 0x111111, 0xF0F0F0, 0x7A7A7A, 0x383838, 0x1c1c1c };
 /* PIXEL: dark CRT near-black with high-contrast off-white text; 1bpp pixel font +
  * Bayer-dithered pixelated art. Accent drives progress bar and selection highlights.
  * NOTE: porting to a future waveshare/esp-idf-ha/ is automatic (ui.c is copied);
@@ -239,10 +252,10 @@ static const theme_t *s_th = &THEME_DARK;
  * backgrounds (no pale/yellow). One accent drives selection highlights AND the
  * live elements (progress bar). */
 enum { THEME_DARK_IDX = 0, THEME_BLACK_IDX = 1, THEME_LIGHT_IDX = 2,
-       THEME_YUDHO_IDX = 3, THEME_FUHRER_IDX = 4, THEME_PIXEL_IDX = 5,
-       THEME_COUNT = 6 };
+       THEME_GLYPH_IDX = 3, THEME_PIXEL_IDX = 4,
+       THEME_COUNT = 5 };
 static const theme_t *const k_theme_palettes[THEME_COUNT] = {
-    &THEME_DARK, &THEME_BLACK, &THEME_LIGHT, &THEME_YUDHO, &THEME_FUHRER, &THEME_PIXEL,
+    &THEME_DARK, &THEME_BLACK, &THEME_LIGHT, &THEME_GLYPH, &THEME_PIXEL,
 };
 static uint8_t s_theme = THEME_DARK_IDX;
 
@@ -256,12 +269,12 @@ static uint32_t accent_color(void) { return k_accents[s_accent]; }
  *  - CAROUSEL:  flat row, all cards same size (the original).
  *  - FOCUS:     centre card full size, side cards scale down + dim gently.
  *  - COVERFLOW: true 3D perspective tilt via a PSRAM column rasteriser.
- *               Each card is rendered as a trapezoid (inner edge full height,
- *               outer edge foreshortened) into a 800×244 pixel buffer that
+ *               Each card is rendered as a trapezoid (left edge full height,
+ *               right edge foreshortened) into a 800×296 pixel buffer that
  *               sits on top of the transparent LVGL scroller.  Centre card
  *               drawn last so it always appears in front of turned side covers.
  *               LVGL card objects are hidden; scroll physics use the flex layout
- *               unchanged (step = cs() + cg() = 130 px).
+ *               unchanged (step = cs() + cg() = 110 px).
  * NVS persists the index; the old build's "Cover Flow" (index 1) is now FOCUS,
  * which is the correct migration -- index 1 was always the scale+dim mode. */
 enum { BROWSER_CAROUSEL = 0, BROWSER_FOCUS = 1, BROWSER_COVERFLOW = 2,
@@ -277,61 +290,21 @@ static bool    s_show_sel_line = true;   /* centred-card underline (Settings tog
 #define BRIGHTNESS_DEFAULT 100
 static uint8_t s_brightness = BRIGHTNESS_DEFAULT;
 
-/* Background VFX canvas: a PSRAM-backed 400×240 RGB565 buffer presented as a
- * 2× scaled lv_image behind both browser and NP screens.
- *
- * Yudho theme: spiral vortex — 200 particles in polar coords, Keplerian spin,
- * per-frame exponential fade creates glowing trails.
- *
- * Fuhrer (art) theme: art-sourced particle emission — pixels sampled from the
- * decoded album art drift outward from the image centre.
- *
- * Both share the same buffer/dsc/img infrastructure; only the tick callback
- * and particle data differ. The old LVGL-object particle system (20 dots,
- * random jumps) is replaced entirely.
- */
-#define VFX_W  400
-#define VFX_H  240
-
-static uint16_t       *s_vfx_buf   = NULL;
-static lv_image_dsc_t  s_vfx_dsc   = {0};
-static lv_obj_t       *s_vfx_img_browser = NULL;
-static lv_obj_t       *s_vfx_img_np     = NULL;
-static lv_timer_t     *s_vfx_timer = NULL;
-
-/* ---- Yudho vortex particles ---- */
-#define VORTEX_COUNT   200
-#define VORTEX_R_MAX  100.0f
-#define VORTEX_R_MIN    5.0f
-#define VORTEX_SPEED    0.025f   /* rad/tick at R_MAX; inner faster (Keplerian) */
-#define VORTEX_INWARD   0.12f    /* px/tick inward pull */
-typedef struct { float angle; float radius; } vortex_pt_t;
-static vortex_pt_t s_vortex[VORTEX_COUNT];
-
-/* ---- Fuhrer art-emission particles ---- */
-#define ART_PART_COUNT  300
-typedef struct {
-    float    x, y;
-    float    vx, vy;
-    uint16_t color;
-    uint8_t  life;     /* 255→0; respawn at 0 */
-} art_pt_t;
-static art_pt_t s_art_pts[ART_PART_COUNT];
-
-/* === Yudho-only integrated particle features === */
+/* === Glyph-only integrated dot UI features === */
 
 /* 1. Gas-particle progress bar: 24 dots confined to the played zone, bouncing
  *    elastically inside the expanding container as the song progresses. */
-#define PROG_PART_COUNT  24
+#define PROG_PART_COUNT  44
 /* The dots live inside a black "tank" box with white walls that encloses the
  * thin progress bar (taller than the bar so the gas has headroom). */
-#define PROG_TANK_H   (PROG_H + 16)
+#define PROG_TANK_H   (PROG_H + 38)
 #define PROG_TANK_Y   (PROG_Y + PROG_H / 2 - PROG_TANK_H / 2)
 typedef struct { int16_t x, y; int8_t vx, vy; } prog_pt_t;
 static prog_pt_t   s_prog_pts[PROG_PART_COUNT]   = {0};
 static lv_obj_t   *s_prog_objs[PROG_PART_COUNT]  = {0};
 static lv_timer_t *s_prog_particle_timer         = NULL;
-static lv_obj_t   *s_prog_tank                   = NULL;   /* black box, white walls */
+static lv_obj_t   *s_prog_tank                   = NULL;   /* dim-framed gas chamber */
+static lv_obj_t   *s_prog_head                   = NULL;   /* bright playhead at the progress point */
 
 /* 2. Volume page: full-screen dot-matrix volume display. */
 #define VOL_PAGE_COLS   8
@@ -342,13 +315,11 @@ static lv_obj_t *s_vol_page_dots[VOL_PAGE_DOTS] = {0};
 static lv_obj_t *s_vol_page_label  = NULL;   /* "XX%" readout */
 static lv_timer_t *s_vol_release_timer = NULL;
 
-/* 3. WiFi orbiting dot cluster: 4 dots orbiting a centre point in the browser
- *    top-left corner, replacing the bar indicators when Yudho is active. */
+/* 3. WiFi dot strength meter: 4 dots of rising size in the browser top-left
+ *    corner; the first `s_wifi_dot_count` are lit in the accent, the rest dim.
+ *    Static (no timer) -- replaces the rising bar indicators when Glyph active. */
 static lv_obj_t   *s_wifi_dots[4]   = {0};
-static float       s_wifi_angles[4] = {0.0f, 1.57f, 3.14f, 4.71f};
 static int         s_wifi_dot_count = 0;
-static int         s_wifi_dot_radius = 10;
-static lv_timer_t *s_wifi_orbit_timer = NULL;
 
 /* 4. Offline title dissipation: temporary dots that animate on offline transition. */
 #define DISSOLVE_DOT_COUNT  8
@@ -398,18 +369,49 @@ static lv_obj_t *s_line_toggle_btn = NULL;   /* Settings ON/OFF toggle for it */
 static lv_obj_t *s_line_toggle_lbl = NULL;
 static lv_obj_t *s_brightness_slider = NULL;   /* Settings backlight slider */
 static lv_obj_t *s_brightness_val    = NULL;   /* "NN%" label beside it */
+static lv_obj_t *s_sound_toggle_btn  = NULL;   /* Settings UI-sound ON/OFF toggle */
+static lv_obj_t *s_sound_toggle_lbl  = NULL;
+static lv_obj_t *s_volume_slider     = NULL;   /* Settings UI-sound volume slider */
+static lv_obj_t *s_volume_val        = NULL;   /* "NN%" label beside it */
+
+/* Settings is split into category pages reached by a chip row at the top
+ * (Appearance / Display / Sound). One page is visible at a time; the rest are
+ * hidden. s_set_tab survives a theme rebuild so the active page is preserved. */
+#define SET_TAB_COUNT  2
+static lv_obj_t *s_set_tabs[SET_TAB_COUNT]     = {0};   /* category chip buttons */
+static lv_obj_t *s_set_tab_lbls[SET_TAB_COUNT] = {0};
+static lv_obj_t *s_set_pages[SET_TAB_COUNT]    = {0};   /* page containers */
+static uint8_t   s_set_tab = 0;                         /* active category page */
+
+/* SOUND SET selector: option 0 = AUTO (follow MODE), then one per named set. */
+#define SND_SET_OPTS 8
+static lv_obj_t *s_sndset_btns[SND_SET_OPTS] = {0};
+static lv_obj_t *s_sndset_lbls[SND_SET_OPTS] = {0};
+static int       s_sndset_opt_count          = 0;
 
 /* Live FPS counter -- browser top-bar label updated every 1 s. */
 static lv_obj_t  *s_fps_label      = NULL;
 static lv_obj_t  *s_fps_toggle_btn = NULL;
 static lv_obj_t  *s_fps_toggle_lbl = NULL;
 static bool       s_fps_enabled    = false;
-static uint32_t   s_fps_count      = 0;   /* flush-ready events since last 1 s snapshot */
+/* FPS = max achievable frame rate, measured as render duration (RENDER_START ->
+ * RENDER_READY), NOT forced frame activity. We track the longest (full-screen)
+ * render each 1 s window; 1e6/that_us is the max sustained FPS. Held across idle
+ * windows so the readout stays meaningful when nothing is moving.
+ * NOTE: never call lv_*_invalidate() from a render event -- it asserts
+ * (rendering_in_progress) and wedges the LVGL task. Timing only here. */
+static int64_t    s_fps_render_start_us = 0;   /* RENDER_START timestamp */
+static uint32_t   s_fps_win_max_us      = 0;   /* longest render this 1 s window */
+static uint32_t   s_fps_last_max        = 0;   /* last computed max FPS (held on idle) */
 
-/* CF perspective canvas: SCREEN_W × SCROLLER_H PSRAM RGB565 buffer rasterized
- * on each scroll event.  Only allocated when BROWSER_COVERFLOW is active. */
+/* CF perspective canvas: SCREEN_W × CF_PERSP_H PSRAM RGB565 buffer rasterized
+ * on each scroll event.  Only allocated when BROWSER_COVERFLOW is active.
+ * Pinned just below the top strip (CF_PERSP_Y) and grown downward so the
+ * enlarged centre cover (CF_CARD_SCALE × the 220px thumb) fills the space down
+ * to CF_TITLE_Y -- bottom (CF_PERSP_Y + CF_PERSP_H = 326) stays clear of it. */
 #define CF_PERSP_W   SCREEN_W    /* 800 */
-#define CF_PERSP_H   SCROLLER_H  /* 244 */
+#define CF_PERSP_H   296
+#define CF_PERSP_Y   30
 static uint16_t       *s_cf_buf = NULL;
 static lv_image_dsc_t  s_cf_dsc = {0};
 static lv_obj_t       *s_cf_img = NULL;
@@ -423,11 +425,14 @@ static lv_obj_t       *s_cf_img = NULL;
 #define NVS_KEY_BRIGHTNESS    "brightness"
 #define NVS_KEY_FONT          "font"
 #define NVS_KEY_FPS           "fps_disp"
+#define NVS_KEY_SOUND         "ui_sound"
+#define NVS_KEY_VOLUME        "ui_vol"
+#define NVS_KEY_SOUND_SET     "ui_sndset"
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
 };
-static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT", "YUDHO", "FUHRER", "PIXEL" };
+static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT", "GLYPH", "PIXEL" };
 static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSEL", "FOCUS", "COVER FLOW" };
 
 /* Cached track state. The LVGL progress timer reads progress_ms /
@@ -474,7 +479,20 @@ static void on_font_option(lv_event_t *e);
 static void refresh_font_selection(void);
 static void on_fps_toggle(lv_event_t *e);
 static void refresh_fps_selection(void);
-static void fps_flush_cb(lv_event_t *e);
+static void on_sound_toggle(lv_event_t *e);
+static void refresh_sound_selection(void);
+static void save_sound(uint8_t v);
+static void on_volume_changed(lv_event_t *e);
+static void on_volume_released(lv_event_t *e);
+static void save_volume(uint8_t v);
+static void apply_audio_theme(void);
+static void on_settings_tab(lv_event_t *e);
+static void refresh_settings_tabs(void);
+static void on_sound_set_option(lv_event_t *e);
+static void refresh_sound_set_selection(void);
+static void save_sound_set(int8_t v);
+static void fps_render_start_cb(lv_event_t *e);
+static void fps_render_ready_cb(lv_event_t *e);
 static void fps_timer_cb(lv_timer_t *t);
 static void cf_init(lv_obj_t *screen);
 static void cf_deinit(void);
@@ -497,16 +515,18 @@ static void on_vol_press(lv_event_t *e);
 static void on_vol_press_lost(lv_event_t *e);
 static void refresh_play_icon(void);
 static void position_seek_thumb(int32_t pct);
-static bool is_art_theme(void);
-static bool is_yudho_theme(void);
+static bool is_glyph_theme(void);
 static bool is_pixel_theme(void);
 static const lv_font_t *font_lg(void);
 static const lv_font_t *font_md(void);
 static const lv_font_t *font_sm(void);
+/* GLYPH dot fonts -- declared here so build_np_screen() (above their definition)
+ * can select lv_font_dot_28 for the transport icons. */
+extern const lv_font_t lv_font_dot_20;
+extern const lv_font_t lv_font_dot_24;
+extern const lv_font_t lv_font_dot_28;
 static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                              uint16_t *dst, uint16_t dw, uint16_t dh);
-static void particles_start(lv_obj_t *screen);
-static void particles_stop(void);
 /* Gas-particle progress bar */
 static void prog_particles_start(lv_obj_t *screen);
 static void prog_particles_stop(void);
@@ -518,10 +538,9 @@ static void on_open_volume(lv_event_t *e);
 static void on_vol_page_back(lv_event_t *e);
 static void on_vol_page_drag(lv_event_t *e);
 static void vol_release_timer_cb(lv_timer_t *t);
-/* WiFi orbit */
+/* WiFi dot strength meter */
 static void wifi_dots_start(lv_obj_t *screen);
 static void wifi_dots_stop(void);
-static void wifi_orbit_tick_cb(lv_timer_t *t);
 static void wifi_dots_update_count(int bars);
 /* Offline dissolve */
 static void title_dissolve(void);
@@ -545,18 +564,15 @@ static lv_color_t card_color(size_t i)
     return lv_palette_darken(palettes[i % n], 1);
 }
 
-/* All browser styles use the same card slot size + gap; Focus and Cover Flow
- * differ only by the per-card transform applied at scroll time, not the layout
- * footprint (so the 220px card always fits the 244px scroller -- no clipping).
- * Cover Flow: cs=160 (a big, dominant centre cover that fills most of the 244 px
- * scroller) + cg=-30 so the layout step is 130 px.  The negative gap pulls the
- * slots together so three turned side covers fit each side and crowd close to the
- * centre, iPod-style: ±1 centre at ±130, ±2 at ±260, ±3 at ±390 (10/790 px — both
- * on screen).  The side images are squashed narrow (scale_x only) so even though
- * the *slots* overlap by 30 px the *images* only just touch — no z-order artefact
- * from flex draw order. */
-static int cs(void) { return (s_browser_style == BROWSER_COVERFLOW) ? 160 : CARD_SIZE; }
-static int cg(void) { return (s_browser_style == BROWSER_COVERFLOW) ? -30 : CARD_GAP; }
+/* Carousel/Focus use the same 220px slot + 28px gap. Cover Flow only uses
+ * cs()/cg() to drive the scroll step + snap points -- the covers themselves are
+ * drawn by the PSRAM rasteriser (cf_render), not by these flex slots (which are
+ * hidden in CF mode). cs=165 + cg=-55 give a 110px step -- smaller than a turned
+ * side cover (~143px wide at full tilt), so every side cover overlaps its
+ * neighbour (no gaps, even at the extremes) and they crowd in toward the centre
+ * iPod-style. cf_render draws far->near so nearer covers paint on top. */
+static int cs(void) { return (s_browser_style == BROWSER_COVERFLOW) ? 165 : CARD_SIZE; }
+static int cg(void) { return (s_browser_style == BROWSER_COVERFLOW) ? -55 : CARD_GAP; }
 
 static void style_label(lv_obj_t *label, const lv_font_t *font,
                         lv_color_t color, int16_t y)
@@ -652,11 +668,6 @@ static void build_browser_screen(void)
     lv_obj_set_pos(s_browser_scroller, 0, SCROLLER_Y);
     lv_obj_set_style_bg_color(s_browser_scroller, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_COVER, 0);
-    /* For art themes (Yudho/Fuhrer), the VFX canvas sits behind the screen;
-     * making the scroller transparent lets the vortex/emission show through the
-     * gaps between cards and the padding bands. Cards keep their own opaque bg. */
-    if (is_art_theme())
-        lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_browser_scroller, 0, 0);
     lv_obj_set_style_pad_top(s_browser_scroller, 0, 0);
     lv_obj_set_style_pad_bottom(s_browser_scroller, 0, 0);
@@ -765,7 +776,7 @@ static void build_browser_screen(void)
             lv_obj_center(img);
             if (pix_ok) {
                 /* Scale 64x64 to fill the card slot with hard pixel blocks.
-                 * cs() is the actual slot size (220 normally, 180 in CF mode).
+                 * cs() is the actual slot size (220 normally, 165 in CF mode).
                  * apply_card_transforms() multiplies relative transforms by this
                  * ratio in Focus/CoverFlow so side cards still scale correctly. */
                 lv_image_set_pivot(img, PIX_THUMB_RES / 2, PIX_THUMB_RES / 2);
@@ -774,6 +785,15 @@ static void build_browser_screen(void)
             } else {
                 /* Scale about the image centre so side covers shrink inward. */
                 lv_image_set_pivot(img, ALBUM_THUMB_W / 2, ALBUM_THUMB_H / 2);
+                /* Fill the 286px card from the 220px thumb. Carousel keeps this
+                 * build-time scale (every cover 286, matching Cover Flow's
+                 * centre); FOCUS overrides it per-scroll in
+                 * apply_card_transforms; Cover Flow hides these images. */
+                lv_image_set_scale(img, (uint32_t)cs() * LV_SCALE_NONE / ALBUM_THUMB_W);
+                /* Nearest-neighbour: no anti-aliased (bilinear) resample, which
+                 * is ~4x the per-pixel cost -- the main reason FOCUS was ~2x
+                 * slower. Only the scaled side covers lose a little smoothness. */
+                lv_image_set_antialias(img, false);
             }
             lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
             s_card_imgs[i] = img;
@@ -793,13 +813,14 @@ static void build_browser_screen(void)
         s_cards[i] = card;
     }
 
+    bool cf = (s_browser_style == BROWSER_COVERFLOW);
     s_browser_title = lv_label_create(s_screen_browser);
     style_label(s_browser_title, font_lg(),
-                lv_color_hex(s_th->text), BR_TITLE_Y);
+                lv_color_hex(s_th->text), cf ? CF_TITLE_Y : BR_TITLE_Y);
 
     s_browser_artist = lv_label_create(s_screen_browser);
     style_label(s_browser_artist, font_md(),
-                lv_color_hex(s_th->text2), BR_ARTIST_Y);
+                lv_color_hex(s_th->text2), cf ? CF_ARTIST_Y : BR_ARTIST_Y);
 
     if (s_card_count > 0) {
         const album_entry_t *a = albums_get(0);
@@ -839,12 +860,13 @@ static void build_browser_screen(void)
     lv_obj_set_style_bg_color(s_sel_line, lv_color_hex(accent_color()), 0);
     lv_obj_set_style_bg_opa(s_sel_line, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_sel_line, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(s_sel_line, LV_ALIGN_TOP_MID, 0, SCROLLER_Y + SCROLLER_H - 8);
+    lv_obj_align(s_sel_line, LV_ALIGN_TOP_MID, 0,
+                 cf ? (CF_PERSP_Y + CF_PERSP_H - 18) : (SCROLLER_Y + SCROLLER_H - 8));
     if (!s_show_sel_line) lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
 
-    /* WiFi-strength indicator: rising bars normally; orbiting dot cluster for Yudho. */
+    /* WiFi-strength indicator: rising bars normally; orbiting dot cluster for Glyph. */
     memset(s_wifi_bars, 0, sizeof s_wifi_bars);
-    if (!is_yudho_theme()) {
+    if (!is_glyph_theme()) {
         for (int i = 0; i < 4; i++) {
             int h = 6 + i * 4;   /* 6, 10, 14, 18 px tall */
             lv_obj_t *bar = lv_obj_create(s_screen_browser);
@@ -1062,10 +1084,12 @@ static void build_np_screen(void)
         lv_obj_t *lbl = lv_label_create(key);
         lv_label_set_text(lbl, keys[i].sym);
         lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text), 0);
-        /* LV_SYMBOL_* are FontAwesome glyphs that the runtime tiny_ttf Montserrat
-         * (font_lg) doesn't carry -- use the compiled Montserrat, which bundles
-         * the symbol range, so the keys show real prev/play/next icons. */
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+        /* GLYPH: route through the dot font so the icons render as dots (its
+         * fallback chain carries the dotted FontAwesome symbols). Other modes
+         * use compiled Montserrat, which bundles the symbol range (Arvo/Pixel
+         * don't), so the keys always show real prev/play/next icons. */
+        lv_obj_set_style_text_font(lbl,
+            is_glyph_theme() ? &lv_font_dot_28 : &lv_font_montserrat_28, 0);
         lv_obj_center(lbl);
         if (i == 1) s_np_play_lbl = lbl;   /* centre key reflects play state */
     }
@@ -1112,8 +1136,8 @@ static void build_np_screen(void)
     lv_obj_set_style_text_color(vol_ico, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(vol_ico, font_sm(), 0);
     lv_obj_set_pos(vol_ico, 715, 40);
-    /* In Yudho mode the icon is a tappable shortcut to the volume page. */
-    if (is_yudho_theme()) {
+    /* In Glyph mode the icon is a tappable shortcut to the volume page. */
+    if (is_glyph_theme()) {
         lv_obj_set_style_text_color(vol_ico, lv_color_hex(accent_color()), 0);
         lv_obj_add_flag(vol_ico, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(vol_ico, on_open_volume, LV_EVENT_CLICKED, NULL);
@@ -1124,8 +1148,8 @@ static void build_np_screen(void)
     lv_obj_set_pos(s_np_volume, 708, 66);
     lv_slider_set_range(s_np_volume, 0, 100);
     lv_slider_set_value(s_np_volume, 50, LV_ANIM_OFF);
-    if (is_yudho_theme()) {
-        /* Hidden in Yudho: the volume page handles display; keep for internal value. */
+    if (is_glyph_theme()) {
+        /* Hidden in Glyph: the volume page handles display; keep for internal value. */
         lv_obj_add_flag(s_np_volume, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(s_th->track), LV_PART_MAIN);
@@ -1195,14 +1219,9 @@ static void refresh_accent_selection(void)
     }
 }
 
-static bool is_art_theme(void)
+static bool is_glyph_theme(void)
 {
-    return s_theme == THEME_YUDHO_IDX || s_theme == THEME_FUHRER_IDX;
-}
-
-static bool is_yudho_theme(void)
-{
-    return s_theme == THEME_YUDHO_IDX;
+    return s_theme == THEME_GLYPH_IDX;
 }
 
 static bool is_pixel_theme(void)
@@ -1215,6 +1234,11 @@ static bool is_pixel_theme(void)
 extern const lv_font_t lv_font_pixel_16;
 extern const lv_font_t lv_font_pixel_24;
 
+/* Bespoke round-dot matrix fonts for the GLYPH theme (each glyph is built from
+ * round dots; generated by scripts/gen_lvgl_font.py --dots). Declared up with the
+ * forward declarations. Their fallback chain (dot_NN -> dot_sym_NN -> montserrat)
+ * carries dotted FontAwesome symbols, so icons in GLYPH render as dots too. */
+
 /* Font accessor helpers: return the PIXEL 1bpp font when PIXEL theme is
  * active, else the normal runtime TTF / bitmap font.  Route all
  * lv_obj_set_style_text_font calls through these so a single theme change
@@ -1222,18 +1246,21 @@ extern const lv_font_t lv_font_pixel_24;
 static const lv_font_t *font_lg(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_24;
-    if (s_font_choice == FONT_SLAB && s_font_arvo_28) return s_font_arvo_28;
-    return s_font_28 ? s_font_28 : &lv_font_montserrat_28;
+    if (is_glyph_theme()) return &lv_font_dot_28;
+    if (s_font_choice == FONT_SLAB) return &lv_font_arvo_28;
+    return &lv_font_montserrat_28;
 }
 static const lv_font_t *font_md(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_16;
-    if (s_font_choice == FONT_SLAB && s_font_arvo_24) return s_font_arvo_24;
-    return s_font_24 ? s_font_24 : &lv_font_montserrat_24;
+    if (is_glyph_theme()) return &lv_font_dot_24;
+    if (s_font_choice == FONT_SLAB) return &lv_font_arvo_24;
+    return &lv_font_montserrat_24;
 }
 static const lv_font_t *font_sm(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_16;
+    if (is_glyph_theme()) return &lv_font_dot_20;
     return &lv_font_montserrat_20;
 }
 
@@ -1274,250 +1301,51 @@ static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
     }
 }
 
-/* Write one pixel into the VFX buffer (bounds-checked). */
-static inline void vfx_set_px(int x, int y, uint16_t color)
-{
-    if ((unsigned)x < VFX_W && (unsigned)y < VFX_H)
-        s_vfx_buf[y * VFX_W + x] = color;
-}
-
-/* Fade every non-black pixel by ~87.5% (14/16 = 0.875) to create glowing
- * trails. Skipping zero pixels keeps this fast since most of the canvas is
- * black at any given moment. */
-static void vfx_fade(uint8_t keep_num, uint8_t keep_den)
-{
-    uint16_t *p = s_vfx_buf;
-    uint16_t *end = p + VFX_W * VFX_H;
-    for (; p < end; p++) {
-        uint16_t px = *p;
-        if (!px) continue;
-        uint8_t r = (uint8_t)(((px >> 11) & 0x1F) * keep_num >> keep_den);
-        uint8_t g = (uint8_t)(((px >>  5) & 0x3F) * keep_num >> keep_den);
-        uint8_t b = (uint8_t)((px & 0x1F)          * keep_num >> keep_den);
-        *p = (uint16_t)((r << 11) | (g << 5) | b);
-    }
-}
-
-/* Invalidate both VFX image widgets so LVGL flushes the updated buffer. */
-static void vfx_invalidate(void)
-{
-    if (s_vfx_img_browser) lv_obj_invalidate(s_vfx_img_browser);
-    if (s_vfx_img_np)      lv_obj_invalidate(s_vfx_img_np);
-}
-
-/* ---- Yudho vortex tick ---- */
-static void vortex_tick_cb(lv_timer_t *t)
-{
-    (void)t;
-    if (!s_vfx_buf) return;
-
-    /* Fade trails (~87.5% retention = 14/16). */
-    vfx_fade(14, 4);
-
-    const float cx = VFX_W * 0.5f;
-    const float cy = VFX_H * 0.5f;
-
-    for (int i = 0; i < VORTEX_COUNT; i++) {
-        vortex_pt_t *p = &s_vortex[i];
-
-        /* Keplerian speed: inner particles orbit faster. */
-        float spd = VORTEX_SPEED * sqrtf(VORTEX_R_MAX / p->radius);
-        p->angle  += spd;
-        p->radius -= VORTEX_INWARD;
-
-        /* Respawn near outer edge when too close to centre. */
-        if (p->radius < VORTEX_R_MIN) {
-            p->radius = VORTEX_R_MAX * (0.65f + 0.35f * ((float)(esp_random() & 0xFF) / 255.0f));
-            p->angle  = 6.2832f * ((float)(esp_random() & 0xFFFF) / 65535.0f);
-        }
-
-        int px = (int)(cx + p->radius * cosf(p->angle));
-        int py = (int)(cy + p->radius * sinf(p->angle));
-
-        /* Brightness varies with radius: brighter near centre for a glowing core. */
-        uint8_t brt = (uint8_t)(100 + (uint8_t)((1.0f - p->radius / VORTEX_R_MAX) * 155.0f));
-        uint16_t color = (uint16_t)(((brt >> 3) << 11) | ((brt >> 2) << 5) | (brt >> 3));
-        vfx_set_px(px, py, color);
-    }
-    vfx_invalidate();
-}
-
-/* ---- Fuhrer art-emission tick ---- */
-static void art_emission_tick_cb(lv_timer_t *t)
-{
-    (void)t;
-    if (!s_vfx_buf) return;
-
-    /* Faster fade (~75% = 12/16) for the dissolving-cloud look. */
-    vfx_fade(12, 4);
-
-    const float cx = VFX_W * 0.5f;
-    const float cy = VFX_H * 0.5f;
-
-    for (int i = 0; i < ART_PART_COUNT; i++) {
-        art_pt_t *p = &s_art_pts[i];
-
-        if (p->life == 0 ||
-            p->x < 0 || p->x >= VFX_W ||
-            p->y < 0 || p->y >= VFX_H) {
-            /* Respawn: sample a pixel from the album art (or use rainbow fallback). */
-            uint16_t src_color;
-            if (s_last_raw_art && s_last_raw_w > 0 && s_last_raw_h > 0) {
-                uint32_t sx = esp_random() % s_last_raw_w;
-                uint32_t sy = esp_random() % s_last_raw_h;
-                src_color = ((const uint16_t *)s_last_raw_art)[sy * s_last_raw_w + sx];
-            } else {
-                /* Rainbow gradient from hue based on vertical position. */
-                uint32_t ry = esp_random() % VFX_H;
-                uint16_t hue = (uint16_t)(ry * 360 / VFX_H);
-                lv_color_t c = lv_color_hsv_to_rgb(hue, 100, 100);
-                src_color = (uint16_t)(((c.red >> 3) << 11) | ((c.green >> 2) << 5) | (c.blue >> 3));
-            }
-            p->color = src_color;
-            p->x     = cx + ((float)(int)(esp_random() & 0x3F) - 32) * 0.8f;
-            p->y     = cy + ((float)(int)(esp_random() & 0x3F) - 32) * 0.8f;
-            /* Velocity: small outward vector + slight downward drift. */
-            p->vx    = ((float)(int)(esp_random() & 0xFF) - 128) / 128.0f * 1.2f;
-            p->vy    = ((float)(int)(esp_random() & 0xFF) - 128) / 128.0f * 1.2f + 0.3f;
-            p->life  = (uint8_t)(180 + esp_random() % 75);
-            continue;
-        }
-
-        p->x    += p->vx;
-        p->y    += p->vy;
-        p->life  = (p->life > 3) ? p->life - 3 : 0;
-
-        /* Scale colour brightness by remaining life. */
-        uint8_t life_scale = p->life;
-        uint8_t r = (uint8_t)(((p->color >> 11) & 0x1F) * life_scale >> 8);
-        uint8_t g = (uint8_t)(((p->color >>  5) & 0x3F) * life_scale >> 8);
-        uint8_t b = (uint8_t)((p->color & 0x1F)          * life_scale >> 8);
-        vfx_set_px((int)p->x, (int)p->y,
-                   (uint16_t)((r << 11) | (g << 5) | b));
-    }
-    vfx_invalidate();
-}
-
-/* Create the VFX image on a screen at z=0 (background). */
-static lv_obj_t *vfx_create_img(lv_obj_t *screen)
-{
-    lv_obj_t *img = lv_image_create(screen);
-    lv_image_set_src(img, &s_vfx_dsc);
-    /* 2× nearest-neighbour upscale: 400×240 → 800×480. */
-    lv_image_set_scale(img, LV_SCALE_NONE * 2);
-    lv_image_set_antialias(img, false);
-    lv_obj_set_pos(img, 0, 0);
-    lv_obj_remove_flag(img, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_move_to_index(img, 0);   /* push behind all other children */
-    return img;
-}
-
-static void vfx_stop(void)
-{
-    if (s_vfx_timer) {
-        lv_timer_delete(s_vfx_timer);
-        s_vfx_timer = NULL;
-    }
-    /* Image objects are children of their screens; they are deleted when the
-     * screen is deleted in apply_theme_cb. Just clear our references. */
-    s_vfx_img_browser = NULL;
-    s_vfx_img_np      = NULL;
-    if (s_vfx_buf) {
-        free(s_vfx_buf);
-        s_vfx_buf = NULL;
-    }
-    memset(&s_vfx_dsc, 0, sizeof s_vfx_dsc);
-}
-
-static void vortex_start(void)
-{
-    vfx_stop();
-    s_vfx_buf = heap_caps_malloc((size_t)VFX_W * VFX_H * 2, MALLOC_CAP_SPIRAM);
-    if (!s_vfx_buf) { ESP_LOGW(TAG, "vortex_start: PSRAM alloc failed"); return; }
-    memset(s_vfx_buf, 0, (size_t)VFX_W * VFX_H * 2);
-
-    s_vfx_dsc.header.cf   = LV_COLOR_FORMAT_RGB565;
-    s_vfx_dsc.header.w    = VFX_W;
-    s_vfx_dsc.header.h    = VFX_H;
-    s_vfx_dsc.data        = (const uint8_t *)s_vfx_buf;
-    s_vfx_dsc.data_size   = (uint32_t)VFX_W * VFX_H * 2;
-
-    /* Scatter particles around the canvas to avoid a cold-start burst from centre. */
-    for (int i = 0; i < VORTEX_COUNT; i++) {
-        s_vortex[i].radius = VORTEX_R_MIN + ((float)(esp_random() & 0xFFFF) / 65535.0f)
-                             * (VORTEX_R_MAX - VORTEX_R_MIN);
-        s_vortex[i].angle  = 6.2832f * ((float)(esp_random() & 0xFFFF) / 65535.0f);
-    }
-
-    if (s_screen_browser) s_vfx_img_browser = vfx_create_img(s_screen_browser);
-    if (s_screen_np)      s_vfx_img_np      = vfx_create_img(s_screen_np);
-
-    s_vfx_timer = lv_timer_create(vortex_tick_cb, 50, NULL);
-    ESP_LOGI(TAG, "vortex started (PSRAM %u B)", (unsigned)((size_t)VFX_W * VFX_H * 2));
-}
-
-static void art_emission_start(void)
-{
-    vfx_stop();
-    s_vfx_buf = heap_caps_malloc((size_t)VFX_W * VFX_H * 2, MALLOC_CAP_SPIRAM);
-    if (!s_vfx_buf) { ESP_LOGW(TAG, "art_emission_start: PSRAM alloc failed"); return; }
-    memset(s_vfx_buf, 0, (size_t)VFX_W * VFX_H * 2);
-
-    s_vfx_dsc.header.cf   = LV_COLOR_FORMAT_RGB565;
-    s_vfx_dsc.header.w    = VFX_W;
-    s_vfx_dsc.header.h    = VFX_H;
-    s_vfx_dsc.data        = (const uint8_t *)s_vfx_buf;
-    s_vfx_dsc.data_size   = (uint32_t)VFX_W * VFX_H * 2;
-
-    /* Zero-life forces respawn on first tick for all particles. */
-    memset(s_art_pts, 0, sizeof s_art_pts);
-
-    if (s_screen_np) s_vfx_img_np = vfx_create_img(s_screen_np);
-
-    s_vfx_timer = lv_timer_create(art_emission_tick_cb, 40, NULL);
-    ESP_LOGI(TAG, "art emission started (PSRAM %u B)", (unsigned)((size_t)VFX_W * VFX_H * 2));
-}
-
-/* Compatibility shims — called from apply_theme_cb and rebuild_browser_cb.
- * The old particles_start/stop were called with a screen argument; the new
- * VFX system manages its own screen references via s_screen_browser/np. */
-static void particles_stop(void)  { vfx_stop(); }
-static void particles_start(lv_obj_t *screen)
-{
-    (void)screen;  /* ignored — vortex/art_emission use s_screen_* directly */
-    /* is_art_theme() is true for both Yudho and Fuhrer; check Yudho first. */
-    if (is_yudho_theme())    vortex_start();
-    else if (is_art_theme()) art_emission_start();   /* Fuhrer */
-}
 
 /* =====================================================================
  * Cover Flow perspective rasteriser
  *
- * A PSRAM-backed CF_PERSP_W×CF_PERSP_H (800×244) RGB565 canvas covers the
- * browser scroller strip at 1:1 scale.  On every scroll event cf_render()
- * clears the canvas to the theme background, then rasterises each visible
- * album as a trapezoid using per-column perspective math:
+ * A PSRAM-backed CF_PERSP_W×CF_PERSP_H (800×296) RGB565 canvas covers the
+ * browser scroller strip.  On every scroll event cf_render() clears the canvas
+ * to the theme background, then rasterises each visible album as a trapezoid
+ * (base = 220px thumb × CF_CARD_SCALE) using per-column perspective math:
  *
- *   inner edge (facing centre): full source height
- *   outer edge:                 height × (1 − tilt × HEIGHT_SHRINK)
- *   display width:              width  × (1 − tilt × WIDTH_SHRINK)
+ *   left edge:    full base height
+ *   right edge:   base_h × (1 − tilt × HEIGHT_SHRINK)
+ *   display width: base_w × (1 − tilt × WIDTH_SHRINK)
  *
  * where tilt = min(|dist_norm|, 1.0), dist_norm = signed distance from
- * the scroll centre in units of one card step.
+ * the scroll centre in units of one card step.  Source art is never mirrored.
  *
  * Drawing order: far cards first, near-centre card last, so the centre
  * cover renders on top of turned side covers at their overlap edges —
  * exactly the iPod Cover Flow z-order.
  *
  * LVGL card images are hidden; scroll snapping/momentum continue via the
- * flex layout (step = cs() + cg() = 130 px).
+ * flex layout (step = cs() + cg() = 110 px).
  * ===================================================================== */
 
-/* Tilt geometry constants */
-#define CF_WIDTH_SHRINK  0.64f   /* w_disp = src_w*(1-tilt*0.64): ~80 px at tilt=1 */
-#define CF_HEIGHT_SHRINK 0.70f   /* h_outer = src_h*(1-tilt*0.70): ~66 px at tilt=1 */
-#define CF_NEAR_THRESH   0.45f   /* adist below this → near-centre passes */
-#define CF_CENTRE_THRESH 0.20f   /* adist below this → centre-card pass (always on top) */
+/* Tilt geometry constants. CF_CARD_SCALE upsizes the 220px thumb before the
+ * perspective taper so the centre cover dominates the strip; CF_PERSP_H is sized
+ * to fit base_h = 220*CF_CARD_SCALE without clipping. */
+#define CF_CARD_SCALE    1.30f   /* drawn base = 220*1.30 = ~286 px (fits 296 canvas) */
+/* Side-cover tilt for Cover Flow -- fixed at the value chosen on hardware (was
+ * step 7/9 of the temporary CF ANGLE test slider): a gentle turn. Width
+ * foreshorten + height taper, both scaled by tilt in cf_render_card. */
+#define CF_WIDTH_SHRINK  0.272f   /* w_disp  = base_w*(1-tilt*0.272) */
+#define CF_HEIGHT_SHRINK 0.404f   /* h_far(inner) = base_h*(1-tilt*0.404) */
+/* Perspective fan: side covers are placed on a converging curve, not a linear
+ * step, so ±1 sits far enough out to stay mostly visible while covers further
+ * out bunch toward CF_FAN_SPREAD at the screen edges (iPod Cover Flow look). */
+#define CF_FAN_SPREAD    320.0f  /* px: limit of a side cover's offset from centre */
+#define CF_FAN_RATE      0.76f   /* convergence; ±1 lands ~170px out, outer covers crowd */
+#define CF_MAX_SIDE      3       /* only rasterise covers within ±this of centre. Bounds
+                                  * per-scroll work (covers beyond are occluded/squished) --
+                                  * without it the fan keeps every cover on-screen => all
+                                  * rasterise each scroll event => sluggish. */
+#define CF_LEAN_FLIP     0       /* 0: covers face CENTRE (outer edge near/tall -- correct).
+                                  * Set 1 if the rotated panel mirrors the fan so they face
+                                  * outward. One-line orientation flip. */
 
 static void cf_draw_col(int dx, int h_col, int cy_mid,
                         const uint16_t *src, int src_w, int src_h, int src_x)
@@ -1534,38 +1362,61 @@ static void cf_draw_col(int dx, int h_col, int cy_mid,
     }
 }
 
-/* Render one card into s_cf_buf at its current scroll position.
- * src_t_mirror: true for left-side cards (mirror source x so the inner edge
- * of the turned cover shows the correct side of the album art). */
+/* =====================================================================
+ * Cover Flow CANONICAL GEOMETRY -- do not regress (mirrored in CLAUDE.md,
+ * waveshare README, and memory/project_coverflow_geometry.md):
+ *
+ *   - Centre album: flat, facing the viewer, on top (highest z), largest.
+ *   - Each side album is rotated to FACE THE CENTRE: its OUTER edge is nearest
+ *     the viewer (drawn TALLEST), its INNER edge (toward centre) recedes (drawn
+ *     SHORTEST) and tucks BEHIND its more-central neighbour.
+ *       left album : outer = LEFT edge (near/tall),  inner = right edge (far/short)
+ *       right album: outer = RIGHT edge (near/tall), inner = left edge (far/short)
+ *   - Z-order: centre on top; each album drawn UNDER the one nearer centre.
+ *   - Art is perspective-foreshortened: compresses toward the FAR (inner) edge.
+ *     Source art is never mirrored (reads left->right) -- the height taper +
+ *     horizontal compression convey the 3-D turn.
+ *
+ * Renders one album into s_cf_buf at its current (already fan-remapped) x. The
+ * drawn size is a fixed target (220px reference x CF_CARD_SCALE), NOT the source
+ * resolution, so low-res PIXEL thumbs fill the same card as full covers. */
 static void cf_render_card(int32_t card_cx, float dist_norm,
                            const uint16_t *src, int src_w, int src_h)
 {
-    float adist    = dist_norm < 0.0f ? -dist_norm : dist_norm;
-    bool  left     = (dist_norm < 0.0f);
-    float tilt     = adist > 1.0f ? 1.0f : adist;
+    float adist = dist_norm < 0.0f ? -dist_norm : dist_norm;
+    float tilt  = adist > 1.0f ? 1.0f : adist;
 
-    int w_disp  = (int)((float)src_w * (1.0f - tilt * CF_WIDTH_SHRINK));
+    int   base_w = (int)((float)ALBUM_THUMB_W * CF_CARD_SCALE);
+    int   base_h = (int)((float)ALBUM_THUMB_H * CF_CARD_SCALE);
+
+    int   w_disp = (int)((float)base_w * (1.0f - tilt * CF_WIDTH_SHRINK));
     if (w_disp < 4) w_disp = 4;
-    int h_inner = src_h;
-    int h_outer = (int)((float)src_h * (1.0f - tilt * CF_HEIGHT_SHRINK));
-    if (h_outer < 6) h_outer = 6;
+    float h_near = (float)base_h;                                  /* outer edge: full height */
+    float h_far  = h_near * (1.0f - tilt * CF_HEIGHT_SHRINK);      /* inner edge: foreshortened */
+    if (h_far < 6.0f) h_far = 6.0f;
+    float f = h_far / h_near;                                  /* depth ratio (<1) */
 
     int x_start = (int)card_cx - w_disp / 2;
     int x_end   = x_start + w_disp;
     int cy_mid  = CF_PERSP_H / 2;
 
+    /* left album: outer (near) edge on the LEFT (t=0); right album: outer edge on
+     * the RIGHT (t=1). CF_LEAN_FLIP swaps if the panel mirrors the fan. */
+    bool left = (dist_norm < 0.0f);
+#if CF_LEAN_FLIP
+    left = !left;
+#endif
+
     for (int dx = x_start; dx < x_end; dx++) {
-        /* t: 0 = inner edge, 1 = outer edge. */
         float t = (w_disp > 1)
                 ? (float)(dx - x_start) / (float)(w_disp - 1)
                 : 0.0f;
 
-        /* Right-side card: inner edge on left (t=0 → src_x=0).
-         * Left-side card:  inner edge on right (mirror t for source). */
-        float src_t = left ? (1.0f - t) : t;
-        int   src_x = (int)(src_t * (float)(src_w - 1));
-
-        int h_col = h_inner + (int)((float)(h_outer - h_inner) * t);
+        float e   = left ? t : (1.0f - t);          /* 0 at NEAR(outer), 1 at FAR(inner) */
+        float u   = (e * f) / (e * f + (1.0f - e)); /* perspective: compress toward FAR */
+        float art = left ? u : (1.0f - u);          /* near(outer) shows the outer art side */
+        int   src_x = (int)(art * (float)(src_w - 1));
+        int   h_col = (int)(h_near + (h_far - h_near) * e); /* tall at outer, short at inner */
         if (h_col < 1) h_col = 1;
 
         cf_draw_col(dx, h_col, cy_mid, src, src_w, src_h, src_x);
@@ -1589,40 +1440,55 @@ static void cf_render(void)
     int32_t step     = cs() + cg();
     int32_t scr_cx   = SCREEN_W / 2;
 
-    /* Three-pass draw guarantees correct z-order:
-     *   pass 0 — outer cards  (adist >= CF_NEAR_THRESH)
-     *   pass 1 — adjacent     (CF_CENTRE_THRESH <= adist < CF_NEAR_THRESH)
-     *   pass 2 — centre card  (adist < CF_CENTRE_THRESH, always on top) */
-    for (int pass = 0; pass < 3; pass++) {
-        for (size_t i = 0; i < s_card_count; i++) {
-            int32_t card_cx  = pad_left + (int32_t)i * step + cs() / 2 - scroll_x;
+    /* Draw farthest cards first and the centre card last, so each nearer cover
+     * paints over the turned cover behind it -- correct iPod z-order on BOTH
+     * sides (the old index-order passes drew right-side covers back-to-front).
+     * Two pointers walk inward from the extremes, always drawing the one with
+     * the larger distance-from-centre next. */
+    int lo = 0, hi = (int)s_card_count - 1;
+    while (lo <= hi) {
+        int32_t cx_lo = pad_left + (int32_t)lo * step + cs() / 2 - scroll_x;
+        int32_t cx_hi = pad_left + (int32_t)hi * step + cs() / 2 - scroll_x;
+        int32_t ad_lo = cx_lo - scr_cx; if (ad_lo < 0) ad_lo = -ad_lo;
+        int32_t ad_hi = cx_hi - scr_cx; if (ad_hi < 0) ad_hi = -ad_hi;
 
-            /* Cull cards fully off-screen. */
-            if (card_cx < -(int32_t)SCREEN_W || card_cx > 2 * (int32_t)SCREEN_W)
-                continue;
+        size_t i;
+        if (lo == hi)            { i = (size_t)lo; lo++; }
+        else if (ad_lo >= ad_hi) { i = (size_t)lo; lo++; }
+        else                     { i = (size_t)hi; hi--; }
 
-            float dist_norm = (float)(card_cx - scr_cx) / (float)step;
-            float adist     = dist_norm < 0.0f ? -dist_norm : dist_norm;
+        int32_t logical_cx = pad_left + (int32_t)i * step + cs() / 2 - scroll_x;
+        float dist_norm = (float)(logical_cx - scr_cx) / (float)step;
+        float ad  = dist_norm < 0.0f ? -dist_norm : dist_norm;
 
-            if (pass == 0 && adist < CF_NEAR_THRESH)   continue;
-            if (pass == 1 && (adist < CF_CENTRE_THRESH || adist >= CF_NEAR_THRESH)) continue;
-            if (pass == 2 && adist >= CF_CENTRE_THRESH) continue;
+        /* Performance cap: only rasterise covers within ±CF_MAX_SIDE of centre.
+         * The fan keeps every cover on-screen (none cull off-screen), so without
+         * this all 56 rasterise on every scroll event -> sluggish. Covers beyond
+         * the cap are occluded by nearer ones anyway. */
+        if (ad > (float)CF_MAX_SIDE) continue;
 
-            const uint16_t *src;
-            int src_w, src_h;
-            if (is_pixel_theme() && s_pix_thumbs) {
-                src   = s_pix_thumbs + i * PIX_THUMB_RES * PIX_THUMB_RES;
-                src_w = PIX_THUMB_RES;
-                src_h = PIX_THUMB_RES;
-            } else {
-                src   = album_thumb_data(i);
-                src_w = ALBUM_THUMB_W;
-                src_h = ALBUM_THUMB_H;
-            }
-            if (!src) continue;
+        /* Remap the linear logical position onto the converging fan (see
+         * CF_FAN_*): ±1 sits ~170px out (mostly visible), outer covers bunch. */
+        float sgn = dist_norm < 0.0f ? -1.0f : 1.0f;
+        int32_t card_cx = scr_cx +
+            (int32_t)(sgn * CF_FAN_SPREAD * (1.0f - expf(-CF_FAN_RATE * ad)));
+        if (card_cx < -(int32_t)SCREEN_W || card_cx > 2 * (int32_t)SCREEN_W)
+            continue;   /* fully off-screen */
 
-            cf_render_card(card_cx, dist_norm, src, src_w, src_h);
+        const uint16_t *src;
+        int src_w, src_h;
+        if (is_pixel_theme() && s_pix_thumbs) {
+            src   = s_pix_thumbs + i * PIX_THUMB_RES * PIX_THUMB_RES;
+            src_w = PIX_THUMB_RES;
+            src_h = PIX_THUMB_RES;
+        } else {
+            src   = album_thumb_data(i);
+            src_w = ALBUM_THUMB_W;
+            src_h = ALBUM_THUMB_H;
         }
+        if (!src) continue;
+
+        cf_render_card(card_cx, dist_norm, src, src_w, src_h);
     }
 
     lv_obj_invalidate(s_cf_img);
@@ -1642,7 +1508,7 @@ static void cf_init(lv_obj_t *screen)
 
     s_cf_img = lv_image_create(screen);
     lv_image_set_src(s_cf_img, &s_cf_dsc);
-    lv_obj_set_pos(s_cf_img, 0, SCROLLER_Y);
+    lv_obj_set_pos(s_cf_img, 0, CF_PERSP_Y);
     lv_obj_remove_flag(s_cf_img, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_image_set_antialias(s_cf_img, false);
 
@@ -1659,7 +1525,7 @@ static void cf_deinit(void)
 }
 
 /* =====================================================================
- * Feature 1: Gas-particle progress bar (Yudho theme only)
+ * Feature 1: Gas-particle progress bar (Glyph theme only)
  * Dots bounce elastically inside the played zone [PROG_X, PROG_X+progress_px].
  * As the song progresses the right wall moves outward; the same dots have more
  * space, so bounces become less frequent -- the visual "slowing down" of gas
@@ -1672,9 +1538,10 @@ static void prog_particles_stop(void)
         s_prog_particle_timer = NULL;
     }
     memset(s_prog_objs, 0, sizeof s_prog_objs);
-    /* The tank is a child of the screen and is freed when the screen is torn
-     * down (same as the dots); just drop our reference. */
+    /* The tank + playhead are children of the screen and are freed when the
+     * screen is torn down (same as the dots); just drop our references. */
     s_prog_tank = NULL;
+    s_prog_head = NULL;
 }
 
 static void prog_particles_start(lv_obj_t *screen)
@@ -1684,39 +1551,56 @@ static void prog_particles_start(lv_obj_t *screen)
 
     /* The "tank": a black box with white walls enclosing the bar. Created
      * before the dots so they render inside it, and opaque so it hides the
-     * plain bar -- in Yudho the gas IS the progress indicator. */
+     * plain bar -- in Glyph the gas IS the progress indicator. */
     s_prog_tank = lv_obj_create(screen);
     lv_obj_set_size(s_prog_tank, PROG_W + 4, PROG_TANK_H);
     lv_obj_set_pos(s_prog_tank, PROG_X - 2, PROG_TANK_Y);
     lv_obj_set_style_bg_color(s_prog_tank, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_prog_tank, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(s_prog_tank, lv_color_white(), 0);
+    /* Capsule frame in a dim neutral so the accent gas inside is the focus. */
+    lv_obj_set_style_border_color(s_prog_tank, lv_color_hex(s_th->dim), 0);
     lv_obj_set_style_border_width(s_prog_tank, 2, 0);
-    lv_obj_set_style_radius(s_prog_tank, 2, 0);
+    lv_obj_set_style_radius(s_prog_tank, PROG_TANK_H / 2, 0);
     lv_obj_set_style_pad_all(s_prog_tank, 0, 0);
     lv_obj_remove_flag(s_prog_tank, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
+    int y_lo = PROG_TANK_Y + 4;
+    int y_span = PROG_TANK_H - 10;
     for (int i = 0; i < PROG_PART_COUNT; i++) {
         lv_obj_t *dot = lv_obj_create(screen);
-        lv_obj_set_size(dot, 2, 2);
-        lv_obj_set_style_radius(dot, 0, 0);
+        lv_obj_set_size(dot, 3, 3);
+        lv_obj_set_style_radius(dot, 2, 0);    /* round gas molecule */
         lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_60, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(accent_color()), 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_80, 0);
         lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        /* All dots start packed at the left wall (song hasn't started),
-         * inside the tank's white walls. */
-        lv_obj_set_pos(dot, PROG_X + 2,
-                       PROG_TANK_Y + 4 + (int)(esp_random() % (PROG_TANK_H - 10)));
+        /* Scatter across the left of the chamber + full height so the gas looks
+         * like a diffuse cloud from the first frame (not a packed column). */
+        int x0 = PROG_X + 2 + (int)(esp_random() % 24);
+        int y0 = y_lo + (int)(esp_random() % y_span);
+        s_prog_pts[i].x = (int16_t)x0;
+        s_prog_pts[i].y = (int16_t)y0;
+        lv_obj_set_pos(dot, x0, y0);
         s_prog_objs[i] = dot;
-        /* Random velocity: mostly horizontal with slight vertical wobble. */
-        s_prog_pts[i].x  = (int16_t)(PROG_X + 2);
-        s_prog_pts[i].y  = (int16_t)(PROG_TANK_Y + 4 + (int)(esp_random() % (PROG_TANK_H - 10)));
-        s_prog_pts[i].vx = (int8_t)(2 + (int)(esp_random() % 3));   /* +2..+4 */
-        if (esp_random() % 2) s_prog_pts[i].vx = -s_prog_pts[i].vx;
-        s_prog_pts[i].vy = (int8_t)(esp_random() % 3) - 1;          /* -1..+1 */
+        /* Brownian: independent random velocity on BOTH axes, no preferred
+         * direction. Range -3..+3 each, never (0,0). */
+        s_prog_pts[i].vx = (int8_t)((int)(esp_random() % 7) - 3);
+        s_prog_pts[i].vy = (int8_t)((int)(esp_random() % 7) - 3);
+        if (s_prog_pts[i].vx == 0 && s_prog_pts[i].vy == 0) s_prog_pts[i].vx = 2;
     }
-    s_prog_particle_timer = lv_timer_create(prog_particle_tick_cb, 100, NULL);
+
+    /* Bright playhead: a thin accent bar at the current progress point so the
+     * play position is always visible (not only when a dot bounces off it). */
+    s_prog_head = lv_obj_create(screen);
+    lv_obj_set_size(s_prog_head, 3, PROG_TANK_H - 6);
+    lv_obj_set_style_radius(s_prog_head, 1, 0);
+    lv_obj_set_style_border_width(s_prog_head, 0, 0);
+    lv_obj_set_style_bg_color(s_prog_head, lv_color_hex(accent_color()), 0);
+    lv_obj_set_style_bg_opa(s_prog_head, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_prog_head, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(s_prog_head, PROG_X + 2, PROG_TANK_Y + 3);
+
+    s_prog_particle_timer = lv_timer_create(prog_particle_tick_cb, 60, NULL);
 }
 
 static void prog_particle_tick_cb(lv_timer_t *t)
@@ -1728,43 +1612,47 @@ static void prog_particle_tick_cb(lv_timer_t *t)
     int32_t progress_px = (int32_t)((uint64_t)s_track.progress_ms * PROG_W
                                     / s_track.duration_ms);
     int32_t right_wall  = PROG_X + progress_px;
-    if (right_wall < PROG_X + 6) right_wall = PROG_X + 6;   /* min box */
+    if (right_wall < PROG_X + 8) right_wall = PROG_X + 8;   /* min box */
 
+    int16_t xmin = (int16_t)(PROG_X + 2);
+    int16_t xmax = (int16_t)(right_wall);
     int16_t ymin = (int16_t)(PROG_TANK_Y + 4);
     int16_t ymax = (int16_t)(PROG_TANK_Y + PROG_TANK_H - 6);
+
+    /* Move the playhead to the current progress point. */
+    if (s_prog_head)
+        lv_obj_set_pos(s_prog_head, (int)right_wall, PROG_TANK_Y + 3);
 
     for (int i = 0; i < PROG_PART_COUNT; i++) {
         lv_obj_t *dot = s_prog_objs[i];
         if (!dot) continue;
 
+        /* Brownian kick: randomly nudge each axis so the path wanders in all
+         * directions instead of running in straight L-R lines. */
+        uint32_t r = esp_random();
+        if (r & 1)  s_prog_pts[i].vx += ((r & 2) ? 1 : -1);
+        if (r & 4)  s_prog_pts[i].vy += ((r & 8) ? 1 : -1);
+        /* Clamp speed to keep the gas lively but bounded. */
+        if (s_prog_pts[i].vx >  4) s_prog_pts[i].vx =  4;
+        if (s_prog_pts[i].vx < -4) s_prog_pts[i].vx = -4;
+        if (s_prog_pts[i].vy >  4) s_prog_pts[i].vy =  4;
+        if (s_prog_pts[i].vy < -4) s_prog_pts[i].vy = -4;
+        if (s_prog_pts[i].vx == 0 && s_prog_pts[i].vy == 0)
+            s_prog_pts[i].vy = (r & 16) ? 2 : -2;   /* never freeze */
+
         s_prog_pts[i].x += s_prog_pts[i].vx;
         s_prog_pts[i].y += s_prog_pts[i].vy;
 
-        /* Bounce off left wall. */
-        if (s_prog_pts[i].x < PROG_X) {
-            s_prog_pts[i].x = PROG_X;
-            if (s_prog_pts[i].vx < 0) s_prog_pts[i].vx = -s_prog_pts[i].vx;
-        }
-        /* Bounce off right wall (the progress point). */
-        if (s_prog_pts[i].x > right_wall) {
-            s_prog_pts[i].x = (int16_t)right_wall;
-            if (s_prog_pts[i].vx > 0) s_prog_pts[i].vx = -s_prog_pts[i].vx;
-        }
-        /* Bounce off top/bottom. */
-        if (s_prog_pts[i].y < ymin) {
-            s_prog_pts[i].y = ymin;
-            if (s_prog_pts[i].vy < 0) s_prog_pts[i].vy = -s_prog_pts[i].vy;
-        }
-        if (s_prog_pts[i].y > ymax) {
-            s_prog_pts[i].y = ymax;
-            if (s_prog_pts[i].vy > 0) s_prog_pts[i].vy = -s_prog_pts[i].vy;
-        }
+        /* Reflect off all four walls (right wall = the moving playhead). */
+        if (s_prog_pts[i].x < xmin) { s_prog_pts[i].x = xmin; if (s_prog_pts[i].vx < 0) s_prog_pts[i].vx = -s_prog_pts[i].vx; }
+        if (s_prog_pts[i].x > xmax) { s_prog_pts[i].x = xmax; if (s_prog_pts[i].vx > 0) s_prog_pts[i].vx = -s_prog_pts[i].vx; }
+        if (s_prog_pts[i].y < ymin) { s_prog_pts[i].y = ymin; if (s_prog_pts[i].vy < 0) s_prog_pts[i].vy = -s_prog_pts[i].vy; }
+        if (s_prog_pts[i].y > ymax) { s_prog_pts[i].y = ymax; if (s_prog_pts[i].vy > 0) s_prog_pts[i].vy = -s_prog_pts[i].vy; }
 
         lv_obj_set_pos(dot, s_prog_pts[i].x, s_prog_pts[i].y);
-        /* Gentle brightness flicker for a live feel. */
-        uint8_t v = (uint8_t)(180 + esp_random() % 76);
-        lv_obj_set_style_bg_color(dot, lv_color_make(v, v, v), 0);
-        lv_obj_set_style_bg_opa(dot, (lv_opa_t)(50 + esp_random() % 80), 0);
+        /* Twinkle: vary opacity only -- colour stays the accent so the gas reads
+         * as a single glowing substance. */
+        lv_obj_set_style_bg_opa(dot, (lv_opa_t)(150 + esp_random() % 106), 0);
     }
 }
 
@@ -1916,50 +1804,31 @@ static void build_volume_screen(void)
 }
 
 /* =====================================================================
- * Feature 3: WiFi orbiting dot cluster (Yudho theme only)
- * Replaces the 4 rising bar indicators with 4 dots orbiting a centre
- * point. Active dots reflect signal strength; orbit speed is constant.
+ * Feature 3: WiFi dot strength meter (Glyph theme only)
+ * Four round dots of rising size in the browser top-left corner. The first
+ * `bars` dots light in the accent colour; the rest stay dim. Static -- no
+ * timer -- updated only when the signal level changes.
  * ===================================================================== */
+#define WIFI_DOT_BASE_Y  20   /* baseline the dots sit on (bottom-aligned) */
+#define WIFI_DOT_X       8    /* left edge of the meter */
+#define WIFI_DOT_PITCH   11   /* centre-to-centre horizontal spacing */
+
 static void wifi_dots_stop(void)
 {
-    if (s_wifi_orbit_timer) {
-        lv_timer_delete(s_wifi_orbit_timer);
-        s_wifi_orbit_timer = NULL;
-    }
     memset(s_wifi_dots, 0, sizeof s_wifi_dots);
 }
 
-static void wifi_orbit_tick_cb(lv_timer_t *t)
-{
-    (void)t;
-    if (!s_wifi_dots[0]) return;
-    float speed = 0.09f;   /* radians per tick (80 ms) ≈ 1 rev / 1.4 s */
-    for (int i = 0; i < 4; i++) {
-        s_wifi_angles[i] += speed;
-        if (s_wifi_angles[i] > 6.2832f) s_wifi_angles[i] -= 6.2832f;
-        lv_obj_t *dot = s_wifi_dots[i];
-        if (!dot) continue;
-        if (i >= s_wifi_dot_count) {
-            lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        lv_obj_remove_flag(dot, LV_OBJ_FLAG_HIDDEN);
-        int cx = 18, cy = 18;
-        int x  = cx + (int)(s_wifi_dot_radius * cosf(s_wifi_angles[i])) - 2;
-        int y  = cy + (int)(s_wifi_dot_radius * sinf(s_wifi_angles[i])) - 2;
-        lv_obj_set_pos(dot, x, y);
-    }
-}
-
+/* Light the first `bars` dots in the accent; dim the remainder. */
 static void wifi_dots_update_count(int bars)
 {
-    s_wifi_dot_count  = bars;
-    /* Weaker signal → larger orbit (dots appear lost/spread); strong → tight. */
-    switch (bars) {
-        case 4:  s_wifi_dot_radius = 7;  break;
-        case 3:  s_wifi_dot_radius = 9;  break;
-        case 2:  s_wifi_dot_radius = 11; break;
-        default: s_wifi_dot_radius = 13; break;
+    s_wifi_dot_count = bars;
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *dot = s_wifi_dots[i];
+        if (!dot) continue;
+        bool lit = (i < bars);
+        lv_obj_set_style_bg_color(dot,
+            lit ? lv_color_hex(accent_color()) : lv_color_hex(s_th->track), 0);
+        lv_obj_set_style_bg_opa(dot, lit ? LV_OPA_COVER : (lv_opa_t)90, 0);
     }
 }
 
@@ -1968,22 +1837,24 @@ static void wifi_dots_start(lv_obj_t *screen)
     if (!screen) return;
     wifi_dots_stop();
     for (int i = 0; i < 4; i++) {
+        int sz = 4 + i * 2;   /* 4, 6, 8, 10 -- a rising "signal" ramp */
         lv_obj_t *dot = lv_obj_create(screen);
-        lv_obj_set_size(dot, 4, 4);
-        lv_obj_set_style_radius(dot, 2, 0);
+        lv_obj_set_size(dot, sz, sz);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->text), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->track), 0);
+        lv_obj_set_style_bg_opa(dot, (lv_opa_t)90, 0);
         lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_pos(dot, 18, 18);
-        lv_obj_move_to_index(dot, 0);
+        /* Bottom-aligned so the dots grow upward like signal bars. */
+        lv_obj_set_pos(dot, WIFI_DOT_X + i * WIFI_DOT_PITCH,
+                       WIFI_DOT_BASE_Y - sz);
         s_wifi_dots[i] = dot;
     }
-    s_wifi_orbit_timer = lv_timer_create(wifi_orbit_tick_cb, 80, NULL);
+    wifi_dots_update_count(s_wifi_dot_count);
 }
 
 /* =====================================================================
- * Feature 4: Offline title dissipation (Yudho theme only)
+ * Feature 4: Offline title dissipation (Glyph theme only)
  * When WiFi drops, the NP title dissolves into rising dots; "OFFLINE"
  * fades in after. On reconnect the reverse happens and the real title
  * is restored.
@@ -2097,12 +1968,40 @@ static void title_reform(void)
     }
 }
 
+/* A left-aligned uppercase section header used throughout the Settings pages. */
+static lv_obj_t *settings_header(lv_obj_t *parent, const char *txt, int x, int y)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, txt);
+    lv_obj_set_style_text_color(l, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(l, font_md(), 0);
+    lv_obj_set_style_text_letter_space(l, 2, 0);
+    lv_obj_align(l, LV_ALIGN_TOP_LEFT, x, y);
+    return l;
+}
+
+/* A transparent, vertically-scrollable category page filling the area below the
+ * tab chips. Controls are placed with page-local coordinates. */
+static lv_obj_t *settings_page(void)
+{
+    lv_obj_t *p = lv_obj_create(s_screen_settings);
+    lv_obj_set_size(p, 800, 366);
+    lv_obj_align(p, LV_ALIGN_TOP_MID, 0, 114);
+    lv_obj_set_style_bg_opa(p, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(p, 0, 0);
+    lv_obj_set_style_radius(p, 0, 0);
+    lv_obj_set_style_pad_all(p, 0, 0);
+    lv_obj_set_scrollbar_mode(p, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(p, LV_DIR_VER);
+    return p;
+}
+
 static void build_settings_screen(void)
 {
     s_screen_settings = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_settings, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_settings, LV_OPA_COVER, 0);
-    lv_obj_set_scrollbar_mode(s_screen_settings, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scrollbar_mode(s_screen_settings, LV_SCROLLBAR_MODE_OFF);
 
     lv_obj_t *back = lv_button_create(s_screen_settings);
     lv_obj_set_size(back, 120, 44);
@@ -2125,122 +2024,106 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
-    lv_obj_t *section = lv_label_create(s_screen_settings);
-    lv_label_set_text(section, "MENU TRANSITION");
-    lv_obj_set_style_text_color(section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(section, font_md(), 0);
-    lv_obj_set_style_text_letter_space(section, 2, 0);
-    lv_obj_align(section, LV_ALIGN_TOP_LEFT, 24, 66);
-
-    for (int i = 0; i < UI_TRANSITION_COUNT; i++) {
-        lv_obj_t *btn = lv_button_create(s_screen_settings);
-        lv_obj_set_size(btn, 520, 48);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 102 + i * 54);
-        lv_obj_set_style_radius(btn, 3, 0);
-        lv_obj_set_style_shadow_width(btn, 0, 0);
-        lv_obj_add_event_cb(btn, on_transition_option, LV_EVENT_CLICKED,
-                            (void *)(uintptr_t)i);
-
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_obj_set_style_text_font(lbl, font_md(), 0);
+    /* Category tabs: one chip per page; tapping one swaps the visible page. */
+    static const char *const k_tab_names[SET_TAB_COUNT] = { "DISPLAY", "SOUND" };
+    for (int i = 0; i < SET_TAB_COUNT; i++) {
+        lv_obj_t *chip = lv_button_create(s_screen_settings);
+        lv_obj_set_size(chip, 220, 44);
+        lv_obj_align(chip, LV_ALIGN_TOP_MID, (int)((i - 0.5f) * 232.0f), 60);
+        lv_obj_set_style_radius(chip, 3, 0);
+        lv_obj_set_style_shadow_width(chip, 0, 0);
+        style_button_press(chip);
+        lv_obj_add_event_cb(chip, on_settings_tab, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+        lv_obj_t *lbl = lv_label_create(chip);
+        lv_label_set_text(lbl, k_tab_names[i]);
+        lv_obj_set_style_text_font(lbl, font_sm(), 0);
         lv_obj_center(lbl);
-
-        s_opt_btns[i]   = btn;
-        s_opt_labels[i] = lbl;
+        s_set_tabs[i]     = chip;
+        s_set_tab_lbls[i] = lbl;
     }
 
-    lv_obj_t *th_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(th_section, "MODE");
-    lv_obj_set_style_text_color(th_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(th_section, font_md(), 0);
-    lv_obj_set_style_text_letter_space(th_section, 2, 0);
-    lv_obj_align(th_section, LV_ALIGN_TOP_LEFT, 24, 324);
+    /* ====== DISPLAY: every visual setting on one scrolling page ====== */
+    lv_obj_t *pg_disp = settings_page();
+    s_set_pages[0] = pg_disp;
 
-    /* 6 themes in 2 rows of 3: row = i/3, col = i%3, uniform centering. */
+    settings_header(pg_disp, "MODE", 24, 6);
+    /* 5 themes in 2 rows (3 + 2): row = i/3, col = i%3, uniform centering. */
     for (int i = 0; i < THEME_COUNT; i++) {
-        lv_obj_t *btn = lv_button_create(s_screen_settings);
+        lv_obj_t *btn = lv_button_create(pg_disp);
         lv_obj_set_size(btn, 170, 48);
-        int row   = i / 3;
-        int col   = i % 3;
-        int x_off = (col - 1) * 176;   /* -176, 0, +176 -- same for both rows */
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, x_off, 360 + row * 54);
+        int row = i / 3, col = i % 3;
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (col - 1) * 176, 38 + row * 54);
         lv_obj_set_style_radius(btn, 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         style_button_press(btn);
-        lv_obj_add_event_cb(btn, on_theme_option, LV_EVENT_CLICKED,
-                            (void *)(uintptr_t)i);
-
+        lv_obj_add_event_cb(btn, on_theme_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(btn);
         lv_obj_set_style_text_font(lbl, font_md(), 0);
         lv_obj_center(lbl);
-
         s_theme_btns[i]   = btn;
         s_theme_labels[i] = lbl;
     }
 
-    /* Colour theme -- accent swatches, independent of light/dark mode. */
-    lv_obj_t *col_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(col_section, "COLOUR");
-    lv_obj_set_style_text_color(col_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(col_section, font_md(), 0);
-    lv_obj_set_style_text_letter_space(col_section, 2, 0);
-    lv_obj_align(col_section, LV_ALIGN_TOP_LEFT, 24, 474);
-
+    settings_header(pg_disp, "COLOUR", 24, 158);
     for (int i = 0; i < ACCENT_COUNT; i++) {
-        lv_obj_t *btn = lv_button_create(s_screen_settings);
+        lv_obj_t *btn = lv_button_create(pg_disp);
         lv_obj_set_size(btn, 168, 48);
-        /* Centres of four 168px swatches across the row. */
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 176) - 264, 510);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 176) - 264, 190);
         lv_obj_set_style_radius(btn, 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
-        lv_obj_add_event_cb(btn, on_accent_option, LV_EVENT_CLICKED,
-                            (void *)(uintptr_t)i);
-
+        lv_obj_add_event_cb(btn, on_accent_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(btn);
         lv_obj_set_style_text_font(lbl, font_sm(), 0);
         lv_obj_center(lbl);
-
         s_accent_btns[i]   = btn;
         s_accent_labels[i] = lbl;
     }
 
-    lv_obj_t *br_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(br_section, "BROWSER STYLE");
-    lv_obj_set_style_text_color(br_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(br_section, font_md(), 0);
-    lv_obj_set_style_text_letter_space(br_section, 2, 0);
-    lv_obj_align(br_section, LV_ALIGN_TOP_LEFT, 24, 570);
-
-    /* Carousel | Focus | Cover Flow -- three buttons in a row. */
+    settings_header(pg_disp, "BROWSER STYLE", 24, 254);
     for (int i = 0; i < BROWSER_STYLE_COUNT; i++) {
-        lv_obj_t *btn = lv_button_create(s_screen_settings);
+        lv_obj_t *btn = lv_button_create(pg_disp);
         lv_obj_set_size(btn, 170, 48);
-        /* Centres of three 170px buttons across the 520px content width. */
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 176, 606);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 176, 286);
         lv_obj_set_style_radius(btn, 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
-        lv_obj_add_event_cb(btn, on_browser_style_option, LV_EVENT_CLICKED,
-                            (void *)(uintptr_t)i);
-
+        lv_obj_add_event_cb(btn, on_browser_style_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(btn);
         lv_obj_set_style_text_font(lbl, font_sm(), 0);
         lv_obj_center(lbl);
-
         s_brstyle_btns[i]   = btn;
         s_brstyle_labels[i] = lbl;
     }
 
-    lv_obj_t *ln_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(ln_section, "SELECTION LINE");
-    lv_obj_set_style_text_color(ln_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(ln_section, font_md(), 0);
-    lv_obj_set_style_text_letter_space(ln_section, 2, 0);
-    lv_obj_align(ln_section, LV_ALIGN_TOP_LEFT, 24, 670);
+    /* FONT chooser: hidden in GLYPH mode -- that theme's round-dot font is fixed
+     * and the SANS/SLAB choice doesn't apply. Clear the refs so refresh_font_
+     * selection() skips the (non-existent) buttons. */
+    if (is_glyph_theme()) {
+        memset(s_font_btns,   0, sizeof s_font_btns);
+        memset(s_font_labels, 0, sizeof s_font_labels);
+    } else {
+        settings_header(pg_disp, "FONT", 24, 350);
+        static const char *const k_font_names[] = { "SANS", "SLAB" };
+        for (int i = 0; i < 2; i++) {
+            lv_obj_t *btn = lv_button_create(pg_disp);
+            lv_obj_set_size(btn, 256, 48);
+            lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -132 : 132, 382);
+            lv_obj_set_style_radius(btn, 3, 0);
+            lv_obj_set_style_shadow_width(btn, 0, 0);
+            style_button_press(btn);
+            lv_obj_add_event_cb(btn, on_font_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+            lv_obj_t *lbl = lv_label_create(btn);
+            lv_label_set_text(lbl, k_font_names[i]);
+            lv_obj_set_style_text_font(lbl, font_md(), 0);
+            lv_obj_center(lbl);
+            s_font_btns[i]   = btn;
+            s_font_labels[i] = lbl;
+        }
+    }
 
-    /* Single ON/OFF toggle for the centred-card underline (label + fill show state). */
-    s_line_toggle_btn = lv_button_create(s_screen_settings);
+    settings_header(pg_disp, "SELECTION LINE", 24, 450);
+    s_line_toggle_btn = lv_button_create(pg_disp);
     lv_obj_set_size(s_line_toggle_btn, 520, 48);
-    lv_obj_align(s_line_toggle_btn, LV_ALIGN_TOP_MID, 0, 706);
+    lv_obj_align(s_line_toggle_btn, LV_ALIGN_TOP_MID, 0, 482);
     lv_obj_set_style_radius(s_line_toggle_btn, 3, 0);
     lv_obj_set_style_shadow_width(s_line_toggle_btn, 0, 0);
     style_button_press(s_line_toggle_btn);
@@ -2249,29 +2132,21 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_font(s_line_toggle_lbl, font_md(), 0);
     lv_obj_center(s_line_toggle_lbl);
 
-    /* Backlight brightness: section header + live "NN%" readout on one line, a
-     * full-width slider below. Live-applies on drag (VALUE_CHANGED) so the panel
-     * dims as you move it; persists to NVS on release. */
-    lv_obj_t *bl_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(bl_section, "BRIGHTNESS");
-    lv_obj_set_style_text_color(bl_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(bl_section, font_md(), 0);
-    lv_obj_set_style_text_letter_space(bl_section, 2, 0);
-    lv_obj_align(bl_section, LV_ALIGN_TOP_LEFT, 24, 770);
-
-    s_brightness_val = lv_label_create(s_screen_settings);
+    /* Backlight brightness: header + live "NN%" readout, full-width slider.
+     * Live-applies on drag (VALUE_CHANGED); persists to NVS on release. */
+    settings_header(pg_disp, "BRIGHTNESS", 24, 560);
+    s_brightness_val = lv_label_create(pg_disp);
     lv_obj_set_style_text_color(s_brightness_val, lv_color_hex(s_th->text), 0);
     lv_obj_set_style_text_font(s_brightness_val, font_md(), 0);
-    lv_obj_align(s_brightness_val, LV_ALIGN_TOP_RIGHT, -140, 770);
+    lv_obj_align(s_brightness_val, LV_ALIGN_TOP_RIGHT, -140, 560);
     {
         char b[8];
         snprintf(b, sizeof b, "%d%%", s_brightness);
         lv_label_set_text(s_brightness_val, b);
     }
-
-    s_brightness_slider = lv_slider_create(s_screen_settings);
+    s_brightness_slider = lv_slider_create(pg_disp);
     lv_obj_set_size(s_brightness_slider, 520, 16);
-    lv_obj_align(s_brightness_slider, LV_ALIGN_TOP_MID, 0, 806);
+    lv_obj_align(s_brightness_slider, LV_ALIGN_TOP_MID, 0, 596);
     lv_slider_set_range(s_brightness_slider, BRIGHTNESS_MIN, BRIGHTNESS_MAX);
     lv_slider_set_value(s_brightness_slider, s_brightness, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(s_brightness_slider, lv_color_hex(s_th->track), LV_PART_MAIN);
@@ -2282,45 +2157,10 @@ static void build_settings_screen(void)
     lv_obj_add_event_cb(s_brightness_slider, on_brightness_changed,  LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_brightness_slider, on_brightness_released, LV_EVENT_RELEASED,      NULL);
 
-    /* Font choice: SANS (Montserrat) | SLAB (Arvo Bold). Two equal-width chips. */
-    lv_obj_t *fn_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(fn_section, "FONT");
-    lv_obj_set_style_text_color(fn_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(fn_section, font_md(), 0);
-    lv_obj_set_style_text_letter_space(fn_section, 2, 0);
-    lv_obj_align(fn_section, LV_ALIGN_TOP_LEFT, 24, 840);
-
-    static const char *const k_font_names[] = { "SANS", "SLAB" };
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t *btn = lv_button_create(s_screen_settings);
-        lv_obj_set_size(btn, 256, 48);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -132 : 132, 876);
-        lv_obj_set_style_radius(btn, 3, 0);
-        lv_obj_set_style_shadow_width(btn, 0, 0);
-        style_button_press(btn);
-        lv_obj_add_event_cb(btn, on_font_option, LV_EVENT_CLICKED,
-                            (void *)(uintptr_t)i);
-
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, k_font_names[i]);
-        lv_obj_set_style_text_font(lbl, font_md(), 0);
-        lv_obj_center(lbl);
-
-        s_font_btns[i]   = btn;
-        s_font_labels[i] = lbl;
-    }
-
-    /* FPS display: single ON/OFF toggle for the live frame-rate counter. */
-    lv_obj_t *fps_section = lv_label_create(s_screen_settings);
-    lv_label_set_text(fps_section, "FPS DISPLAY");
-    lv_obj_set_style_text_color(fps_section, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(fps_section, font_md(), 0);
-    lv_obj_set_style_text_letter_space(fps_section, 2, 0);
-    lv_obj_align(fps_section, LV_ALIGN_TOP_LEFT, 24, 946);
-
-    s_fps_toggle_btn = lv_button_create(s_screen_settings);
+    settings_header(pg_disp, "FPS DISPLAY", 24, 650);
+    s_fps_toggle_btn = lv_button_create(pg_disp);
     lv_obj_set_size(s_fps_toggle_btn, 520, 48);
-    lv_obj_align(s_fps_toggle_btn, LV_ALIGN_TOP_MID, 0, 982);
+    lv_obj_align(s_fps_toggle_btn, LV_ALIGN_TOP_MID, 0, 682);
     lv_obj_set_style_radius(s_fps_toggle_btn, 3, 0);
     lv_obj_set_style_shadow_width(s_fps_toggle_btn, 0, 0);
     style_button_press(s_fps_toggle_btn);
@@ -2329,6 +2169,90 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_font(s_fps_toggle_lbl, font_md(), 0);
     lv_obj_center(s_fps_toggle_lbl);
 
+    settings_header(pg_disp, "MENU TRANSITION", 24, 754);
+    for (int i = 0; i < UI_TRANSITION_COUNT; i++) {
+        lv_obj_t *btn = lv_button_create(pg_disp);
+        lv_obj_set_size(btn, 520, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 786 + i * 54);
+        lv_obj_set_style_radius(btn, 3, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, on_transition_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, font_md(), 0);
+        lv_obj_center(lbl);
+        s_opt_btns[i]   = btn;
+        s_opt_labels[i] = lbl;
+    }
+
+    /* =============================== SOUND ============================== */
+    lv_obj_t *pg_snd = settings_page();
+    s_set_pages[1] = pg_snd;
+
+    settings_header(pg_snd, "SOUND", 24, 6);
+    s_sound_toggle_btn = lv_button_create(pg_snd);
+    lv_obj_set_size(s_sound_toggle_btn, 520, 48);
+    lv_obj_align(s_sound_toggle_btn, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_set_style_radius(s_sound_toggle_btn, 3, 0);
+    lv_obj_set_style_shadow_width(s_sound_toggle_btn, 0, 0);
+    style_button_press(s_sound_toggle_btn);
+    lv_obj_add_event_cb(s_sound_toggle_btn, on_sound_toggle, LV_EVENT_CLICKED, NULL);
+    s_sound_toggle_lbl = lv_label_create(s_sound_toggle_btn);
+    lv_obj_set_style_text_font(s_sound_toggle_lbl, font_md(), 0);
+    lv_obj_center(s_sound_toggle_lbl);
+
+    /* VOLUME: UI-sound playback level. Mirrors the BRIGHTNESS control. */
+    settings_header(pg_snd, "VOLUME", 24, 96);
+    s_volume_val = lv_label_create(pg_snd);
+    lv_obj_set_style_text_color(s_volume_val, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(s_volume_val, font_md(), 0);
+    lv_obj_align(s_volume_val, LV_ALIGN_TOP_RIGHT, -140, 96);
+    {
+        char b[8];
+        snprintf(b, sizeof b, "%d%%", audio_get_volume());
+        lv_label_set_text(s_volume_val, b);
+    }
+    s_volume_slider = lv_slider_create(pg_snd);
+    lv_obj_set_size(s_volume_slider, 520, 16);
+    lv_obj_align(s_volume_slider, LV_ALIGN_TOP_MID, 0, 128);
+    lv_slider_set_range(s_volume_slider, 0, 100);
+    lv_slider_set_value(s_volume_slider, audio_get_volume(), LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_volume_slider, lv_color_hex(s_th->track), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_volume_slider, lv_color_hex(accent_color()), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_volume_slider, lv_color_hex(accent_color()), LV_PART_KNOB);
+    lv_obj_set_style_radius(s_volume_slider, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_volume_slider, 4, LV_PART_INDICATOR);
+    lv_obj_add_event_cb(s_volume_slider, on_volume_changed,  LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(s_volume_slider, on_volume_released, LV_EVENT_RELEASED,      NULL);
+
+    /* SOUND SET: AUTO (follow MODE) + one chip per named sound design. */
+    settings_header(pg_snd, "SOUND SET", 24, 188);
+    s_sndset_opt_count = audio_set_count() + 1;   /* AUTO + named sets */
+    if (s_sndset_opt_count > SND_SET_OPTS) s_sndset_opt_count = SND_SET_OPTS;
+    for (int i = 0; i < s_sndset_opt_count; i++) {
+        lv_obj_t *btn = lv_button_create(pg_snd);
+        lv_obj_set_size(btn, 124, 44);
+        int row = i / 4, col = i % 4;
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, (int)((col - 1.5f) * 132.0f), 220 + row * 52);
+        lv_obj_set_style_radius(btn, 3, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        style_button_press(btn);
+        lv_obj_add_event_cb(btn, on_sound_set_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, (i == 0) ? "AUTO" : audio_set_name(i - 1));
+        lv_obj_set_style_text_font(lbl, font_sm(), 0);
+        lv_obj_center(lbl);
+        s_sndset_btns[i] = btn;
+        s_sndset_lbls[i] = lbl;
+    }
+
+    /* Show the active page (preserved across theme rebuilds), hide the rest. */
+    if (s_set_tab >= SET_TAB_COUNT) s_set_tab = 0;
+    for (int i = 0; i < SET_TAB_COUNT; i++) {
+        if (i == (int)s_set_tab) lv_obj_remove_flag(s_set_pages[i], LV_OBJ_FLAG_HIDDEN);
+        else                     lv_obj_add_flag(s_set_pages[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    refresh_settings_tabs();
     refresh_settings_selection();
     refresh_theme_selection();
     refresh_accent_selection();
@@ -2336,6 +2260,8 @@ static void build_settings_screen(void)
     refresh_line_selection();
     refresh_font_selection();
     refresh_fps_selection();
+    refresh_sound_selection();
+    refresh_sound_set_selection();
 }
 
 static void on_open_settings(lv_event_t *e)
@@ -2431,6 +2357,7 @@ static void on_transition_option(lv_event_t *e)
     ui_set_transition_style(style);
     save_transition(s_transition);
     refresh_settings_selection();
+    audio_play(AUDIO_SFX_SELECT);
     ESP_LOGI(TAG, "transition style -> %s", k_transition_names[s_transition]);
 }
 
@@ -2441,6 +2368,8 @@ static void on_theme_option(lv_event_t *e)
     s_theme = idx;
     s_th    = k_theme_palettes[idx];
     save_theme(idx);
+    apply_audio_theme();   /* switch the UI-sound palette to match the new MODE */
+    audio_play(AUDIO_SFX_SELECT);   /* previews the new MODE's sound palette */
     ESP_LOGI(TAG, "theme -> %s", k_theme_names[idx]);
     /* Re-skin by rebuilding all three screens, but defer it: deleting the
      * active settings screen from inside its own button handler is unsafe. */
@@ -2453,6 +2382,7 @@ static void on_accent_option(lv_event_t *e)
     if (idx >= ACCENT_COUNT || idx == s_accent) return;
     s_accent = idx;
     save_accent(idx);
+    audio_play(AUDIO_SFX_SELECT);
     ESP_LOGI(TAG, "accent -> %s", k_accent_names[idx]);
     /* Same rebuild path as a mode change: every screen re-reads accent_color()
      * for highlights + progress, so a full rebuild repaints the accent. */
@@ -2474,7 +2404,6 @@ static void apply_theme_cb(void *unused)
     lv_obj_t *old_devices  = s_screen_devices;
 
     /* Stop all animated features before deleting old screens. */
-    particles_stop();
     cf_deinit();   /* free CF canvas PSRAM; lv_image is a child of old_browser */
     prog_particles_stop();
     wifi_dots_stop();
@@ -2496,7 +2425,7 @@ static void apply_theme_cb(void *unused)
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
-    if (is_yudho_theme()) build_volume_screen();
+    if (is_glyph_theme()) build_volume_screen();
 
     /* Restore carousel position -- build always starts at card 0. Force the
      * layout so scroll bounds are computed before we set the offset. */
@@ -2521,7 +2450,7 @@ static void apply_theme_cb(void *unused)
     if (s_np_device) lv_label_set_text(s_np_device, s_track.device_name[0] ? s_track.device_name : "");
     if (s_track.volume_pct >= 0 && s_np_volume) {
         lv_slider_set_value(s_np_volume, s_track.volume_pct, LV_ANIM_OFF);
-        if (is_yudho_theme() && s_screen_volume)
+        if (is_glyph_theme() && s_screen_volume)
             vol_page_dots_update(s_track.volume_pct);
     }
     update_progress_bar();
@@ -2559,9 +2488,8 @@ static void apply_theme_cb(void *unused)
         }
     }
 
-    /* Start animated features for the new screens. */
-    if (is_art_theme()) particles_start(s_screen_browser);
-    if (is_yudho_theme()) {
+    /* Start the Glyph dot-chrome features for the new screens. */
+    if (is_glyph_theme()) {
         prog_particles_start(s_screen_np);
         wifi_dots_start(s_screen_browser);
         wifi_dots_update_count(s_wifi_dot_count);   /* restore last-known signal strength */
@@ -2624,7 +2552,15 @@ static void load_settings(void)
     }
     uint8_t fps = 0;
     if (nvs_get_u8(h, NVS_KEY_FPS, &fps) == ESP_OK) s_fps_enabled = (fps != 0);
+    uint8_t snd = 1;
+    if (nvs_get_u8(h, NVS_KEY_SOUND, &snd) == ESP_OK) audio_set_enabled(snd != 0);
+    uint8_t vol = 0;
+    if (nvs_get_u8(h, NVS_KEY_VOLUME, &vol) == ESP_OK) audio_set_volume(vol);
+    uint8_t ss = 0;        /* 0 = AUTO, else named-set index + 1 */
+    if (nvs_get_u8(h, NVS_KEY_SOUND_SET, &ss) == ESP_OK)
+        audio_set_set(ss == 0 ? -1 : (int)ss - 1);
     nvs_close(h);
+    apply_audio_theme();   /* AUTO target follows the restored MODE */
 }
 
 static void save_transition(ui_transition_t style)
@@ -2699,6 +2635,35 @@ static void save_fps(uint8_t v)
     nvs_close(h);
 }
 
+static void save_sound(uint8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_SOUND, v);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void save_volume(uint8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_VOLUME, v);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* Map the active visual MODE to a UI-sound palette so the sounds match the look:
+ * PIXEL -> chiptune squares, GLYPH -> ambient, the
+ * rest -> the clean modern set. */
+static void apply_audio_theme(void)
+{
+    audio_theme_t at = AUDIO_THEME_MODERN;
+    if (s_theme == THEME_PIXEL_IDX)        at = AUDIO_THEME_PIXEL;
+    else if (s_theme == THEME_GLYPH_IDX)   at = AUDIO_THEME_AMBIENT;
+    audio_set_theme(at);
+}
+
 void ui_init(lv_image_dsc_t *art_dsc)
 {
     s_art_dsc = art_dsc;
@@ -2727,9 +2692,8 @@ void ui_init(lv_image_dsc_t *art_dsc)
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
-    if (is_yudho_theme()) build_volume_screen();
-    if (is_art_theme())   particles_start(s_screen_browser);
-    if (is_yudho_theme()) {
+    if (is_glyph_theme()) build_volume_screen();
+    if (is_glyph_theme()) {
         prog_particles_start(s_screen_np);
         wifi_dots_start(s_screen_browser);
     }
@@ -2746,12 +2710,14 @@ void ui_init(lv_image_dsc_t *art_dsc)
      * itself is cheap (one LEDC duty update on state change only). */
     lv_timer_create(idle_timer_cb, 1000, NULL);
 
-    /* FPS counter: hook every flush-complete event on the default display and
-     * snapshot once per second. Counter is always running; label is only shown
-     * and updated when s_fps_enabled is set via the Settings toggle. */
+    /* FPS counter: time each render (START->READY) on the default display and
+     * snapshot the max-achievable rate once per second. Always measuring; the
+     * label is only shown when s_fps_enabled is set via the Settings toggle. */
     lv_display_t *fps_disp = lv_display_get_default();
-    if (fps_disp)
-        lv_display_add_event_cb(fps_disp, fps_flush_cb, LV_EVENT_FLUSH_FINISH, NULL);
+    if (fps_disp) {
+        lv_display_add_event_cb(fps_disp, fps_render_start_cb, LV_EVENT_RENDER_START, NULL);
+        lv_display_add_event_cb(fps_disp, fps_render_ready_cb, LV_EVENT_RENDER_READY, NULL);
+    }
     lv_timer_create(fps_timer_cb, 1000, NULL);
 
     bsp_display_unlock();
@@ -2837,7 +2803,7 @@ void ui_set_track_info(const spotify_track_t *info)
     if (info && info->volume_pct >= 0 && s_np_volume &&
         (int32_t)(lv_tick_get() - s_vol_hold_until) >= 0) {
         lv_slider_set_value(s_np_volume, info->volume_pct, LV_ANIM_OFF);
-        if (is_yudho_theme()) vol_page_dots_update(info->volume_pct);
+        if (is_glyph_theme()) vol_page_dots_update(info->volume_pct);
     }
     bsp_display_unlock();
 }
@@ -3145,23 +3111,44 @@ static void on_gesture(lv_event_t *e)
     (void)e;
 }
 
+/* How close to the screen centre (px) a tap must land to count as "play the
+ * centred album" rather than "scroll to a side cover". Sized to the centre
+ * cover's half-width so taps anywhere on it play; taps clearly on a side cover
+ * scroll. */
+#define CENTRE_TAP_TOL  140
+
 static void on_card_clicked(lv_event_t *e)
 {
     size_t idx = (size_t)(uintptr_t)lv_event_get_user_data(e);
-    const album_entry_t *a = albums_get(idx);
-    if (!a) return;
 
-    /* Tapping an off-centre card just brings it to the middle (select); only a
-     * tap on the already-centred card plays it. Avoids accidental plays from
-     * mis-tapping an edge card, and matches the centre-snap carousel model. */
-    if ((int)idx != s_centered_card) {
+    /* Decide from the touch X, NOT which hidden card object was hit. In Cover
+     * Flow the fanned covers don't line up with the (linear) clickable card
+     * slots, so a tap on the big centre cover can land on a neighbour's hitbox
+     * and scroll instead of play. A tap near the screen centre plays the
+     * centred album; a tap clearly to one side scrolls that card in. */
+    int  centred = (s_centered_card >= 0) ? s_centered_card : (int)idx;
+    bool play    = ((int)idx == centred);   /* fallback if no pointer info */
+
+    lv_indev_t *indev = lv_indev_active();
+    if (indev) {
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        int dx = (int)p.x - SCREEN_W / 2;
+        if (dx < 0) dx = -dx;
+        play = (dx <= CENTRE_TAP_TOL);
+    }
+
+    if (!play) {
         s_target_card = (int)idx;
         lv_obj_scroll_to_x(s_browser_scroller,
                            (int32_t)idx * (cs() + cg()), LV_ANIM_ON);
         return;
     }
 
+    const album_entry_t *a = albums_get((size_t)centred);
+    if (!a) return;
     ESP_LOGI(TAG, "play album: %s -- %s", a->artist, a->title);
+    audio_play(AUDIO_SFX_SELECT);
     /* Hand the URI off to the Spotify task; ui_request_play() must NOT
      * block (HTTPS PUT runs on the other task). The screen transition
      * happens immediately and the play completes asynchronously. */
@@ -3198,6 +3185,7 @@ static void on_browser_scroll(lv_event_t *e)
     if (idx >= 0 && lv_indev_active() != NULL) s_target_card = idx;
     if (idx < 0 || idx == s_centered_card) return;
     s_centered_card = idx;
+    audio_play(AUDIO_SFX_TICK);   /* detent tick as the centred album changes */
     const album_entry_t *a = albums_get((size_t)idx);
     if (!a) return;
     if (s_browser_title)  lv_label_set_text(s_browser_title, a->title);
@@ -3279,11 +3267,12 @@ static void apply_card_transforms(void)
         int32_t dist = card_cx - scr_center;
         if (dist < 0) dist = -dist;
 
-        /* 1:1 base for Focus (cs == CARD_SIZE == ALBUM_THUMB_W); PIXEL scales
-         * the 64 px pixelated thumb up to the card slot size. */
-        uint32_t base = is_pixel_theme()
-                      ? (uint32_t)cs() * LV_SCALE_NONE / PIX_THUMB_RES
-                      : (uint32_t)LV_SCALE_NONE;
+        /* Base scale fills the cs() (286px) card from the source thumb: 220px
+         * normal cover, or the 64px pixelated thumb in PIXEL theme. The centred
+         * card draws at full 286 (matching carousel + cover flow); neighbours
+         * scale down from there. */
+        uint32_t base = (uint32_t)cs() * LV_SCALE_NONE
+                      / (is_pixel_theme() ? PIX_THUMB_RES : ALBUM_THUMB_W);
         int32_t scale = LV_SCALE_NONE - dist * 76 / step;
         if (scale < 150) scale = 150;
         lv_image_set_scale(s_card_imgs[i], (uint32_t)((int64_t)scale * base / LV_SCALE_NONE));
@@ -3315,6 +3304,7 @@ static void on_browser_style_option(lv_event_t *e)
     s_browser_style = idx;
     save_browser_style(idx);
     refresh_browser_style_selection();
+    audio_play(AUDIO_SFX_SELECT);
     ESP_LOGI(TAG, "browser style -> %s", k_browser_style_names[idx]);
     /* Rebuild the browser screen in the background -- user stays in settings. */
     lv_async_call(rebuild_browser_cb, NULL);
@@ -3342,6 +3332,7 @@ static void on_line_toggle(lv_event_t *e)
         else                 lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
     }
     refresh_line_selection();
+    audio_play(AUDIO_SFX_TICK);
     ESP_LOGI(TAG, "selection line -> %s", s_show_sel_line ? "ON" : "OFF");
 }
 
@@ -3385,6 +3376,7 @@ static void on_font_option(lv_event_t *e)
     s_font_choice = idx;
     save_font(idx);
     refresh_font_selection();
+    audio_play(AUDIO_SFX_SELECT);
     /* Trigger a full theme rebuild so all screens pick up the new font. */
     lv_async_call(apply_theme_cb, NULL);
     ESP_LOGI(TAG, "font -> %s", idx == FONT_SLAB ? "SLAB (Arvo)" : "SANS (Montserrat)");
@@ -3410,25 +3402,149 @@ static void on_fps_toggle(lv_event_t *e)
         else               lv_obj_add_flag(s_fps_label, LV_OBJ_FLAG_HIDDEN);
     }
     refresh_fps_selection();
+    audio_play(AUDIO_SFX_TICK);
     ESP_LOGI(TAG, "fps display -> %s", s_fps_enabled ? "ON" : "OFF");
 }
 
-/* Incremented on every display flush-complete event. */
-static void fps_flush_cb(lv_event_t *e)
+static void refresh_sound_selection(void)
+{
+    if (!s_sound_toggle_btn || !s_sound_toggle_lbl) return;
+    bool on = audio_is_enabled();
+    lv_obj_set_style_bg_color(s_sound_toggle_btn,
+        on ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+    lv_obj_set_style_text_color(s_sound_toggle_lbl,
+        on ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+    lv_label_set_text(s_sound_toggle_lbl, on ? "ON" : "OFF");
+}
+
+static void on_sound_toggle(lv_event_t *e)
 {
     (void)e;
-    s_fps_count++;
+    bool on = !audio_is_enabled();
+    audio_set_enabled(on);
+    save_sound(on ? 1 : 0);
+    refresh_sound_selection();
+    if (on) audio_play(AUDIO_SFX_SELECT);   /* audible confirmation when enabling */
+    ESP_LOGI(TAG, "ui sound -> %s", on ? "ON" : "OFF");
+}
+
+static void on_volume_changed(lv_event_t *e)
+{
+    (void)e;
+    if (!s_volume_slider) return;
+    int v = lv_slider_get_value(s_volume_slider);
+    audio_set_volume(v);                        /* live -- next blip uses new gain */
+    if (s_volume_val) {
+        char b[8];
+        snprintf(b, sizeof b, "%d%%", v);
+        lv_label_set_text(s_volume_val, b);
+    }
+}
+
+static void on_volume_released(lv_event_t *e)
+{
+    (void)e;
+    int v = audio_get_volume();
+    save_volume((uint8_t)v);                    /* persist once, on release */
+    audio_play(AUDIO_SFX_TICK);                 /* preview the new level */
+    ESP_LOGI(TAG, "ui volume -> %d%%", v);
+}
+
+static void refresh_settings_tabs(void)
+{
+    for (int i = 0; i < SET_TAB_COUNT; i++) {
+        if (!s_set_tabs[i] || !s_set_tab_lbls[i]) continue;
+        bool sel = (i == (int)s_set_tab);
+        lv_obj_set_style_bg_color(s_set_tabs[i],
+            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_text_color(s_set_tab_lbls[i],
+            sel ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+    }
+}
+
+static void on_settings_tab(lv_event_t *e)
+{
+    uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx >= SET_TAB_COUNT || idx == s_set_tab) return;
+    s_set_tab = idx;
+    for (int i = 0; i < SET_TAB_COUNT; i++) {
+        if (!s_set_pages[i]) continue;
+        if (i == (int)idx) lv_obj_remove_flag(s_set_pages[i], LV_OBJ_FLAG_HIDDEN);
+        else               lv_obj_add_flag(s_set_pages[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    refresh_settings_tabs();
+    audio_play(AUDIO_SFX_BACK);   /* soft page-change blip */
+}
+
+static void save_sound_set(int8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_SOUND_SET, (uint8_t)(v < 0 ? 0 : v + 1));   /* 0 = AUTO */
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void refresh_sound_set_selection(void)
+{
+    int sel     = audio_get_set();               /* -1 = AUTO */
+    int sel_opt = (sel < 0) ? 0 : sel + 1;       /* option 0 = AUTO */
+    for (int i = 0; i < s_sndset_opt_count; i++) {
+        if (!s_sndset_btns[i] || !s_sndset_lbls[i]) continue;
+        bool on = (i == sel_opt);
+        lv_obj_set_style_bg_color(s_sndset_btns[i],
+            on ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_text_color(s_sndset_lbls[i],
+            on ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+    }
+}
+
+static void on_sound_set_option(lv_event_t *e)
+{
+    uint8_t opt = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    int set = (opt == 0) ? -1 : (int)opt - 1;
+    audio_set_set(set);
+    save_sound_set((int8_t)set);
+    refresh_sound_set_selection();
+    audio_play(AUDIO_SFX_SELECT);   /* preview the chosen design */
+    ESP_LOGI(TAG, "sound set -> %s", (opt == 0) ? "AUTO" : audio_set_name(set));
+}
+
+/* Render timing for the max-FPS readout. These fire on the LVGL task around each
+ * refresh; we only read the clock -- NO lv_*_invalidate() here (that asserts
+ * during rendering and wedges the task). */
+static void fps_render_start_cb(lv_event_t *e)
+{
+    (void)e;
+    s_fps_render_start_us = esp_timer_get_time();
+}
+static void fps_render_ready_cb(lv_event_t *e)
+{
+    (void)e;
+    int64_t dur = esp_timer_get_time() - s_fps_render_start_us;
+    /* Track the longest render this window (= a full-screen frame); ignore
+     * absurd values (first event before any START, or clock glitches). */
+    if (dur > 0 && dur < 1000000 && (uint32_t)dur > s_fps_win_max_us)
+        s_fps_win_max_us = (uint32_t)dur;
 }
 
 /* 1-second tick: snapshot the counter and update the browser label. */
 static void fps_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    uint32_t fps = s_fps_count;
-    s_fps_count = 0;
+    /* Recompute only from a significant (full-screen) render this window; tiny
+     * partial renders -- e.g. this 1 s label refresh -- are far faster and would
+     * inflate the figure, so ignore them (< 3 ms) and hold the last value. The
+     * full-frame render time is the real ceiling on sustained FPS. */
+    if (s_fps_win_max_us >= 3000) {
+        uint32_t fps = 1000000u / s_fps_win_max_us;
+        if (fps > 999) fps = 999;
+        s_fps_last_max = fps;
+    }
+    s_fps_win_max_us = 0;
     if (!s_fps_enabled || !s_fps_label) return;
     char buf[12];
-    snprintf(buf, sizeof buf, "%lu FPS", (unsigned long)fps);
+    snprintf(buf, sizeof buf, "%lu FPS", (unsigned long)s_fps_last_max);
     lv_label_set_text(s_fps_label, buf);
 }
 
@@ -3441,16 +3557,15 @@ static void rebuild_browser_cb(void *unused)
     /* Free any existing pixel thumbnail pool; build_browser_screen() will
      * reallocate it if PIXEL is still active. */
     if (s_pix_thumbs) { heap_caps_free(s_pix_thumbs); s_pix_thumbs = NULL; }
-    /* Clear the stale VFX browser image ref — it is a child of old_browser and
-     * will be freed when we delete it below. Recreate on the new screen if the
-     * vortex is running. */
-    s_vfx_img_browser = NULL;
-    /* Same for the CF canvas: free the PSRAM buffer; the lv_image widget is a
-     * child of old_browser and is freed when that screen is deleted below. */
+    /* Free the CF canvas PSRAM buffer; the lv_image widget is a child of
+     * old_browser and is freed when that screen is deleted below. */
     cf_deinit();
+    /* The WiFi dot meter lives on the browser screen; it must be torn down and
+     * rebuilt on the new screen, else s_wifi_dots dangles into the freed old
+     * screen and the WiFi timer writes to freed objects (crash). */
+    wifi_dots_stop();
     build_browser_screen();
-    if (is_yudho_theme() && s_vfx_buf)
-        s_vfx_img_browser = vfx_create_img(s_screen_browser);
+    if (is_glyph_theme()) wifi_dots_start(s_screen_browser);
 
     if (saved_card > 0 && s_browser_scroller) {
         lv_obj_update_layout(s_browser_scroller);
@@ -3481,8 +3596,8 @@ static void wifi_timer_cb(lv_timer_t *t)
         else                  bars = 1;
     }
 
-    if (is_yudho_theme()) {
-        /* Yudho: update orbiting dot cluster instead of bar indicators. */
+    if (is_glyph_theme()) {
+        /* Glyph: update the dot strength meter instead of the bar indicators. */
         wifi_dots_update_count(bars);
     } else {
         for (int i = 0; i < 4; i++) {
@@ -3501,8 +3616,8 @@ static void wifi_timer_cb(lv_timer_t *t)
     if (now_offline != s_offline) {
         s_offline = now_offline;
         if (s_np_title) {
-            if (is_yudho_theme()) {
-                /* Yudho: animated dissolve/reform instead of instant label swap. */
+            if (is_glyph_theme()) {
+                /* Glyph: animated dissolve/reform instead of instant label swap. */
                 if (s_offline) title_dissolve();
                 else           title_reform();
             } else {
@@ -3535,6 +3650,7 @@ void ui_play_centered_album(void)
     const album_entry_t *a = albums_get((size_t)idx);
     if (!a) return;
     ESP_LOGI(TAG, "play album (encoder): %s -- %s", a->artist, a->title);
+    audio_play(AUDIO_SFX_SELECT);
     ui_request_play(a->uri);
     load_screen(s_screen_np, true);
 }

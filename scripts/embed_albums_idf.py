@@ -24,7 +24,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gen_albums import parse_master, sort_albums  # noqa: E402
+from gen_albums import force_utf8_stdout, parse_master, sort_albums  # noqa: E402
 
 PLACEHOLDER_RGB = (32, 32, 32)  # neutral tile for albums with no cover yet.
 
@@ -106,6 +106,7 @@ def _to_rgb565(size: int, px, get) -> bytes:
 
 
 def main() -> None:
+    force_utf8_stdout()
     albums = sort_albums(parse_master())
 
     # Resolve each album to a cover (or placeholder) once -- the mapping is the

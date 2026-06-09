@@ -23,10 +23,25 @@ exact same order as albums.c -- never edit the album arrays by hand.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MASTER = REPO_ROOT / "spotify-albums-list.txt"
+
+
+def force_utf8_stdout() -> None:
+    """Stop print() crashing on a non-cp1252 album title.
+
+    Windows consoles (and the ESP-IDF build that runs this generator) default
+    to cp1252, which can't encode characters like U+FFFD or many non-Latin
+    glyphs -- print() then raises UnicodeEncodeError and kills the build.
+    Emit UTF-8, replacing anything the stream still can't encode.
+    """
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 # Each target: (path, language). language picks NULL vs nullptr.
 TARGETS = [
@@ -113,6 +128,7 @@ size_t albums_count(void)
 
 
 def main() -> None:
+    force_utf8_stdout()
     if not MASTER.exists():
         raise SystemExit(f"Missing master album list: {MASTER}")
 

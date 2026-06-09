@@ -1,3 +1,32 @@
+# --- Keep albums.c in sync with the master list automatically ---------------
+# albums.c is GENERATED from spotify-albums-list.txt (repo root) by
+# scripts/gen_albums.py. Running it here means "edit the list, then build" is
+# all that's needed -- never hand-edit albums.c, never run gen_albums.py by hand.
+# CMake re-runs configuration whenever the list changes (CMAKE_CONFIGURE_DEPENDS)
+# and regenerates albums.c below. (Cover ART is separate: after adding an image
+# to scripts/input_albums/, run scripts/embed_albums_idf.py to refresh the thumb
+# blob; a newly listed album with no cover yet shows a placeholder tile.)
+get_filename_component(_repo_root "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+set(_albums_list "${_repo_root}/spotify-albums-list.txt")
+set(_gen_albums  "${_repo_root}/scripts/gen_albums.py")
+if(NOT PYTHON)
+    set(PYTHON "python")
+endif()
+if(EXISTS "${_albums_list}" AND EXISTS "${_gen_albums}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_albums_list}")
+    execute_process(
+        COMMAND "${PYTHON}" "${_gen_albums}"
+        WORKING_DIRECTORY "${_repo_root}"
+        RESULT_VARIABLE _gen_albums_rc)
+    if(_gen_albums_rc EQUAL 0)
+        message(STATUS "albums.c regenerated from spotify-albums-list.txt")
+    else()
+        message(WARNING "gen_albums.py failed (rc=${_gen_albums_rc}); using existing albums.c")
+    endif()
+else()
+    message(STATUS "spotify-albums-list.txt not found; using committed albums.c")
+endif()
+
 # Sources/deps are introduced per checkpoint so each stage links on its own.
 # The full stack (display + WiFi + TLS + http + jpegdec + littlefs) linked at
 # once overflows internal SRAM by ~451 B (static .bss/.sdata), so we stage it.
@@ -13,6 +42,15 @@ idf_component_register(
         "littlefs.c"      # cp5: album-art scratch (+ joltwallet__littlefs)
         "lv_font_pixel_16.c"  # cp6: 1bpp Press Start 2P 16px for PIXEL retro theme
         "lv_font_pixel_24.c"  # cp6: 1bpp Press Start 2P 24px for PIXEL retro theme
+        "lv_font_arvo_24.c"   # SLAB font choice: Arvo Bold 24px (gen_lvgl_font.py)
+        "lv_font_arvo_28.c"   # SLAB font choice: Arvo Bold 28px (gen_lvgl_font.py)
+        "lv_font_dot_20.c"    # GLYPH dot-matrix text font 20px (gen_lvgl_font.py --dots)
+        "lv_font_dot_24.c"    # GLYPH dot-matrix text font 24px (gen_lvgl_font.py --dots)
+        "lv_font_dot_28.c"    # GLYPH dot-matrix text font 28px (gen_lvgl_font.py --dots)
+        "lv_font_dot_sym_20.c"  # GLYPH dotted FontAwesome icons 20px (fallback of dot_20)
+        "lv_font_dot_sym_24.c"  # GLYPH dotted FontAwesome icons 24px (fallback of dot_24)
+        "lv_font_dot_sym_28.c"  # GLYPH dotted FontAwesome icons 28px (fallback of dot_28)
+        "audio.c"             # synthesised UI sound effects via ES8311 speaker
         # --- added in later checkpoints (see README.md roadmap) ---
         # "input.c"         # cp6: touch dispatch
     INCLUDE_DIRS "." "../include"
@@ -37,6 +75,7 @@ idf_component_register(
         vfs                   # cp5: POSIX fopen/fread for album_art_decode_file
         joltwallet__littlefs  # cp5: album-art JPEG scratch (storage partition)
         bitbank2__jpegdec     # cp5: now-playing art JPEG decode
+        esp_codec_dev         # UI sound effects: ES8311 speaker (audio.c)
 )
 
 # Link libm for cosf/sinf used by the WiFi orbit animation in ui.c.
