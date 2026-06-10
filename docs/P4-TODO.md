@@ -40,9 +40,16 @@ items, see [`PENDING.md`](PENDING.md).
   retries exhaust (no more permanent dead-end after a router blip).
 - **Dispatcher logging** — every failed Spotify command gets a named
   `ESP_LOGW` so silent presses are debuggable.
-- **PIXEL retro theme** — sixth MODE (cp10); Press Start 2P 1bpp font, Bayer-
+- **PIXEL retro theme** — a MODE (cp10); Press Start 2P 1bpp font, Bayer-
   dithered art + thumbnails, dark-CRT palette. PSRAM thumb pool freed on
   switch-away. Needs hardware verify.
+- **GLYPH dot theme** (cp12) — replaced the Yudho/Fuhrer VFX backdrops (canvas
+  particle system deleted) with one all-dots MODE: dot text + dotted-icon fonts,
+  gas-tank progress bar (Brownian dots + playhead), dot WiFi meter. Font fixed in
+  GLYPH. Cog reads a touch muddy at dot size — deferred.
+- **UI sound + tabbed Settings** (cp13) — synthesised SFX via ES8311 (`audio.c`),
+  sound sets + volume; Settings split into DISPLAY + SOUND tabs; scrolling long
+  titles; Cover-Flow centre-tap fix; album-art `JPEGIMAGE` in internal SRAM.
 - **Code quality** — `_do_cmd` forward-decl + `spotify_play_album` keep-alive
   reuse; `MAX_DEVICES` constant; `scmd_meta_t` table + `_Static_assert`; `copy_str`
   consistency in `main.c`.

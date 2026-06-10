@@ -30,9 +30,11 @@ The two CYD IDF builds share UI/input/MCP/album-art/LittleFS code via the [`cyd/
 
 **Waveshare ESP32-P4 (lead build) — additional features:**
 
-- **Touch-first UI** — GT911 capacitive touch, on-screen transport + volume controls, settings gear button.
-- **Three browser styles** — Carousel, Focus, iPod-style Cover Flow (true 3D perspective via PSRAM column rasteriser — trapezoid foreshortening, correct z-order, no LVGL transform paths).
-- **Settings screen** — Menu Transition, Mode (Dark/Black/Light), Colour accent (Orange/Red/Green/Purple), Browser Style, Selection Line, Backlight Brightness — all NVS-persisted.
+- **Touch-first UI** — GT911 capacitive touch, on-screen transport + volume controls, settings cog button. Long titles scroll horizontally (radio-style marquee); short ones stay centred.
+- **Three browser styles** — Carousel, Focus, iPod-style Cover Flow (true 3D perspective via PSRAM column rasteriser — trapezoid foreshortening, correct z-order, no LVGL transform paths). A centre-tap plays the centred album; an off-centre tap scrolls that cover in.
+- **Settings screen** — organised into **DISPLAY** and **SOUND** tabs. DISPLAY: Mode (Dark/Black/Light/GLYPH/PIXEL), Colour accent (Orange/Red/Green/Purple), Browser Style, Font, Selection Line, Brightness, FPS, Menu Transition. SOUND: sound on/off, volume, sound set. All NVS-persisted.
+- **Theme modes** — Dark/Black/Light, plus two special themes: **PIXEL** (retro CRT — Press Start 2P pixel font, Bayer-dithered art) and **GLYPH** (everything drawn in round dots — dot text + icon fonts, a "gas-tank" progress bar with drifting dots + playhead, a dot WiFi meter).
+- **UI sound effects** — synthesised tones through the onboard ES8311 speaker (scroll / select / back / connect), selectable sound sets, adjustable volume. All off the render path on a dedicated audio task.
 - **Auto-dim / sleep** — backlight ramps to 30 % at 1 min idle, 10 % at 5 min, restores on touch.
 - **Sonos** — direct UPnP/SOAP control of a Sonos speaker on the LAN: transport, volume, and full album-start. Device selector merges Spotify Connect targets with configured Sonos speakers.
 - **Persistent TLS** — poll and command paths each reuse a keep-alive HTTP client to avoid per-call TLS handshakes.

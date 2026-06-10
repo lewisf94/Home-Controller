@@ -35,12 +35,16 @@ is "done":
 | Reliability — code review (2026-05-31) | WiFi init-fail no longer early-returns (UI + reconnect timer come up regardless of initial connect failure); 401 token-clear in `_do_cmd`, `spotify_play_album`, `spotify_get_devices` (consistency with the poll path) | `25d2ab8` |
 | PIXEL retro theme | Sixth MODE option (cp6): 1bpp Press Start 2P font, Bayer-dithered pixelated art + thumbnails, dark-CRT palette. `lv_font_pixel_16/24.c` added; font accessors route through `is_pixel_theme()`; PSRAM thumb pool (~0.5 MB) freed on switch-away. | `570c7a3` |
 | Code quality (2026-06-02) | `_do_cmd` forward-declared so `spotify_play_album` can route through it (keep-alive reuse); `MAX_DEVICES` replaces 5 magic `16`s across `main.c`/`ui.c`/`ui.h`; `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain; `strlcpy` replaces `copy_str`; finite `bsp_display_lock(1000)` timeout; progress-timer drift fix. | `479c986` + `85324e9` |
-| VFX canvas particle system | Yudho: 200 Keplerian vortex particles on 400×240 PSRAM canvas (192 KB), 2× scaled, per-frame fade trails. Fuhrer: 300 art-sourced emission particles sampling album art pixels. Replaces the old 20-dot random-jump LVGL-object system. | `05137ae` |
-| FONT setting | Settings → FONT → SANS (Montserrat) or SLAB (Arvo Bold, OFL). NVS-persisted. PIXEL theme still overrides to Press Start 2P regardless. | `c64f543` |
+| GLYPH dot-matrix theme | Replaced the Yudho/Fuhrer VFX-backdrop themes (whole `lv_canvas` particle system deleted) with one MODE drawn entirely in round dots: dot text font from unscii-8 (`lv_font_dot_20/24/28.c`), dotted sparse-cmap FontAwesome fallback (`lv_font_dot_sym_*`), gas-tank progress bar (Brownian dots + playhead), 4-dot WiFi meter. Font fixed in GLYPH (FONT setting hidden). Fixed the browser-style-change crash (dangling WiFi-dot pointer across screen rebuild). | this session |
+| UI sound + tabbed Settings | Synthesised SFX via ES8311 (`audio.c`): TICK/SELECT/BACK/CONNECT on a task+queue, named sound sets + AUTO, user volume (square-law taper), NVS-persisted. Settings split into DISPLAY + SOUND tabs. | this session |
+| Title marquee | Long browser/NP titles scroll horizontally (`LV_LABEL_LONG_SCROLL_CIRCULAR`, fixed ~150 s/loop) instead of ellipsising; short titles stay centred. | this session |
+| Cover-Flow centre-tap | Tap within `CENTRE_TAP_TOL` of screen-centre plays the centred album (touch X via `lv_indev_get_point`); off-centre tap scrolls that cover in. | this session |
+| Settings cog icon | Settings button uses `LV_SYMBOL_SETTINGS` (cog), replacing the easy-to-miss faders glyph; renders in GLYPH via the dotted symbol font. *(first on-device check done; in GLYPH the dotted cog reads a touch muddy — dots merge — noted, fix deferred.)* | this session |
+| Album-art decode crash | `JPEGIMAGE` working struct allocated in internal SRAM (`heap_caps_calloc(MALLOC_CAP_INTERNAL)`) not PSRAM — fixes intermittent `JPEGDecodeMCU` store fault. *(first on-device check done — needs a multi-track soak.)* | this session |
+| FONT setting | Settings → FONT → SANS (Montserrat) or SLAB (Arvo Bold, OFL). NVS-persisted. PIXEL overrides to Press Start 2P and GLYPH overrides to the dot font regardless. | `c64f543` |
 | Cover Flow 3D perspective | Replaced image-scale CF with a PSRAM column rasteriser (800×244 RGB565, 390 KB). Per-column perspective math produces true trapezoid foreshortening; three-pass draw guarantees centre-card z-order. Dissolve-animation cast bug fixed (`anim_set_bg_opa` wrapper). | `70812a0`, `c79aea4`, `5dd44a4` |
 | CI — GitHub Actions | ESP-IDF build workflow (`.github/workflows/esp-idf-build.yml`) runs `idf.py build` on GitHub's servers (which can reach the Espressif registry) on every push to `waveshare/esp-idf/`. Placeholder `secrets.h` and zero-filled `album_thumbs.bin` generated before build. Currently green. | `9d92764`–`c79aea4` |
 | PPA hardware acceleration | `.enable_ppa_accel = true` in vendored BSP; offloads 90° software rotation to the P4 hardware 2D accelerator. | pending |
-| Art theme scroller transparency | Yudho/Fuhrer: browser scroller `bg_opa = LV_OPA_TRANSP` so VFX canvas shows through card gaps and padding bands. | pending |
 | Cover Flow 2-side | CF card slot 220→180 px, gap 28→16 px (step 248→196). Card ±2 centres at 792/8 px — fully on-screen. Squash rate 150→100, floor 70→85, dim_rise 150→80 so second side card still reads. | pending |
 | FPS display | Settings → FPS DISPLAY toggle (ON/OFF); live `N FPS` label in browser top bar updated every 1 s via `LV_EVENT_FLUSH_READY` counter. NVS-persisted. | pending |
 
@@ -73,23 +77,25 @@ Sanity-check menu for next flash (waveshare):
    now-playing art is pixelated; transport icons are pixel shapes. Switch back to
    DARK: full-res art and smooth fonts return, no crash. Check PSRAM heap log to
    confirm thumb pool allocated then freed correctly.
-10. **Yudho vortex** — Settings → MODE → YUDHO: browser and NP screens show white
-    spiral particles on pure black, spinning inward with glowing trails. PSRAM heap
-    +192 KB. Switch away: canvas freed, no crash. Idle ~60 s: auto-dim still fires.
-11. **Fuhrer art emission** — Settings → MODE → FUHRER, play a track with album art:
-    NP background fills with coloured drifting dots matching the art palette. No art:
-    rainbow fallback visible. Art changes (new track): particle colours shift within
-    ~5–10 s. PSRAM heap +192 KB while active.
+10. **GLYPH dot theme** — Settings → MODE → GLYPH: all text renders in round dots
+    and stays legible; icons (cog, transport, chevrons) are dotted too; progress is a
+    gas-tank capsule with drifting accent dots + a playhead bar at the play point;
+    WiFi is 4 dots, first N lit. Change BROWSER STYLE while in GLYPH — must NOT crash
+    (the old dangling WiFi-dot crash). FONT row is hidden in GLYPH. *(Known nit: the
+    dotted cog reads a little muddy — dots merge — fix deferred.)*
+11. **UI sound** — Settings → SOUND: toggle on; scrolling the carousel ticks, picking
+    an album plays the rising select tone, changing an option clicks. VOLUME slider
+    scales loudness (fine control at the low end). SOUND SET switches the timbre
+    (AUTO follows MODE). All survive a reboot (NVS).
 12. **SLAB font** — Settings → FONT → SLAB: all title/artist/settings labels switch
     to Arvo Bold immediately. SANS reverts to Montserrat. NVS persists across reboot.
     PIXEL theme still overrides to Press Start 2P regardless of FONT setting.
 13. **PPA rotation** — boot; confirm display renders correctly (no corruption or
     colour shift). Watch serial log for any PPA errors. Compare idle render speed
     vs before: should run noticeably cooler / faster in VFX themes.
-14. **Art theme scroller transparency** — Settings → MODE → YUDHO, open browser:
-    the VFX vortex should be visible through the gaps between cards and the padding
-    bands on the left/right of the carousel. Cards themselves remain opaque (album
-    art visible). Same for FUHRER.
+14. **Title marquee** — play (or browse to) an album with a very long title: it
+    should scroll horizontally at a slow, readable pace; a short title stays centred
+    and static. Check both the browser and now-playing titles.
 15. **Cover Flow 3D perspective** — Settings → BROWSER STYLE → COVER FLOW: side
     albums should appear as genuine trapezoids (inner edge tall, outer edge
     noticeably shorter), not just squished rectangles. Centre card must always

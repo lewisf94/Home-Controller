@@ -110,7 +110,7 @@ def main() -> None:
     dot_pitch  = args.dot_pitch  or max(3, round(args.size / 8))
     dot_radius = args.dot_radius
     if not dot_radius:
-        dot_radius = min(dot_pitch * 0.32, (dot_pitch - 1) / 2.0)
+        dot_radius = min(dot_pitch * 0.45, (dot_pitch - 1) / 2.0)
 
     try:
         from PIL import Image, ImageDraw, ImageFont

@@ -49,6 +49,20 @@ extern "C" {
 
 namespace {
 
+/* Allocate the ~19 KB JPEGIMAGE working struct in INTERNAL SRAM, not PSRAM.
+ * JPEGDEC hammers this struct with small, random reads/writes (sMCUs, Huffman
+ * tables, the bit buffer) during decode. Left to plain calloc it lands in PSRAM
+ * (the default heap is ~23 MB PSRAM here), where it caused an intermittent store
+ * fault in JPEGDecodeMCU (wild pMCU = &sMCUs[iMCU] at a PSRAM address) -- a
+ * PSRAM cache/coherency artifact, not bad JPEG data (the same cover decoded fine
+ * on the next boot). Internal SRAM removes that variable and is faster too.
+ * ~19 KB out of ~390 KB free internal is comfortable; freed right after decode. */
+void *alloc_jpeg_image(void)
+{
+    return heap_caps_calloc(1, sizeof(JPEGIMAGE),
+                            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
 struct DecodeCtx {
     uint16_t *out;
     int       dest_w;
@@ -171,7 +185,7 @@ extern "C" bool album_art_decode(const uint8_t *jpeg, size_t jpeg_len,
         }
     }
 
-    JPEGIMAGE *pJPEG = static_cast<JPEGIMAGE *>(calloc(1, sizeof(JPEGIMAGE)));
+    JPEGIMAGE *pJPEG = static_cast<JPEGIMAGE *>(alloc_jpeg_image());
     if (!pJPEG) {
         ESP_LOGE(TAG, "calloc(%u) failed", (unsigned)sizeof(JPEGIMAGE));
         return false;
@@ -180,7 +194,7 @@ extern "C" bool album_art_decode(const uint8_t *jpeg, size_t jpeg_len,
     if (!JPEG_openRAM(pJPEG, const_cast<uint8_t *>(jpeg),
                       static_cast<int>(jpeg_len), draw_callback)) {
         ESP_LOGE(TAG, "JPEG_openRAM failed, lastError=%d", JPEG_getLastError(pJPEG));
-        free(pJPEG);
+        heap_caps_free(pJPEG);
         return false;
     }
 
@@ -203,7 +217,7 @@ extern "C" bool album_art_decode_file(const char *path,
              (unsigned)esp_get_free_heap_size(),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
-    JPEGIMAGE *pJPEG = static_cast<JPEGIMAGE *>(calloc(1, sizeof(JPEGIMAGE)));
+    JPEGIMAGE *pJPEG = static_cast<JPEGIMAGE *>(alloc_jpeg_image());
     if (!pJPEG) {
         ESP_LOGE(TAG, "calloc(%u) failed", (unsigned)sizeof(JPEGIMAGE));
         return false;
@@ -211,7 +225,7 @@ extern "C" bool album_art_decode_file(const char *path,
 
     if (!JPEG_openFile(pJPEG, path, draw_callback)) {
         ESP_LOGE(TAG, "JPEG_openFile failed, lastError=%d", JPEG_getLastError(pJPEG));
-        free(pJPEG);
+        heap_caps_free(pJPEG);
         return false;
     }
 

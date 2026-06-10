@@ -604,31 +604,6 @@ static void style_button_press(lv_obj_t *btn)
 /* Three small vertical faders (mixer look) drawn from rects -- a "controls"
  * glyph for the settings button. Avoids embedding a new symbol font. The button
  * must have pad_all 0 so the TOP_LEFT-aligned children sit at known offsets. */
-static void make_faders_icon(lv_obj_t *btn)
-{
-    static const int track_x[3] = { 9, 21, 33 };   /* fader columns in the 44px button */
-    static const int knob_dy[3] = { 3, 13, 8 };    /* differing fader positions */
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *track = lv_obj_create(btn);
-        lv_obj_set_size(track, 2, 18);
-        lv_obj_set_style_radius(track, 1, 0);
-        lv_obj_set_style_border_width(track, 0, 0);
-        lv_obj_set_style_bg_color(track, lv_color_hex(s_th->text2), 0);
-        lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
-        lv_obj_remove_flag(track, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(track, LV_ALIGN_TOP_LEFT, track_x[i], 5);
-
-        lv_obj_t *knob = lv_obj_create(btn);
-        lv_obj_set_size(knob, 10, 5);
-        lv_obj_set_style_radius(knob, 2, 0);
-        lv_obj_set_style_border_width(knob, 0, 0);
-        lv_obj_set_style_bg_color(knob, lv_color_hex(s_th->text), 0);
-        lv_obj_set_style_bg_opa(knob, LV_OPA_COVER, 0);
-        lv_obj_remove_flag(knob, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(knob, LV_ALIGN_TOP_LEFT, track_x[i] - 4, 5 + knob_dy[i]);
-    }
-}
-
 /* Shared "hint pill": a tappable rounded chip with a chevron + letter-spaced
  * uppercase label. Used at the bottom of the browser ("^ NOW PLAYING") and the
  * top of now-playing ("v ALBUMS") so the two navigation affordances match. */
@@ -817,6 +792,14 @@ static void build_browser_screen(void)
     s_browser_title = lv_label_create(s_screen_browser);
     style_label(s_browser_title, font_lg(),
                 lv_color_hex(s_th->text), cf ? CF_TITLE_Y : BR_TITLE_Y);
+    /* Titles that fit stay centred; ones too wide for the screen scroll
+     * horizontally (radio-style marquee) instead of being clipped/ellipsised.
+     * Speed must be set BEFORE set_long_mode -- that call creates the scroll
+     * animation and reads the style at that moment. NB: lv_anim_speed() caps the
+     * duration at ~10.23 s (encoding limit), same as LVGL's default, so it can't
+     * slow a long title down -- use a plain fixed duration (ms) per traversal. */
+    lv_obj_set_style_anim_duration(s_browser_title, 150000, LV_PART_MAIN); /* 150 s/loop, very slow */
+    lv_label_set_long_mode(s_browser_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
 
     s_browser_artist = lv_label_create(s_screen_browser);
     style_label(s_browser_artist, font_md(),
@@ -912,10 +895,10 @@ static void build_browser_screen(void)
     }
 
     /* Gear button (top-right) -> settings. Sits in the empty strip above the
-     * carousel so it never overlaps a card. */
-    /* No surface box -- the faders glyph sits directly on the background, in line
-     * with the WiFi bars at the same top strip. Transparent fill at rest; only a
-     * faint accent flash on press. */
+     * carousel so it never overlaps a card. A cog glyph (LV_SYMBOL_SETTINGS,
+     * 0xF013) -- the universal settings affordance, and it reads clearly in GLYPH
+     * mode too (dot font falls back to the dotted symbol font, which carries the
+     * cog). No surface box; transparent at rest, faint accent flash on press. */
     lv_obj_t *gear = lv_button_create(s_screen_browser);
     lv_obj_set_size(gear, 44, 28);
     lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -6, 0);
@@ -927,7 +910,11 @@ static void build_browser_screen(void)
                               LV_PART_MAIN | LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(gear, LV_OPA_40, LV_PART_MAIN | LV_STATE_PRESSED);
     lv_obj_add_event_cb(gear, on_open_settings, LV_EVENT_CLICKED, NULL);
-    make_faders_icon(gear);
+    lv_obj_t *gearlbl = lv_label_create(gear);
+    lv_label_set_text(gearlbl, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_color(gearlbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(gearlbl, font_md(), 0);
+    lv_obj_center(gearlbl);
 
     /* Devices button (left of the gear) -> the device selector. Same flat,
      * transparent-at-rest treatment as the gear. */
@@ -983,6 +970,11 @@ static void build_np_screen(void)
     s_np_title = lv_label_create(s_screen_np);
     style_label(s_np_title, font_lg(),
                 lv_color_hex(s_th->text), NP_TITLE_Y);
+    /* Long track titles scroll horizontally instead of being clipped.
+     * Style must precede set_long_mode (which creates the scroll anim). Plain
+     * fixed duration (ms), not lv_anim_speed() -- that caps at ~10.23 s. */
+    lv_obj_set_style_anim_duration(s_np_title, 150000, LV_PART_MAIN); /* 150 s/loop, very slow */
+    lv_label_set_long_mode(s_np_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(s_np_title, "Nothing playing");
 
     s_np_artist = lv_label_create(s_screen_np);
@@ -1246,7 +1238,11 @@ extern const lv_font_t lv_font_pixel_24;
 static const lv_font_t *font_lg(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_24;
-    if (is_glyph_theme()) return &lv_font_dot_28;
+    /* GLYPH: the round-dot font is monospace + wide, so a 32px title overruns
+     * the screen on long album names. Use the clean 24px size (still a tidy 3x
+     * the 8px grid) for body/title text; long titles scroll (see build_*_screen).
+     * The 32px dot_28 stays for the chunky transport icons. */
+    if (is_glyph_theme()) return &lv_font_dot_24;
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_28;
     return &lv_font_montserrat_28;
 }

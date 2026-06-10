@@ -14,9 +14,12 @@ Home Assistant, exactly like the CYD split.
 > validates the TLS cert bundle, and polls `/me/player` every 5 s (adaptive
 > 15 s when paused) over a persistent keep-alive connection — boot log shows
 > `now playing: <artist> -- <title>`. The UI (`ui.c`) is committed in full:
-> browser + now-playing + Settings screen (Menu Transition / Mode /
-> Colour accent / Browser Style / Brightness / Selection Line, all
-> NVS-persisted), three browser styles (Carousel / Focus / Cover Flow),
+> browser + now-playing + Settings screen in two tabs — **DISPLAY** (Mode /
+> Colour accent / Browser Style / Font / Selection Line / Brightness / FPS /
+> Menu Transition) and **SOUND** (on-off / Volume / Sound set), all
+> NVS-persisted — three browser styles (Carousel / Focus / Cover Flow), five
+> MODE options (Dark / Black / Light / **GLYPH** dot theme / **PIXEL** retro),
+> synthesised UI sound effects (ES8311 speaker), scrolling long titles,
 > charcoal palette, flat buttons, tiny_ttf kerning crash fix, auto-snap-to-
 > playing-album with accent border, OFFLINE indicator, generic toast for
 > play-failures, on-screen `MAX_CARDS` warning, auto-dim/sleep, and a Sonos
@@ -129,8 +132,8 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
    album, on-screen `MAX_CARDS` warning, empty-list message, volume-HUD guard
    before first poll, JPEG SOI marker check, auto-dim/sleep. *(committed — needs
    hardware verify)*
-10. **PIXEL retro theme** — sixth MODE option: 1bpp Press Start 2P bitmap font
-    (16 px body / 24 px heading), Bayer-dithered pixelated art + all 64 browser
+10. **PIXEL retro theme** — a MODE option: 1bpp Press Start 2P bitmap font
+    (16 px body / 24 px heading), Bayer-dithered pixelated art + all browser
     thumbnails, dark-CRT palette, chunky flat UI. PSRAM thumb pool (~0.5 MB)
     allocated on PIXEL activation, freed on switch-away. `lv_font_pixel_16/24.c`
     committed as generated build inputs (Press Start 2P + FontAwesome5 symbols,
@@ -139,6 +142,24 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
     through it for keep-alive reuse; `MAX_DEVICES` constant replaces magic `16`s;
     `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain;
     `copy_str` used consistently throughout `main.c`. *(committed)*
+12. **GLYPH dot-matrix theme** — replaced the old Yudho/Fuhrer VFX-backdrop themes
+    (the whole `lv_canvas` particle system is deleted) with a single MODE where
+    every element is drawn in round dots: a dot text font baked from unscii-8
+    (`scripts/gen_lvgl_font.py --dots`, sizes `lv_font_dot_20/24/28.c`), a dotted
+    sparse-cmap FontAwesome font as its fallback (`lv_font_dot_sym_*`, so the cog /
+    transport / chevron icons dot too), a "gas-tank" progress bar (Brownian-motion
+    accent dots + a playhead bar), and a 4-dot WiFi strength meter. Font is fixed in
+    GLYPH (FONT setting hidden). *(committed — needs hardware verify; cog has a
+    first on-device check, reads a touch muddy at dot size — noted, deferred)*
+13. **UI sound + tabbed Settings** — synthesised SFX via the onboard ES8311 speaker
+    (`audio.c`/`audio.h`, `esp_codec_dev`): TICK/SELECT/BACK/CONNECT on a dedicated
+    task + queue, named sound sets (SINE/CHIP/AMBIENT/MARIMBA/ARCADE/BELL) or AUTO,
+    user volume with a square-law taper, all NVS-persisted. Settings reorganised into
+    DISPLAY + SOUND tabs. Long browser/now-playing titles scroll horizontally
+    (`LV_LABEL_LONG_SCROLL_CIRCULAR`) instead of ellipsising. Cover-Flow centre-tap
+    play fix. Album-art `JPEGIMAGE` moved to internal SRAM (intermittent
+    `JPEGDecodeMCU` store-fault fix). *(committed; sound + tabs need hardware verify,
+    titles + decode-fix have a first on-device check)*
 
 After all of the above is confirmed on hardware:
 - **PPA hardware acceleration** — `enable_ppa_accel = true` in

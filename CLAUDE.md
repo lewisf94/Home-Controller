@@ -254,8 +254,10 @@ capacitive touch, onboard ESP32-C6 WiFi over SDIO, PSRAM, 32 MB flash). Talks
 **directly to the Spotify Web API**; a future `waveshare/esp-idf-ha/` will swap
 to the HA backend. **Checkpoints 1 (display), 2 (WiFi) and 3 (Spotify) are
 hardware-verified.** The UI (cp4+) has been built and committed but
-**the latest code — Cover Flow, colour themes, crash fix — still needs a hardware
-verification pass before it is considered stable.**
+**the latest code — Cover Flow, the GLYPH dot theme, UI sound effects, tabbed
+Settings — still needs a full hardware verification pass before it is considered
+stable.** (The settings cog, scrolling titles, and the JPEG-decode crash fix have
+had a first on-device check.)
 
 What's in `ui.c` as committed:
 - Full LVGL browser + now-playing + volume HUD + WiFi bars, laid out for 800×480.
@@ -276,29 +278,72 @@ What's in `ui.c` as committed:
   times the blit), and the converging fan keeps every cover on-screen, so
   `CF_MAX_SIDE` caps how many covers rasterise per scroll event — without it all
   ~56 draw and scrolling is sluggish.
-- Settings screen with six MODE options: Dark / Black / Light / Yudho / Fuhrer /
-  **PIXEL**. All NVS-persisted. (Previously four sections; updated to six with PIXEL.)
+- Settings screen organised into **two tabs — DISPLAY and SOUND** (`SET_TAB_COUNT`,
+  `settings_page()`/`settings_header()` helpers). DISPLAY: MODE / COLOUR / BROWSER
+  STYLE / FONT / SELECTION LINE / BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND
+  on-off / VOLUME / SOUND SET. All NVS-persisted.
+- **Five MODE options: Dark / Black / Light / GLYPH / PIXEL** (`THEME_*_IDX`,
+  `THEME_COUNT=5`). (History: the old Yudho/Fuhrer VFX-backdrop themes were removed
+  and merged into the single GLYPH dot theme — see below. The whole `lv_canvas`
+  particle system, vortex/emission tick callbacks, and the `s_vfx_*` state are gone.)
 - Colour accent system: four accents (Orange / Red / Green / Purple), drives
   selection highlights and progress bar. Separate from MODE palette.
 - **PIXEL retro theme** — 1bpp Press Start 2P bitmap font (16 px body / 24 px
   heading), Bayer 4×4 ordered dither + RGB444 quantize on all album art and browser
   thumbnails, dark-CRT palette. PSRAM thumb pool (~0.5 MB) allocated on PIXEL entry,
   freed on switch-away. Generated font files `lv_font_pixel_16/24.c` committed.
-- **VFX canvas particle system** — Yudho theme: 200 Keplerian spiral vortex
-  particles on a 400×240 PSRAM pixel buffer (192 KB), presented as a 2× scaled
-  `lv_image` behind both browser and NP screens; per-frame exponential fade creates
-  glowing white trails. Fuhrer theme: 300 art-sourced emission particles sampling
-  album art pixels (`s_last_raw_art`), drifting outward from canvas centre. Replaces
-  the old 20-dot random-jump LVGL-object system.
+- **GLYPH dot-matrix theme** (`is_glyph_theme()`, internally still the
+  `THEME_GLYPH` slot that replaced `THEME_YUDHO`). The dots are UI *chrome*, not a
+  backdrop — every element is rendered in round dots:
+  - **Dot text font** baked from the bitmap font unscii-8 via
+    `scripts/gen_lvgl_font.py --dots` (round dots stamped on a pixel grid; a bitmap
+    source + integer scale keeps the dots aligned so letters stay legible). Sizes
+    `lv_font_dot_20/24/28.c`. Body/title route to `dot_24`; transport icons use
+    `dot_28` (32 px). The font is **fixed** in GLYPH — the FONT setting is hidden in
+    Settings and `font_*()` ignore `s_font_choice` here.
+  - **Dotted icons** — a sparse-cmap dotted-FontAwesome font (`lv_font_dot_sym_20/24/28.c`,
+    SPARSE_TINY cmap, codepoints 0xF001..0xF107) is the fallback of the dot text
+    font, so symbols (cog 0xF013, transport, chevrons, audio) render as dots too.
+  - **Gas-tank progress bar** — a capsule "tank" with accent round dots in Brownian
+    motion (per-tick random velocity kick, reflect off all 4 walls) plus a bright
+    accent **playhead bar** at the progress point (`prog_particle_tick_cb`,
+    `PROG_PART_COUNT`).
+  - **Dot WiFi strength meter** — 4 round dots (sizes 4/6/8/10) bottom-aligned,
+    first `bars` lit in accent (`wifi_dots_start`/`wifi_dots_update_count`).
+    `rebuild_browser_cb` stops + recreates them across a screen rebuild (a dangling
+    pointer here was the GLYPH browser-style-change crash; now fixed).
+  - Settings cog is `LV_SYMBOL_SETTINGS` (the dotted cog), matching the devices
+    button. **Known nit (not yet fixed):** at dot size the cog's dots can merge and
+    read a little muddy in GLYPH — noted, deferred.
+- **UI sound effects** (`audio.c`/`audio.h`) — synthesised tones through the onboard
+  **ES8311 speaker** (`esp_codec_dev`), played on a dedicated FreeRTOS task fed by a
+  queue so callers never block on the I2S write. Four SFX (TICK / SELECT / BACK /
+  CONNECT) fired from scroll, select, option-change, and connect events. A table of
+  named **sound sets** (SINE/CHIP/AMBIENT/MARIMBA/ARCADE/BELL, `k_sets`) selectable
+  in Settings → SOUND SET, or AUTO (follows MODE). User VOLUME (0–100) applied as a
+  perceptual **square-law** gain. SOUND on-off + VOLUME + SET all NVS-persisted.
 - **FONT setting** — Settings → FONT: SANS (Montserrat) or SLAB (Arvo Bold, OFL,
   Google Fonts, embedded). NVS-persisted. All title/artist/settings labels route
-  through `font_lg()`/`font_md()` which check `s_font_choice`. PIXEL theme overrides
-  to Press Start 2P regardless of FONT setting.
+  through `font_lg()`/`font_md()` which check `s_font_choice`. PIXEL overrides to
+  Press Start 2P and GLYPH overrides to the dot font, regardless of FONT setting.
+- **Title marquee** — long browser/now-playing titles scroll horizontally
+  (`LV_LABEL_LONG_SCROLL_CIRCULAR`) instead of ellipsising; titles that fit stay
+  centred. Speed is a fixed `lv_obj_set_style_anim_duration` (ms) set **before**
+  `lv_label_set_long_mode` — `lv_anim_speed()` can't slow it (its encoding caps the
+  loop at ~10.23 s). See `memory/project_lvgl_label_scroll_speed.md`.
 - Charcoal palette, flat buttons (radius 3, no shadow), uppercase letter-spaced
   section headers.
+- **Cover Flow tap fix** — a tap within `CENTRE_TAP_TOL` px of screen-centre plays
+  the centred album (touch X via `lv_indev_get_point`); a tap further out scrolls
+  that card toward the centre instead of mis-firing the wrong album.
 - **Crash fix:** `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, 128)` on
   all font instances. LVGL 9.4 kerning cache (upstream #6304) corrupts the heap
   under sustained scrolling; KERNING_NONE bypasses the cache entirely.
+- **Album-art decode in internal SRAM** — the ~19 KB `JPEGIMAGE` working struct is
+  allocated with `heap_caps_calloc(..., MALLOC_CAP_INTERNAL)` not plain `calloc`
+  (which lands it in PSRAM). In PSRAM it caused an intermittent store fault in
+  `JPEGDecodeMCU`; internal SRAM removes that and is faster. See
+  `memory/project_jpegdec_internal_ram.md`.
 - JPEGDEC third-party warnings silenced via `CMakeLists.txt` `target_compile_options`.
 
 CRITICAL constraints on this board (never regress):
@@ -549,13 +594,19 @@ git log --oneline -10          # recent history
   cp1–3 verified: display renders at 800×480 landscape, WiFi via onboard C6,
   Spotify token refresh + poll every 5 s. The UI (`ui.c`) has been committed with:
   full LVGL browser + now-playing, three browser styles (Carousel/Focus/Cover Flow),
-  settings screen (six MODE options: Dark/Black/Light/Yudho/Fuhrer/PIXEL), charcoal
-  palette, flat buttons, colour accent system (Orange/Red/Green/Purple),
-  tiny_ttf kerning crash fix, PIXEL retro theme (1bpp Press Start 2P font,
-  Bayer-dithered pixelated art/thumbnails, dark-CRT palette), VFX canvas
-  particle system (Keplerian vortex for Yudho, art-sourced emission for Fuhrer),
-  FONT setting (SANS/SLAB chip row in Settings, Arvo Bold embedded). **All of this
-  still needs a hardware verification pass.** Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
+  tabbed Settings (DISPLAY + SOUND) with five MODE options
+  (Dark/Black/Light/GLYPH/PIXEL), charcoal palette, flat buttons, colour accent
+  system (Orange/Red/Green/Purple), tiny_ttf kerning crash fix, PIXEL retro theme
+  (1bpp Press Start 2P font, Bayer-dithered pixelated art/thumbnails, dark-CRT
+  palette), the **GLYPH dot-matrix theme** (round-dot text + icon fonts, gas-tank
+  progress bar with Brownian dots + playhead, dot WiFi meter; replaced the old
+  Yudho/Fuhrer VFX backdrops, which are deleted), **synthesised UI sound effects**
+  (ES8311 speaker, selectable sound sets + volume), scrolling long titles, a
+  Cover-Flow centre-tap fix, the settings cog icon, and the album-art-decode crash
+  fix (JPEGIMAGE in internal SRAM). FONT setting (SANS/SLAB, Arvo Bold embedded;
+  overridden in PIXEL and GLYPH). **All of this still needs a full hardware
+  verification pass** (cog, scrolling titles, and the decode crash fix have had a
+  first on-device check). Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
   5.5.4 PowerShell profile, `idf.py set-target esp32p4`, `idf.py build flash
   monitor`. Board enumerates as CH343 USB-serial (COM3/COM4). Creds in
   `waveshare/esp-idf/include/secrets.h` (gitignored; template at
