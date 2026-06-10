@@ -342,6 +342,26 @@ static bool decode_and_publish_art(void)
     return true;
 }
 
+/* Gate the per-poll "now playing" INFO lines to actual state changes (track,
+ * device or play/pause) so a steady-state serial log stays readable: without
+ * this they repeat every 5-15 s forever. The line still fires whenever the
+ * device NAME changes, preserving the documented way to discover Sonos speaker
+ * names for secrets.h. Call with the polled info (all-empty on idle/fail --
+ * the playing->idle transition then logs exactly once too). */
+static bool np_state_changed(const spotify_track_t *info)
+{
+    static spotify_track_t last;
+    if (strcmp(info->title, last.title) == 0 &&
+        strcmp(info->device_name, last.device_name) == 0 &&
+        info->is_playing == last.is_playing) {
+        return false;
+    }
+    strlcpy(last.title, info->title, sizeof last.title);
+    strlcpy(last.device_name, info->device_name, sizeof last.device_name);
+    last.is_playing = info->is_playing;
+    return true;
+}
+
 /* Fetch /me/player once and push it to the UI; on a track change download +
  * decode the new cover. If Spotify can't see playback (204) but we're driving a
  * Sonos, fall back to the Sonos's own now-playing over UPnP. Returns true if
@@ -360,13 +380,15 @@ static bool poll_and_publish(spotify_track_t *info)
         } else if (!s_sonos_explicit) {
             s_sonos_active[0] = '\0';
         }
-        ESP_LOGI(TAG, "now playing: %s -- %s [%lu/%lu ms, %s] @%s%s",
-                 info->artist, info->title,
-                 (unsigned long)info->progress_ms,
-                 (unsigned long)info->duration_ms,
-                 info->is_playing ? "playing" : "paused",
-                 info->device_name[0] ? info->device_name : "?",
-                 info->device_restricted ? " (restricted)" : "");
+        if (np_state_changed(info)) {
+            ESP_LOGI(TAG, "now playing: %s -- %s [%lu/%lu ms, %s] @%s%s",
+                     info->artist, info->title,
+                     (unsigned long)info->progress_ms,
+                     (unsigned long)info->duration_ms,
+                     info->is_playing ? "playing" : "paused",
+                     info->device_name[0] ? info->device_name : "?",
+                     info->device_restricted ? " (restricted)" : "");
+        }
     }
 
     /* Spotify 204: probe for a Sonos playing natively (e.g. started from the
@@ -395,11 +417,13 @@ static bool poll_and_publish(spotify_track_t *info)
             info->volume_pct        = np.volume;
             info->device_restricted = true;
             snprintf(info->device_name, sizeof info->device_name, "Sonos");
-            ESP_LOGI(TAG, "now playing (Sonos %s): %s -- %s [%lu/%lu ms, %s]",
-                     s_sonos_active, info->artist, info->title,
-                     (unsigned long)info->progress_ms,
-                     (unsigned long)info->duration_ms,
-                     info->is_playing ? "playing" : "paused");
+            if (np_state_changed(info)) {
+                ESP_LOGI(TAG, "now playing (Sonos %s): %s -- %s [%lu/%lu ms, %s]",
+                         s_sonos_active, info->artist, info->title,
+                         (unsigned long)info->progress_ms,
+                         (unsigned long)info->duration_ms,
+                         info->is_playing ? "playing" : "paused");
+            }
             ui_set_track_info(info);
             return true;
         }
@@ -441,7 +465,8 @@ static bool poll_and_publish(spotify_track_t *info)
     }
 
     s_sonos_has_audio = false;
-    ESP_LOGI(TAG, "no active playback (or fetch failed)");
+    if (np_state_changed(info))   /* title is empty here: logs once per transition into idle */
+        ESP_LOGI(TAG, "no active playback (or fetch failed)");
     ui_set_track_info(NULL);
     return false;
 }
@@ -451,8 +476,9 @@ static bool poll_and_publish(spotify_track_t *info)
  * (next/prev/play) Spotify's /me/player keeps reporting the OLD track for a
  * moment, so a single immediate poll would show stale title/artist until the
  * next 5 s tick (~6 s of lag the user sees). Instead we "settle": re-poll a few
- * times (~300 ms apart, capped ~2 s) until the title actually changes, so the
- * on-screen details catch up within ~1 s. Non-track commands just refresh once. */
+ * times (~300 ms apart, capped ~2 s) until the title, device or progress shows
+ * the command took effect, so the on-screen details catch up within ~1 s.
+ * Non-track commands just refresh once. */
 static void spotify_task(void *arg)
 {
     (void)arg;
@@ -461,13 +487,22 @@ static void spotify_task(void *arg)
     spotify_track_t info = {0};
     bool settle = false;
     char prev_title[sizeof info.title] = {0};
+    char prev_device[sizeof info.device_name] = {0};
+    uint32_t prev_progress = 0;
 
     while (1) {
         if (settle) {
             settle = false;
             for (int i = 0; i < 5; i++) {
                 poll_and_publish(&info);
-                if (strncmp(info.title, prev_title, sizeof prev_title) != 0) break;
+                /* The new state has landed when the track changed -- or, for
+                 * commands that keep the same title, when the device switched
+                 * (transfer / select-Sonos) or progress jumped backwards
+                 * (prev-as-restart). Without those, same-title commands always
+                 * burned the full five polls. */
+                if (strncmp(info.title, prev_title, sizeof prev_title) != 0 ||
+                    strcmp(info.device_name, prev_device) != 0 ||
+                    info.progress_ms < prev_progress) break;
                 vTaskDelay(pdMS_TO_TICKS(300));
             }
         } else {
@@ -612,6 +647,8 @@ static void spotify_task(void *arg)
                     cmd.type == SCMD_PLAY_ALBUM  || cmd.type == SCMD_TRANSFER ||
                     cmd.type == SCMD_SELECT_SONOS) {
                     strlcpy(prev_title, info.title, sizeof prev_title);
+                    strlcpy(prev_device, info.device_name, sizeof prev_device);
+                    prev_progress = info.progress_ms;
                     settle = true;
                 }
                 break;

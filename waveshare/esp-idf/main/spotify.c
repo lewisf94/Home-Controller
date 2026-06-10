@@ -89,7 +89,12 @@ typedef struct {
     size_t cap;
 } resp_buf_t;
 
-#define RESP_INITIAL_CAP   1024
+/* A /me/player response is typically 6-15 KB, so a 16 KB first allocation
+ * makes the every-5-s poll a single malloc+free (landing in PSRAM via the
+ * >4 KB malloc policy) instead of a 1->2->4->8->16 KB realloc ladder each
+ * poll. Small responses (token refresh ~0.5 KB) briefly over-allocate the
+ * same 16 KB -- noise next to 31 MB of PSRAM. */
+#define RESP_INITIAL_CAP  16384
 #define RESP_MAX_CAP     262144  /* 256 KB -- fits a 640x640 album JPEG */
 
 /* 429 rate-limit holdoff for the /me/player poll. s_retry_after_s is written
@@ -574,7 +579,9 @@ bool spotify_fetch_player(spotify_track_t *info)
             ESP_LOGW(TAG, "player response had no item object");
         }
     } else if (err == ESP_OK && status == 204) {
-        ESP_LOGI(TAG, "no active playback");
+        /* Fires every poll while idle (15 s cadence) -- keep it at debug;
+         * main.c logs the playing->idle transition once at INFO. */
+        ESP_LOGD(TAG, "no active playback");
     } else if (status == 401) {
         /* Expired/invalid token. NOTE: esp_http_client_perform() returns a
          * non-ESP_OK err on 401 because it can't satisfy the Bearer auth

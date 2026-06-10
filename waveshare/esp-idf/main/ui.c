@@ -169,6 +169,13 @@ static lv_obj_t *s_wifi_bars[4]     = {0};
 static lv_obj_t       *s_cards[MAX_CARDS]    = {0};
 static lv_obj_t       *s_card_imgs[MAX_CARDS] = {0};  /* child lv_image per card */
 static lv_image_dsc_t  s_card_dscs[MAX_CARDS] = {0};
+/* Last FOCUS transform applied per card (pre-base scale / dim opa). Both values
+ * saturate beyond ~1.4 card-steps from centre, so on any one scroll event only
+ * the handful of cards near the viewport actually change -- caching lets
+ * apply_card_transforms skip the LVGL writes (and their invalidations) for the
+ * rest. -1 = nothing applied yet; reset in build_browser_screen. */
+static int16_t         s_card_scale_last[MAX_CARDS];
+static int16_t         s_card_dim_last[MAX_CARDS];
 static size_t          s_card_count          = 0;
 static int             s_centered_card       = -1;
 /* Logical target card for encoder scrolling. Tracked independently of the
@@ -633,6 +640,13 @@ static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t
 
 static void build_browser_screen(void)
 {
+    /* Cards are recreated below: invalidate the FOCUS transform cache so the
+     * first apply_card_transforms pass writes every card once. */
+    for (size_t i = 0; i < MAX_CARDS; i++) {
+        s_card_scale_last[i] = -1;
+        s_card_dim_last[i]   = -1;
+    }
+
     s_screen_browser = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_browser, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_browser, LV_OPA_COVER, 0);
@@ -684,7 +698,7 @@ static void build_browser_screen(void)
              k_browser_style_names[s_browser_style]);
     for (size_t __j = 0; __j < (s_card_count < 4 ? s_card_count : 4); __j++) {
         const uint16_t *__t = album_thumb_data(__j);
-        ESP_LOGI(TAG, "thumb[%zu]=%p", __j, (const void *)__t);
+        ESP_LOGD(TAG, "thumb[%zu]=%p", __j, (const void *)__t);
     }
 
     /* PIXEL theme: pre-pixelate all thumbnails into PSRAM pool (once here;
@@ -3272,12 +3286,21 @@ static void apply_card_transforms(void)
                       / (is_pixel_theme() ? PIX_THUMB_RES : ALBUM_THUMB_W);
         int32_t scale = LV_SCALE_NONE - dist * 76 / step;
         if (scale < 150) scale = 150;
-        lv_image_set_scale(s_card_imgs[i], (uint32_t)((int64_t)scale * base / LV_SCALE_NONE));
-
         int32_t dim = dist * 95 / step;
         if (dim > 110) dim = 110;
-        lv_obj_set_style_image_recolor(s_card_imgs[i], lv_color_black(), 0);
-        lv_obj_set_style_image_recolor_opa(s_card_imgs[i], (lv_opa_t)dim, 0);
+
+        /* Skip the LVGL writes (each one invalidates the card's region) when
+         * the computed values match what was last applied -- true for every
+         * card outside the few near the centre, where both values saturate. */
+        if ((int16_t)scale != s_card_scale_last[i]) {
+            s_card_scale_last[i] = (int16_t)scale;
+            lv_image_set_scale(s_card_imgs[i], (uint32_t)((int64_t)scale * base / LV_SCALE_NONE));
+        }
+        if ((int16_t)dim != s_card_dim_last[i]) {
+            s_card_dim_last[i] = (int16_t)dim;
+            lv_obj_set_style_image_recolor(s_card_imgs[i], lv_color_black(), 0);
+            lv_obj_set_style_image_recolor_opa(s_card_imgs[i], (lv_opa_t)dim, 0);
+        }
     }
 }
 
