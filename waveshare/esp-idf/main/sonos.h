@@ -7,10 +7,10 @@
  * currently playing on the speaker -- regardless of source. We use it to drive
  * play/pause/next/prev/seek/volume when the active Spotify device is the Sonos.
  *
- * These control the CURRENT queue/playback only. Starting a specific Spotify
- * album on the Sonos (SetAVTransportURI with a spotify: container URI + DIDL
- * metadata) needs the household's Spotify service id + account serial and is a
- * separate, fiddlier job -- not implemented here.
+ * Beyond controlling the current queue/playback, sonos_play_spotify_album()
+ * starts a specific Spotify album natively on the speaker (SetAVTransportURI
+ * with a spotify: container URI + DIDL metadata built from the household's
+ * Spotify service id + account serial -- see SONOS_SP_STYPE in sonos.c).
  *
  * `host` is the Sonos speaker's LAN IP (e.g. "192.168.1.50"). All calls are
  * blocking HTTP and return false on empty host or any transport/HTTP error.

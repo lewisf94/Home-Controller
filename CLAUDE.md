@@ -365,8 +365,6 @@ Deferred work (do after hardware is confirmed stable):
 - **RAM art decode:** waveshare has PSRAM — switch album art to decode in RAM
   rather than the LittleFS round-trip (`spotify_download_bytes` + `album_art_decode`
   RAM path already exists but is unused).
-- **Adaptive poll backoff:** poll fast while playing, back off to 15–30 s when
-  paused/204.
 
 TLS keep-alive — DONE (do not re-list as a TODO): the `/me/player` poll uses a
 persistent `s_poll_client` with `.keep_alive_enable = true`, so the TLS session
@@ -374,6 +372,12 @@ persistent `s_poll_client` with `.keep_alive_enable = true`, so the TLS session
 handle on transport error so the next poll reconnects. Token refresh and the
 playback commands stay one-shot by design — they're infrequent. Same pattern now
 in `cyd/esp-idf/`.
+
+Adaptive poll backoff — DONE (do not re-list as a TODO): `spotify_task` polls
+every 5 s while playing and backs off to 15 s when paused/idle (204); a queued
+command wakes the task early so controls stay responsive (`main.c`). The poll
+also holds itself off on a Spotify 429, honouring Retry-After (default 30 s,
+cap 900 s).
 
 Key differences from the CYD IDF build:
 - **Toolchain ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0): the vendored BSP needs the
@@ -385,9 +389,21 @@ Key differences from the CYD IDF build:
   `bsp_display_lock()/unlock()` — `ui.c`'s `lvgl_port_lock(0)` maps to it.
 - WiFi via `esp_wifi_remote` + `esp_hosted` (slave esp32c6, SDIO).
 - App logic (`spotify.c`, `albums.c`, `album_art.cpp`, `littlefs.c`,
-  `album_thumbs.c`) copied unchanged from `cyd/esp-idf/`; UI re-laid-out for
-  800×480; input is touch-first (no MCP23017), with a seam for optional physical
-  controls.
+  `album_thumbs.c`) copied from `cyd/esp-idf/` (since diverged: `spotify.c`
+  gained device enumeration/transfer + the 429 poll holdoff, `album_art.cpp`
+  the internal-SRAM JPEGIMAGE fix); UI re-laid-out for 800×480; input is
+  touch-first (no MCP23017), with a seam for optional physical controls (the
+  `ui_*` seam functions in `ui.h` self-lock, so a future input task can call
+  them directly).
+- **Sonos local control (`sonos.c`, waveshare-only):** UPnP/SOAP on port 1400.
+  Spotify marks Sonos as a *restricted* device (the Web API refuses transport
+  commands targeting it), so when the active device is a Sonos, `spotify_task`
+  (main.c) routes play/pause/next/prev/seek/volume over UPnP instead, falls
+  back to the speaker's own now-playing (GetPositionInfo) when Spotify returns
+  204, and can start an album natively on the speaker
+  (`sonos_play_spotify_album`, SetAVTransportURI + DIDL-Lite metadata).
+  Speaker name→IP mapping comes from `SONOS_HOST` / `SONOS_DEVICES` in
+  `include/secrets.h`.
 - **SRAM budget:** the full stack overflows internal SRAM by ~451 B at once, so
   sources/deps are staged per checkpoint (`main/CMakeLists.txt` comments).
   See `waveshare/esp-idf/README.md` for the checkpoint roadmap.
@@ -618,8 +634,8 @@ git log --oneline -10          # recent history
     in PSRAM. The 256 KB Spotify response buffer + album art must be allocated
     from PSRAM at cp3/cp5. Full analysis + PSRAM-first policy in `docs/PORT-NOTES.md`.
   - **After hardware verify:** enable PPA hardware acceleration (single isolated
-    change: `enable_ppa_accel = true`), then RAM art decode (waveshare has PSRAM),
-    then adaptive poll backoff. (TLS poll keep-alive is already done.)
+    change: `enable_ppa_accel = true`), then RAM art decode (waveshare has PSRAM).
+    (TLS poll keep-alive and adaptive poll backoff are already done.)
   - **CRITICAL constraints (do not regress):** no object-level transform_scale/opa
     on cards; no LV_USE_MATRIX; always use lv_tiny_ttf_create_data_ex with
     LV_FONT_KERNING_NONE. See the Architecture section for full rationale.
