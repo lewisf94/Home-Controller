@@ -21,6 +21,7 @@
 #include "spotify.h"
 
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -91,8 +92,25 @@ typedef struct {
 #define RESP_INITIAL_CAP   1024
 #define RESP_MAX_CAP     262144  /* 256 KB -- fits a 640x640 album JPEG */
 
+/* 429 rate-limit holdoff for the /me/player poll. s_retry_after_s is written
+ * by the shared event handler below on ANY request that carries a Retry-After
+ * header; the poll neutralises that sharing by zeroing it immediately before
+ * its own perform and reading it only when its own status is 429. All
+ * spotify.c HTTP runs on spotify_task, so there is no concurrent writer. */
+static int64_t s_poll_holdoff_until_us = 0;
+static int     s_retry_after_s         = 0;
+
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
+    if (evt->event_id == HTTP_EVENT_ON_HEADER) {
+        /* Retry-After is normally delta-seconds; an HTTP-date parses to 0 via
+         * atoi and is treated as absent by the 429 branch in the poll. */
+        if (evt->header_key && evt->header_value &&
+            strcasecmp(evt->header_key, "Retry-After") == 0) {
+            s_retry_after_s = atoi(evt->header_value);
+        }
+        return ESP_OK;
+    }
     if (evt->event_id != HTTP_EVENT_ON_DATA) {
         return ESP_OK;
     }
@@ -449,6 +467,11 @@ bool spotify_fetch_player(spotify_track_t *info)
     if (!info) return false;
     memset(info, 0, sizeof(*info));
 
+    /* Rate-limited: skip the poll (and the token refresh it would trigger)
+     * until the server-requested wait has elapsed. The caller treats this
+     * like "no active playback", keeping the last track on screen. */
+    if (esp_timer_get_time() < s_poll_holdoff_until_us) return false;
+
     if (!ensure_token()) return false;
 
     resp_buf_t buf = {0};
@@ -461,6 +484,9 @@ bool spotify_fetch_player(spotify_track_t *info)
     esp_http_client_set_header(client, "Authorization", bearer);
 
     bool ok = false;
+    /* Clear any Retry-After captured by an earlier request through the shared
+     * event handler, so the 429 branch below only sees THIS response's value. */
+    s_retry_after_s = 0;
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
 
@@ -558,6 +584,16 @@ bool spotify_fetch_player(spotify_track_t *info)
         ESP_LOGW(TAG, "got 401, invalidating cached token; will refresh next poll");
         s_token_expiry_us = 0;
         s_access_token[0]  = '\0';
+    } else if (status == 429) {
+        /* Rate limited. Honour Retry-After when present (Spotify's app-level
+         * penalties can run minutes to hours); default to 30 s when absent
+         * (or an HTTP-date), and cap the wait so a bogus header can't park
+         * the poll for good -- if we're still limited, the next 429 re-arms. */
+        int wait_s = s_retry_after_s;
+        if (wait_s <= 0)  wait_s = 30;
+        if (wait_s > 900) wait_s = 900;
+        s_poll_holdoff_until_us = esp_timer_get_time() + (int64_t)wait_s * 1000000;
+        ESP_LOGW(TAG, "429 rate limited; pausing /me/player polls for %d s", wait_s);
     } else {
         ESP_LOGE(TAG, "/me/player failed (err=%d status=%d)", (int)err, status);
     }
