@@ -274,10 +274,26 @@ What's in `ui.c` as committed:
   more-central neighbour (left: left edge near; right: right edge near). Z-order
   centre→±1→±2 outward; art perspective-foreshortened toward the far/inner edge.
   `CF_LEAN_FLIP` flips the lean if the panel mirrors it. **Perf:** `cf_render`
-  runs in the scroll handler (its cost is invisible to the FPS readout, which only
-  times the blit), and the converging fan keeps every cover on-screen, so
-  `CF_MAX_SIDE` caps how many covers rasterise per scroll event — without it all
-  ~56 draw and scrolling is sluggish.
+  runs in the scroll handler (the FPS counter now measures achieved frame rate,
+  so this cost IS included in the readout), and the converging fan keeps every
+  cover on-screen, so `CF_MAX_SIDE` caps how many covers rasterise per scroll
+  event — without it all ~56 draw and scrolling is sluggish.
+- **FPS counter shows achieved frame rate** — each `LV_EVENT_RENDER_READY` is
+  one presented frame; frames closer than 150 ms group into bursts and the
+  label shows intervals/elapsed across the window's bursts. Includes handler
+  time (CF rasterise), rotation/flush and the `LV_DEF_REFR_PERIOD` cap; holds
+  the last reading when idle. (The old metric was 1e6/longest-render — a
+  ceiling that ignored everything outside the render pass.)
+- **Render perf batch (needs hardware verify):** PPA rotation is enabled by the
+  vendored BSP (`.enable_ppa_accel = true` hardcoded in `bsp_display_lcd_init`
+  — do NOT re-list enabling it as a TODO); PSRAM thumb pools — raw copies
+  (~5.4 MB) feed CF sampling/PIXEL/pool builds with no flash XIP reads, and a
+  286 px card-native pool (~9.2 MB, rewritten per browser build with the
+  theme's look) makes Carousel/Focus card blits 1:1 (`LV_SCALE_NONE`), falling
+  back to the old paths if allocation fails; the GLYPH gas-tank ticker freezes
+  while now-playing is off-screen; and EXPERIMENT
+  `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2` renders with one SW draw unit per core —
+  revert that single sdkconfig line first if hardware shows artifacts/crashes.
 - Settings screen organised into **two tabs — DISPLAY and SOUND** (`SET_TAB_COUNT`,
   `settings_page()`/`settings_header()` helpers). DISPLAY: MODE / COLOUR / BROWSER
   STYLE / FONT / SELECTION LINE / BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND
@@ -359,12 +375,15 @@ CRITICAL constraints on this board (never regress):
   `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, ...)`.
 
 Deferred work (do after hardware is confirmed stable):
-- **PPA hardware acceleration:** `enable_ppa_accel = true` in `bsp_display_cfg_t`.
-  The P4 PPA can do the 90° rotation/blit in hardware (currently software every
-  frame). Off until stability is confirmed — would muddy crash bisection.
 - **RAM art decode:** waveshare has PSRAM — switch album art to decode in RAM
   rather than the LittleFS round-trip (`spotify_download_bytes` + `album_art_decode`
   RAM path already exists but is unused).
+
+PPA rotation — ALREADY ENABLED (do not re-list as a TODO): the vendored BSP
+hardcodes `.enable_ppa_accel = true` in `bsp_display_lcd_init`
+(`components/esp32_p4_wifi6_touch_lcd_4_3/`), so the 90° rotation/blit is
+offloaded to the P4's 2D accelerator. On-device check is PENDING.md sanity
+item 13.
 
 TLS keep-alive — DONE (do not re-list as a TODO): the `/me/player` poll uses a
 persistent `s_poll_client` with `.keep_alive_enable = true`, so the TLS session
@@ -471,7 +490,8 @@ ESP32-P4 migration: ACTIVE — `waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5
 has checkpoints 1–3 hardware-verified (display, WiFi, Spotify). The UI (cp4+)
 including Cover Flow, colour themes, and the tiny_ttf kerning crash fix is
 committed but needs a hardware verification pass. After stability is confirmed,
-next steps are PPA hardware acceleration. A future
+the next step is RAM art decode (PPA rotation is already enabled by the
+vendored BSP). A future
 `waveshare/esp-idf-ha/` carries the Phase 3 HA client over untouched.
 
 ---
@@ -633,9 +653,9 @@ git log --oneline -10          # recent history
     `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`. Display framebuffers (2.25 MB) live
     in PSRAM. The 256 KB Spotify response buffer + album art must be allocated
     from PSRAM at cp3/cp5. Full analysis + PSRAM-first policy in `docs/PORT-NOTES.md`.
-  - **After hardware verify:** enable PPA hardware acceleration (single isolated
-    change: `enable_ppa_accel = true`), then RAM art decode (waveshare has PSRAM).
-    (TLS poll keep-alive and adaptive poll backoff are already done.)
+  - **After hardware verify:** RAM art decode (waveshare has PSRAM). (PPA
+    rotation is already enabled by the vendored BSP; TLS keep-alive and
+    adaptive poll backoff are done.)
   - **CRITICAL constraints (do not regress):** no object-level transform_scale/opa
     on cards; no LV_USE_MATRIX; always use lv_tiny_ttf_create_data_ex with
     LV_FONT_KERNING_NONE. See the Architecture section for full rationale.

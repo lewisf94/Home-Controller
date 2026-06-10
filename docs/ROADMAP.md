@@ -444,14 +444,14 @@ checkpoint roadmap (1 display → 2 WiFi → 3 Spotify → 4 UI → 5 assets →
 
 ### Deferred — after hardware is confirmed stable
 
-1. **PPA hardware acceleration (isolated change):** `enable_ppa_accel = true` in
-   `bsp_display_cfg_t`. The P4 PPA does the 90° rotation/blit in hardware
-   (currently software every frame). One config line; verify nothing regresses.
-2. **RAM art decode:** waveshare has PSRAM — switch album art from the LittleFS
+1. **RAM art decode:** waveshare has PSRAM — switch album art from the LittleFS
    round-trip to the existing `spotify_download_bytes` + `album_art_decode` RAM
    path, bypassing LittleFS entirely.
-3. **Adaptive poll backoff:** fast poll while playing, back off to 15–30 s when
-   paused / 204 response.
+
+Already in, not TODOs: **PPA rotation** (the vendored BSP hardcodes
+`.enable_ppa_accel = true`), **adaptive poll backoff** (5 s playing / 15 s
+paused + 429 Retry-After holdoff), **TLS keep-alive** on both the poll and
+command clients.
 
 Key facts and adaptations:
 - **Toolchain: ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0). The vendored BSP needs the

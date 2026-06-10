@@ -58,23 +58,22 @@ items, see [`PENDING.md`](PENDING.md).
 
 ## Open — perf (after hardware verify)
 
-The three items deliberately deferred until the board confirms the UI is
-stable. Each is isolated; do them one at a time and re-flash between.
+Deferred until the board confirms the UI is stable. Isolated; re-flash between.
 
-1. **PPA hardware acceleration** — `enable_ppa_accel = true` in
-   `bsp_display_cfg_t`. The P4 PPA does the 90° rotation/blit in hardware
-   (currently software every frame). One config line; should be a meaningful
-   frame-rate win. Verify nothing regresses (cover-flow blackout was a
-   layer-snapshot artefact of the rotation path, so this is the touchiest
-   "should be safe" knob in the build).
-2. **RAM art decode** — waveshare has PSRAM. Switch album art from the
+1. **RAM art decode** — waveshare has PSRAM. Switch album art from the
    LittleFS file round-trip to the existing `spotify_download_bytes` +
    `album_art_decode` RAM path. Removes flash write/read for every track
    change, takes one I/O system out of the hot path.
-3. **TLS keep-alive on commands** — currently the poll has keep-alive but
-   playback commands each re-handshake. Mirroring the keep-alive pattern to
-   commands cuts ~0.5-2 s + ~30 KB heap per press. (Lower payoff than (1) /
-   (2); commands are infrequent.)
+
+Done, not TODOs (verify on hardware, see PENDING.md): **PPA rotation** is
+already enabled — the vendored BSP hardcodes `.enable_ppa_accel = true`
+(`bsp_display_lcd_init`). **TLS keep-alive on commands** is in — `_do_cmd`
+reuses the persistent `s_cmd_client` (keep_alive_enable), same as the poll.
+The FPS-maxing batch also landed: achieved-frame-rate FPS counter, PSRAM
+thumb pools (1:1 card blits, no flash XIP reads on scroll), GLYPH gas-tank
+ticker frozen off-screen, and the EXPERIMENT `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2`
+(two-core SW render — revert that single sdkconfig line if hardware shows
+artifacts).
 
 ---
 
