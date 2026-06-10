@@ -401,15 +401,24 @@ static lv_obj_t  *s_fps_label      = NULL;
 static lv_obj_t  *s_fps_toggle_btn = NULL;
 static lv_obj_t  *s_fps_toggle_lbl = NULL;
 static bool       s_fps_enabled    = false;
-/* FPS = max achievable frame rate, measured as render duration (RENDER_START ->
- * RENDER_READY), NOT forced frame activity. We track the longest (full-screen)
- * render each 1 s window; 1e6/that_us is the max sustained FPS. Held across idle
- * windows so the readout stays meaningful when nothing is moving.
+/* FPS = frames actually presented while the UI is animating. Each RENDER_READY
+ * is one presented frame; consecutive frames closer than FPS_BURST_GAP_US form
+ * a "burst" (a scroll, a transition, the GLYPH gas tick...). Rate = frame
+ * intervals / elapsed time across the window's bursts, so it includes
+ * EVERYTHING the eye waits on -- input/timer handlers (e.g. the Cover Flow
+ * rasteriser runs in the scroll handler), render, rotation/flush, and the
+ * LV_DEF_REFR_PERIOD cap. The old metric (1e6 / longest render) ignored all
+ * cost outside the render pass and so over-read exactly when it mattered.
+ * Held across idle windows so the readout stays meaningful when still.
  * NOTE: never call lv_*_invalidate() from a render event -- it asserts
  * (rendering_in_progress) and wedges the LVGL task. Timing only here. */
-static int64_t    s_fps_render_start_us = 0;   /* RENDER_START timestamp */
-static uint32_t   s_fps_win_max_us      = 0;   /* longest render this 1 s window */
-static uint32_t   s_fps_last_max        = 0;   /* last computed max FPS (held on idle) */
+#define FPS_BURST_GAP_US 150000   /* frames further apart than this start a new burst */
+static int64_t    s_fps_prev_ready_us  = 0;   /* last RENDER_READY timestamp */
+static int64_t    s_fps_burst_start_us = 0;   /* first frame of the running burst */
+static uint32_t   s_fps_burst_frames   = 0;   /* frames in the running burst */
+static uint32_t   s_fps_acc_intervals  = 0;   /* closed-burst frame intervals this window */
+static uint32_t   s_fps_acc_span_us    = 0;   /* closed-burst elapsed time this window */
+static uint32_t   s_fps_last_rate      = 0;   /* last computed FPS (held on idle) */
 
 /* CF perspective canvas: SCREEN_W × CF_PERSP_H PSRAM RGB565 buffer rasterized
  * on each scroll event.  Only allocated when BROWSER_COVERFLOW is active.
@@ -499,7 +508,6 @@ static void refresh_settings_tabs(void);
 static void on_sound_set_option(lv_event_t *e);
 static void refresh_sound_set_selection(void);
 static void save_sound_set(int8_t v);
-static void fps_render_start_cb(lv_event_t *e);
 static void fps_render_ready_cb(lv_event_t *e);
 static void fps_timer_cb(lv_timer_t *t);
 static void cf_init(lv_obj_t *screen);
@@ -2721,12 +2729,11 @@ void ui_init(lv_image_dsc_t *art_dsc)
      * itself is cheap (one LEDC duty update on state change only). */
     lv_timer_create(idle_timer_cb, 1000, NULL);
 
-    /* FPS counter: time each render (START->READY) on the default display and
-     * snapshot the max-achievable rate once per second. Always measuring; the
+    /* FPS counter: count presented frames (RENDER_READY) on the default display
+     * and snapshot the achieved rate once per second. Always measuring; the
      * label is only shown when s_fps_enabled is set via the Settings toggle. */
     lv_display_t *fps_disp = lv_display_get_default();
     if (fps_disp) {
-        lv_display_add_event_cb(fps_disp, fps_render_start_cb, LV_EVENT_RENDER_START, NULL);
         lv_display_add_event_cb(fps_disp, fps_render_ready_cb, LV_EVENT_RENDER_READY, NULL);
     }
     lv_timer_create(fps_timer_cb, 1000, NULL);
@@ -3530,41 +3537,55 @@ static void on_sound_set_option(lv_event_t *e)
     ESP_LOGI(TAG, "sound set -> %s", (opt == 0) ? "AUTO" : audio_set_name(set));
 }
 
-/* Render timing for the max-FPS readout. These fire on the LVGL task around each
- * refresh; we only read the clock -- NO lv_*_invalidate() here (that asserts
- * during rendering and wedges the task). */
-static void fps_render_start_cb(lv_event_t *e)
-{
-    (void)e;
-    s_fps_render_start_us = esp_timer_get_time();
-}
+/* Presented-frame accounting for the FPS readout. Fires on the LVGL task after
+ * each refresh; we only read the clock -- NO lv_*_invalidate() here (that
+ * asserts during rendering and wedges the task). */
 static void fps_render_ready_cb(lv_event_t *e)
 {
     (void)e;
-    int64_t dur = esp_timer_get_time() - s_fps_render_start_us;
-    /* Track the longest render this window (= a full-screen frame); ignore
-     * absurd values (first event before any START, or clock glitches). */
-    if (dur > 0 && dur < 1000000 && (uint32_t)dur > s_fps_win_max_us)
-        s_fps_win_max_us = (uint32_t)dur;
+    int64_t now = esp_timer_get_time();
+    if (s_fps_prev_ready_us != 0 &&
+        now - s_fps_prev_ready_us < FPS_BURST_GAP_US) {
+        s_fps_burst_frames++;
+    } else {
+        /* Gap: close the previous burst into the window accumulators. A burst
+         * of N frames contributes N-1 intervals over (last - first) time. */
+        if (s_fps_burst_frames >= 2) {
+            s_fps_acc_intervals += s_fps_burst_frames - 1;
+            s_fps_acc_span_us   += (uint32_t)(s_fps_prev_ready_us - s_fps_burst_start_us);
+        }
+        s_fps_burst_start_us = now;
+        s_fps_burst_frames   = 1;
+    }
+    s_fps_prev_ready_us = now;
 }
 
-/* 1-second tick: snapshot the counter and update the browser label. */
+/* 1-second tick: fold the running burst into the window, compute the achieved
+ * rate, and update the browser label. */
 static void fps_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    /* Recompute only from a significant (full-screen) render this window; tiny
-     * partial renders -- e.g. this 1 s label refresh -- are far faster and would
-     * inflate the figure, so ignore them (< 3 ms) and hold the last value. The
-     * full-frame render time is the real ceiling on sustained FPS. */
-    if (s_fps_win_max_us >= 3000) {
-        uint32_t fps = 1000000u / s_fps_win_max_us;
-        if (fps > 999) fps = 999;
-        s_fps_last_max = fps;
+    /* Fold the still-running burst into this window, then re-anchor it at its
+     * last frame so a burst spanning windows keeps counting seamlessly. */
+    if (s_fps_burst_frames >= 2) {
+        s_fps_acc_intervals += s_fps_burst_frames - 1;
+        s_fps_acc_span_us   += (uint32_t)(s_fps_prev_ready_us - s_fps_burst_start_us);
+        s_fps_burst_start_us = s_fps_prev_ready_us;
+        s_fps_burst_frames   = 1;
     }
-    s_fps_win_max_us = 0;
+    /* Need a few intervals to call it a rate -- isolated one-off redraws
+     * (this label update, a toast) hold the previous reading instead. */
+    if (s_fps_acc_intervals >= 3 && s_fps_acc_span_us > 0) {
+        uint32_t fps = (uint32_t)(((uint64_t)s_fps_acc_intervals * 1000000u)
+                                  / s_fps_acc_span_us);
+        if (fps > 999) fps = 999;
+        s_fps_last_rate = fps;
+    }
+    s_fps_acc_intervals = 0;
+    s_fps_acc_span_us   = 0;
     if (!s_fps_enabled || !s_fps_label) return;
     char buf[12];
-    snprintf(buf, sizeof buf, "%lu FPS", (unsigned long)s_fps_last_max);
+    snprintf(buf, sizeof buf, "%lu FPS", (unsigned long)s_fps_last_rate);
     lv_label_set_text(s_fps_label, buf);
 }
 
