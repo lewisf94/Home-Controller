@@ -452,6 +452,7 @@ static void on_transition_option(lv_event_t *e);
 static void on_theme_option(lv_event_t *e);
 static void on_accent_option(lv_event_t *e);
 static void on_np_tap(lv_event_t *e);
+static void vol_hud_show(int pct, bool muted);
 static void on_seek_start(lv_event_t *e);
 static void on_seek_pressing(lv_event_t *e);
 static void on_seek_released(lv_event_t *e);
@@ -3068,7 +3069,7 @@ static void on_vol_changed(lv_event_t *e)
     (void)e;
     if (!s_np_volume) return;
     s_vol_dragging = true;  /* ensure flag stays set during dragging */
-    ui_show_volume_hud(lv_slider_get_value(s_np_volume), false);  /* live feedback */
+    vol_hud_show(lv_slider_get_value(s_np_volume), false);  /* live feedback */
     s_vol_hold_until = lv_tick_get() + 4000;   /* keep polls from snapping it back */
 }
 
@@ -3626,51 +3627,83 @@ static void wifi_timer_cb(lv_timer_t *t)
 
 bool ui_is_now_playing(void)
 {
-    return lv_screen_active() == s_screen_np;
+    /* Conservative on lock timeout: report "not on now-playing" rather than
+     * stall the caller -- a wrong false only re-routes a context-dependent
+     * control to its browser action. */
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_is_now_playing: display lock timeout");
+        return false;
+    }
+    bool on_np = (lv_screen_active() == s_screen_np);
+    bsp_display_unlock();
+    return on_np;
 }
 
 void ui_toggle_view(void)
 {
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_toggle_view: display lock timeout, skipping");
+        return;
+    }
     lv_obj_t *active = lv_screen_active();
     if (active == s_screen_browser) {
         load_screen(s_screen_np, true);
     } else {
         load_screen(s_screen_browser, false);
     }
+    bsp_display_unlock();
 }
 
 void ui_play_centered_album(void)
 {
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_play_centered_album: display lock timeout, skipping");
+        return;
+    }
     int idx = find_centered_card();
-    if (idx < 0) return;
-    const album_entry_t *a = albums_get((size_t)idx);
-    if (!a) return;
-    ESP_LOGI(TAG, "play album (encoder): %s -- %s", a->artist, a->title);
-    audio_play(AUDIO_SFX_SELECT);
-    ui_request_play(a->uri);
-    load_screen(s_screen_np, true);
+    const album_entry_t *a = (idx >= 0) ? albums_get((size_t)idx) : NULL;
+    if (a) {
+        ESP_LOGI(TAG, "play album (encoder): %s -- %s", a->artist, a->title);
+        audio_play(AUDIO_SFX_SELECT);
+        ui_request_play(a->uri);
+        load_screen(s_screen_np, true);
+    }
+    bsp_display_unlock();
 }
 
 void ui_scroll_browser(int32_t delta)
 {
-    if (!s_browser_scroller || delta == 0 || s_card_count == 0) return;
-
-    int t = s_target_card + (int)delta;
-    if (t < 0) t = 0;
-    if (t >= (int)s_card_count) t = (int)s_card_count - 1;
-    s_target_card = t;
-    if (!s_cards[t]) return;
-
-    /* Scroll straight to the target card's layout slot (t*step), matching the
-     * snap convention in rebuild_browser_cb/find_centered_card: card i is
-     * centred when scroll_left == i*step. */
-    lv_obj_scroll_to_x(s_browser_scroller, (int32_t)t * (cs() + cg()),
-                       LV_ANIM_ON);
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_scroll_browser: display lock timeout, skipping");
+        return;
+    }
+    if (s_browser_scroller && delta != 0 && s_card_count != 0) {
+        int t = s_target_card + (int)delta;
+        if (t < 0) t = 0;
+        if (t >= (int)s_card_count) t = (int)s_card_count - 1;
+        s_target_card = t;
+        if (s_cards[t]) {
+            /* Scroll straight to the target card's layout slot (t*step),
+             * matching the snap convention in rebuild_browser_cb/
+             * find_centered_card: card i is centred when scroll_left == i*step. */
+            lv_obj_scroll_to_x(s_browser_scroller, (int32_t)t * (cs() + cg()),
+                               LV_ANIM_ON);
+        }
+    }
+    bsp_display_unlock();
 }
 
 uint32_t ui_get_progress_ms(void)
 {
-    return s_track.progress_ms;
+    /* On lock timeout fall back to a direct read: progress_ms is an aligned
+     * 32-bit field so the read is atomic; a momentarily stale value beats
+     * returning 0 (which would snap a caller's seek/progress view to zero). */
+    if (bsp_display_lock(1000) != ESP_OK) {
+        return s_track.progress_ms;
+    }
+    uint32_t ms = s_track.progress_ms;
+    bsp_display_unlock();
+    return ms;
 }
 
 static void vol_hud_hide_cb(lv_timer_t *t)
@@ -3729,7 +3762,9 @@ void ui_show_toast(const char *msg, uint32_t ms_dur)
     bsp_display_unlock();
 }
 
-void ui_show_volume_hud(int pct, bool muted)
+/* In-context worker: caller must hold the LVGL lock (the slider handler runs
+ * in the LVGL task). Other tasks go through ui_show_volume_hud below. */
+static void vol_hud_show(int pct, bool muted)
 {
     if (!s_vol_hud) return;
     char buf[20];
@@ -3747,4 +3782,14 @@ void ui_show_volume_hud(int pct, bool muted)
         s_vol_hud_timer = lv_timer_create(vol_hud_hide_cb, 2000, NULL);
         lv_timer_set_repeat_count(s_vol_hud_timer, 1);
     }
+}
+
+void ui_show_volume_hud(int pct, bool muted)
+{
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_show_volume_hud: display lock timeout, skipping");
+        return;
+    }
+    vol_hud_show(pct, muted);
+    bsp_display_unlock();
 }

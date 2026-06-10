@@ -80,7 +80,9 @@ typedef struct {
 /* Populate the DEVICES screen list (copies the rows). Safe from any task. */
 void ui_set_devices(const ui_device_t *list, int count);
 
-/* UI state queries and actions -- must be called under the LVGL lock. */
+/* UI state queries and actions. Safe to call from any task -- each takes the
+ * LVGL lock internally. This is the seam for physical controls (the future
+ * RP2040 knob/button co-MCU feeding events from a UART task). */
 bool     ui_is_now_playing(void);
 void     ui_toggle_view(void);
 void     ui_play_centered_album(void);
