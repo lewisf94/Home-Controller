@@ -1713,6 +1713,10 @@ static void prog_particle_tick_cb(lv_timer_t *t)
     (void)t;
     if (!s_prog_objs[0]) return;
     if (s_track.duration_ms == 0) return;
+    /* The tank lives on the now-playing screen; while another screen is shown
+     * the 44 set_pos/set_style writes per tick are pure waste (and LVGL style
+     * churn). Freeze the gas off-screen -- it resumes the moment NP returns. */
+    if (lv_screen_active() != s_screen_np) return;
 
     int32_t progress_px = (int32_t)((uint64_t)s_track.progress_ms * PROG_W
                                     / s_track.duration_ms);
