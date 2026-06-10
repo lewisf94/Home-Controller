@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 #include "esp_log.h"
 #include "esp_http_client.h"
@@ -403,7 +404,38 @@ static bool xml_between(const char *src, const char *open, const char *close,
     return true;
 }
 
-/* In-place single-pass un-escape of the common XML entities. */
+/* Encode one Unicode code point as UTF-8. Returns bytes written (1-4).
+ * Caller guarantees cp <= 0x10FFFF. */
+static size_t utf8_encode(char *dst, uint32_t cp)
+{
+    if (cp < 0x80) {
+        dst[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        dst[0] = (char)(0xC0 | (cp >> 6));
+        dst[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        dst[0] = (char)(0xE0 | (cp >> 12));
+        dst[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        dst[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    dst[0] = (char)(0xF0 | (cp >> 18));
+    dst[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    dst[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    dst[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+/* In-place single-pass un-escape of XML entities: the five named ones plus
+ * numeric character references (&#39; / &#x27;), which Sonos DIDL uses for
+ * apostrophes and other punctuation in track metadata. In-place is safe:
+ * an entity's text is always at least as long as its UTF-8 encoding (the
+ * shortest producing 2/3/4 bytes are &#128; / &#2048; / &#65536;), so the
+ * write cursor never overtakes the read cursor. */
 static void xml_unescape(char *s)
 {
     char *w = s;
@@ -414,10 +446,38 @@ static void xml_unescape(char *s)
             if (!strncmp(r, "&quot;", 6)) { *w++ = '"';  r += 6; continue; }
             if (!strncmp(r, "&apos;", 6)) { *w++ = '\''; r += 6; continue; }
             if (!strncmp(r, "&amp;", 5))  { *w++ = '&';  r += 5; continue; }
+            if (r[1] == '#') {
+                /* Require a leading digit (strtoul alone would accept
+                 * whitespace/sign), a terminating ';', and a valid scalar
+                 * code point; anything else copies through literally. */
+                bool hex = (r[2] == 'x' || r[2] == 'X');
+                const char *digits = r + (hex ? 3 : 2);
+                if (hex ? isxdigit((unsigned char)*digits)
+                        : isdigit((unsigned char)*digits)) {
+                    char *end;
+                    unsigned long cp = strtoul(digits, &end, hex ? 16 : 10);
+                    if (*end == ';' && cp >= 1 && cp <= 0x10FFFF &&
+                        !(cp >= 0xD800 && cp <= 0xDFFF)) {
+                        w += utf8_encode(w, (uint32_t)cp);
+                        r = end + 1;
+                        continue;
+                    }
+                }
+            }
         }
         *w++ = *r++;
     }
     *w = '\0';
+}
+
+/* The DIDL-extracted fields are entity-escaped twice: once at DIDL level
+ * (a title apostrophe is &#39; inside the DIDL XML) and once more when the
+ * whole DIDL blob is embedded in the SOAP response (&amp;#39; on the wire).
+ * Decode the SOAP layer, then the DIDL layer. */
+static void didl_unescape(char *s)
+{
+    xml_unescape(s);
+    xml_unescape(s);
 }
 
 /* "H:MM:SS" (or "NOT_IMPLEMENTED") -> milliseconds. */
@@ -443,7 +503,8 @@ bool sonos_fetch_now_playing(const char *host, sonos_np_t *out)
         out->progress_ms = hms_to_ms(tmp);
 
     /* TrackMetaData is an escaped DIDL-Lite blob, so the inner tags read as
-     * &lt;dc:title&gt; etc.; un-escape the extracted text once after. */
+     * &lt;dc:title&gt; etc.; the extracted text is still double-escaped
+     * (SOAP layer + DIDL layer) and is decoded by didl_unescape below. */
     bool got = xml_between(body, "&lt;dc:title&gt;", "&lt;/dc:title&gt;",
                            out->title, sizeof out->title);
     xml_between(body, "&lt;dc:creator&gt;", "&lt;/dc:creator&gt;",
@@ -453,9 +514,9 @@ bool sonos_fetch_now_playing(const char *host, sonos_np_t *out)
     free(body);
 
     if (!got || out->title[0] == '\0') return false;   /* stopped / no track */
-    xml_unescape(out->title);
-    xml_unescape(out->artist);
-    xml_unescape(out->album);
+    didl_unescape(out->title);
+    didl_unescape(out->artist);
+    didl_unescape(out->album);
     out->is_playing = sonos_is_playing(host);           /* PLAYING vs PAUSED */
     out->volume     = sonos_get_volume(host);
     return true;
