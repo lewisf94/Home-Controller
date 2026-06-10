@@ -199,7 +199,7 @@ extern "C" bool album_art_decode(const uint8_t *jpeg, size_t jpeg_len,
     }
 
     bool ok = decode_opened(pJPEG, out_rgb, out_max_pixels, out_w, out_h);
-    free(pJPEG);
+    heap_caps_free(pJPEG);
     return ok;
 }
 
@@ -230,6 +230,6 @@ extern "C" bool album_art_decode_file(const char *path,
     }
 
     bool ok = decode_opened(pJPEG, out_rgb, out_max_pixels, out_w, out_h);
-    free(pJPEG);
+    heap_caps_free(pJPEG);
     return ok;
 }
