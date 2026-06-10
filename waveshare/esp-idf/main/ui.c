@@ -342,6 +342,18 @@ static lv_obj_t *s_dissolve_dots[DISSOLVE_DOT_COUNT] = {0};
 #define PIX_THUMB_RES  64                          /* logical pixels for browser thumbs */
 #define PIX_ART_RES    64                          /* logical pixels for now-playing art */
 static uint16_t       *s_pix_thumbs     = NULL;   /* PSRAM: s_card_count * PIX_THUMB_RES^2 */
+
+/* PSRAM thumb pools. The embedded thumbs are flash rodata (EMBED_FILES), so
+ * every blit -- LVGL card draws AND the Cover Flow rasteriser's per-column
+ * sampling -- reads through the flash XIP cache. s_thumbs_psram (~5.4 MB) is
+ * a one-time copy that takes that pressure off every browser style.
+ * s_card_pool (~9.2 MB) goes further for Carousel/Focus: thumbs pre-scaled to
+ * the card slot, so the centred-card blit is a plain 1:1 copy instead of a
+ * per-pixel nearest resample on every frame. It is rewritten on each browser
+ * build so it carries the current theme's look (PIXEL's chunky blocks
+ * included). Either pool failing to allocate falls back to the old paths. */
+static uint16_t       *s_thumbs_psram   = NULL;   /* raw ALBUM_THUMB_W^2 copies */
+static uint16_t       *s_card_pool      = NULL;   /* CARD_SIZE^2, current theme */
 static uint16_t       *s_pix_art_buf   = NULL;    /* PSRAM: PIX_ART_RES^2 px art scratch */
 static lv_image_dsc_t  s_pix_art_dsc  = {0};
 static const uint8_t  *s_last_raw_art  = NULL;    /* pointer into PSRAM art decode buf */
@@ -646,6 +658,33 @@ static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t
     return pill;
 }
 
+/* Raw thumb source: the PSRAM copy when available, else the flash original. */
+static const uint16_t *thumb_src(size_t i)
+{
+    if (s_thumbs_psram)
+        return s_thumbs_psram + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
+    return album_thumb_data(i);
+}
+
+/* Nearest-neighbour RGB565 resize (16.16 fixed-point stepping, no per-pixel
+ * divide). Same hard-edged look as LVGL's antialias=false image transform,
+ * which is what the per-frame path used before the pre-scaled pool. */
+static void nearest_resize_rgb565(const uint16_t *src, int sw, int sh,
+                                  uint16_t *dst, int dw, int dh)
+{
+    uint32_t xstep = ((uint32_t)sw << 16) / (uint32_t)dw;
+    uint32_t ystep = ((uint32_t)sh << 16) / (uint32_t)dh;
+    uint32_t yacc  = 0;
+    for (int y = 0; y < dh; y++, yacc += ystep) {
+        const uint16_t *srow = src + (size_t)(yacc >> 16) * (size_t)sw;
+        uint16_t       *drow = dst + (size_t)y * (size_t)dw;
+        uint32_t xacc = 0;
+        for (int x = 0; x < dw; x++, xacc += xstep) {
+            drow[x] = srow[xacc >> 16];
+        }
+    }
+}
+
 static void build_browser_screen(void)
 {
     /* Cards are recreated below: invalidate the FOCUS transform cache so the
@@ -709,6 +748,24 @@ static void build_browser_screen(void)
         ESP_LOGD(TAG, "thumb[%zu]=%p", __j, (const void *)__t);
     }
 
+    /* One-time PSRAM copy of the raw embedded thumbs (see the pool note at the
+     * declarations). Feeds the Cover Flow rasteriser, the PIXEL pixelate pass
+     * and the card pool below without flash XIP reads. */
+    if (!s_thumbs_psram && s_card_count > 0) {
+        size_t raw_sz = s_card_count * ALBUM_THUMB_BYTES;
+        s_thumbs_psram = heap_caps_malloc(raw_sz, MALLOC_CAP_SPIRAM);
+        if (s_thumbs_psram) {
+            for (size_t i = 0; i < s_card_count; i++) {
+                uint16_t *dst = s_thumbs_psram + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
+                const uint16_t *t = album_thumb_data(i);
+                if (t) memcpy(dst, t, ALBUM_THUMB_BYTES);
+                else   memset(dst, 0, ALBUM_THUMB_BYTES);
+            }
+        } else {
+            ESP_LOGW(TAG, "thumb PSRAM pool alloc failed (%zu B)", raw_sz);
+        }
+    }
+
     /* PIXEL theme: pre-pixelate all thumbnails into PSRAM pool (once here;
      * no per-scroll work).  Free of any previous pool already done by
      * apply_theme_cb before this call; allocate fresh here. */
@@ -717,7 +774,7 @@ static void build_browser_screen(void)
         s_pix_thumbs = heap_caps_malloc(pix_pool_sz, MALLOC_CAP_SPIRAM);
         if (s_pix_thumbs) {
             for (size_t __pi = 0; __pi < s_card_count; __pi++) {
-                const uint16_t *__src = album_thumb_data(__pi);
+                const uint16_t *__src = thumb_src(__pi);
                 if (__src) {
                     pixelate_rgb565(__src, ALBUM_THUMB_W, ALBUM_THUMB_H,
                                     s_pix_thumbs + __pi * PIX_THUMB_RES * PIX_THUMB_RES,
@@ -726,6 +783,35 @@ static void build_browser_screen(void)
             }
         } else {
             ESP_LOGW(TAG, "PIXEL: thumb pool alloc failed (%zu B SPIRAM)", pix_pool_sz);
+        }
+    }
+
+    /* Card-native pool: every thumb pre-scaled to CARD_SIZE with this theme's
+     * look, so Carousel/Focus card images blit 1:1 (scale == LV_SCALE_NONE)
+     * instead of resampling 220 -> 286 on every frame. Allocated once,
+     * rewritten per build (theme look can change); also built in Cover Flow
+     * style so a later style switch needs no special casing (its images are
+     * hidden there). */
+    if (s_card_count > 0) {
+        size_t pool_sz = s_card_count * (size_t)CARD_SIZE * CARD_SIZE * sizeof(uint16_t);
+        if (!s_card_pool)
+            s_card_pool = heap_caps_malloc(pool_sz, MALLOC_CAP_SPIRAM);
+        if (s_card_pool) {
+            for (size_t i = 0; i < s_card_count; i++) {
+                uint16_t *dst = s_card_pool + i * (size_t)CARD_SIZE * CARD_SIZE;
+                if (is_pixel_theme() && s_pix_thumbs) {
+                    nearest_resize_rgb565(s_pix_thumbs + i * PIX_THUMB_RES * PIX_THUMB_RES,
+                                          PIX_THUMB_RES, PIX_THUMB_RES,
+                                          dst, CARD_SIZE, CARD_SIZE);
+                } else {
+                    const uint16_t *t = thumb_src(i);
+                    if (t) nearest_resize_rgb565(t, ALBUM_THUMB_W, ALBUM_THUMB_H,
+                                                 dst, CARD_SIZE, CARD_SIZE);
+                    else   memset(dst, 0, (size_t)CARD_SIZE * CARD_SIZE * sizeof(uint16_t));
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "card pool alloc failed (%zu B SPIRAM)", pool_sz);
         }
     }
 
@@ -754,8 +840,16 @@ static void build_browser_screen(void)
              * this board's DIRECT-mode rotated DSI flush mis-composited,
              * blacking out the off-centre cards. The card object carries no
              * transform, so no layer is ever created. */
-            bool pix_ok = is_pixel_theme() && s_pix_thumbs;
-            if (pix_ok) {
+            /* Preferred source is the card-native pool: 1:1 pixels at the
+             * Carousel/Focus slot size, current theme look baked in. Fallbacks
+             * keep the old per-frame-scaled sources if the pool failed. */
+            if (s_card_pool) {
+                s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
+                s_card_dscs[i].header.w   = CARD_SIZE;
+                s_card_dscs[i].header.h   = CARD_SIZE;
+                s_card_dscs[i].data       = (const uint8_t *)(s_card_pool + i * (size_t)CARD_SIZE * CARD_SIZE);
+                s_card_dscs[i].data_size  = (uint32_t)CARD_SIZE * CARD_SIZE * sizeof(uint16_t);
+            } else if (is_pixel_theme() && s_pix_thumbs) {
                 const uint16_t *pix = s_pix_thumbs + i * PIX_THUMB_RES * PIX_THUMB_RES;
                 s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
                 s_card_dscs[i].header.w   = PIX_THUMB_RES;
@@ -772,27 +866,17 @@ static void build_browser_screen(void)
             lv_obj_t *img = lv_image_create(card);
             lv_image_set_src(img, &s_card_dscs[i]);
             lv_obj_center(img);
-            if (pix_ok) {
-                /* Scale 64x64 to fill the card slot with hard pixel blocks.
-                 * cs() is the actual slot size (220 normally, 165 in CF mode).
-                 * apply_card_transforms() multiplies relative transforms by this
-                 * ratio in Focus/CoverFlow so side cards still scale correctly. */
-                lv_image_set_pivot(img, PIX_THUMB_RES / 2, PIX_THUMB_RES / 2);
-                lv_image_set_scale(img, (uint32_t)cs() * LV_SCALE_NONE / PIX_THUMB_RES);
-                lv_image_set_antialias(img, false);
-            } else {
-                /* Scale about the image centre so side covers shrink inward. */
-                lv_image_set_pivot(img, ALBUM_THUMB_W / 2, ALBUM_THUMB_H / 2);
-                /* Fill the 286px card from the 220px thumb. Carousel keeps this
-                 * build-time scale (every cover 286, matching Cover Flow's
-                 * centre); FOCUS overrides it per-scroll in
-                 * apply_card_transforms; Cover Flow hides these images. */
-                lv_image_set_scale(img, (uint32_t)cs() * LV_SCALE_NONE / ALBUM_THUMB_W);
-                /* Nearest-neighbour: no anti-aliased (bilinear) resample, which
-                 * is ~4x the per-pixel cost -- the main reason FOCUS was ~2x
-                 * slower. Only the scaled side covers lose a little smoothness. */
-                lv_image_set_antialias(img, false);
-            }
+            /* Fill the cs() card slot from whatever source landed in the dsc
+             * (scale about the centre so side covers shrink inward). With the
+             * card pool that ratio is exactly LV_SCALE_NONE in Carousel/Focus
+             * -- the fast untransformed blit path. FOCUS overrides per-scroll
+             * in apply_card_transforms; Cover Flow hides these images. */
+            lv_image_set_pivot(img, s_card_dscs[i].header.w / 2, s_card_dscs[i].header.h / 2);
+            lv_image_set_scale(img, (uint32_t)cs() * LV_SCALE_NONE / s_card_dscs[i].header.w);
+            /* Nearest-neighbour: no anti-aliased (bilinear) resample, which
+             * is ~4x the per-pixel cost -- the main reason FOCUS was ~2x
+             * slower. Only the scaled side covers lose a little smoothness. */
+            lv_image_set_antialias(img, false);
             lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
             s_card_imgs[i] = img;
         } else {
@@ -1501,7 +1585,9 @@ static void cf_render(void)
             src_w = PIX_THUMB_RES;
             src_h = PIX_THUMB_RES;
         } else {
-            src   = album_thumb_data(i);
+            /* PSRAM copy when available -- the per-column sampling below is
+             * exactly the read pattern that hurts through the flash cache. */
+            src   = thumb_src(i);
             src_w = ALBUM_THUMB_W;
             src_h = ALBUM_THUMB_H;
         }
@@ -3280,17 +3366,16 @@ static void apply_card_transforms(void)
     int32_t step       = cs() + cg();
     int32_t scr_center = SCREEN_W / 2;
     for (size_t i = 0; i < s_card_count; i++) {
-        if (!s_card_imgs[i]) continue;
+        if (!s_card_imgs[i] || s_card_dscs[i].header.w == 0) continue;
         int32_t card_cx = pad_left + (int32_t)i * step + cs() / 2 - scroll_x;
         int32_t dist = card_cx - scr_center;
         if (dist < 0) dist = -dist;
 
-        /* Base scale fills the cs() (286px) card from the source thumb: 220px
-         * normal cover, or the 64px pixelated thumb in PIXEL theme. The centred
-         * card draws at full 286 (matching carousel + cover flow); neighbours
-         * scale down from there. */
-        uint32_t base = (uint32_t)cs() * LV_SCALE_NONE
-                      / (is_pixel_theme() ? PIX_THUMB_RES : ALBUM_THUMB_W);
+        /* Base scale fills the cs() (286px) card from the dsc's source pixels:
+         * the 286px card pool normally (base == LV_SCALE_NONE, so the centred
+         * card is an untransformed 1:1 blit), or the 220px / 64px fallback
+         * sources when the pool is absent. Neighbours scale down from there. */
+        uint32_t base = (uint32_t)cs() * LV_SCALE_NONE / s_card_dscs[i].header.w;
         int32_t scale = LV_SCALE_NONE - dist * 76 / step;
         if (scale < 150) scale = 150;
         int32_t dim = dist * 95 / step;
