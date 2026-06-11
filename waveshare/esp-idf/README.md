@@ -17,8 +17,8 @@ Home Assistant, exactly like the CYD split.
 > browser + now-playing + Settings screen in two tabs — **DISPLAY** (Mode /
 > Colour accent / Browser Style / Font / Selection Line / Brightness / FPS /
 > Menu Transition) and **SOUND** (on-off / Volume / Sound set), all
-> NVS-persisted — three browser styles (Carousel / Focus / Cover Flow), five
-> MODE options (Dark / Black / Light / **GLYPH** dot theme / **PIXEL** retro),
+> NVS-persisted — three browser styles (Carousel / Focus / Cover Flow), six
+> MODE options (Dark / Black / Light / **GLYPH** Nothing-light dot theme / **PIXEL** retro / **PAPER** teletype),
 > synthesised UI sound effects (ES8311 speaker), scrolling long titles,
 > charcoal palette, flat buttons, tiny_ttf kerning crash fix, auto-snap-to-
 > playing-album with accent border, OFFLINE indicator, generic toast for
@@ -42,10 +42,11 @@ blitted as one `lv_image` (no LVGL per-cover scaling). The intended look:
 - **Z-order**: centre on top, each cover under the one nearer centre (stack
   outward + overlap). Art is perspective-foreshortened toward the far/inner edge.
 - `CF_LEAN_FLIP` flips the lean if the rotated panel mirrors it.
-- **Perf:** `cf_render` runs in the scroll handler, so its cost does **not** show
-  in the FPS readout (which only times the blit). The converging fan keeps every
-  cover on-screen, so `CF_MAX_SIDE` caps how many covers rasterise per scroll
-  event — without it all albums draw each event and scrolling goes sluggish.
+- **Perf:** `cf_render` runs in the scroll handler; the FPS counter now measures
+  achieved frame rate (each `LV_EVENT_RENDER_READY` is one presented frame) so
+  handler time IS included. The converging fan keeps every cover on-screen, so
+  `CF_MAX_SIDE` caps how many covers rasterise per scroll event — without it all
+  albums draw each event and scrolling goes sluggish.
 - Tuning dials: `CF_FAN_SPREAD`, `CF_FAN_RATE`, `CF_WIDTH_SHRINK`,
   `CF_HEIGHT_SHRINK`, `CF_MAX_SIDE`, `CF_CARD_SCALE`.
 
@@ -143,32 +144,41 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
     `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain;
     `copy_str` used consistently throughout `main.c`. *(committed)*
 12. **GLYPH dot-matrix theme** — replaced the old Yudho/Fuhrer VFX-backdrop themes
-    (the whole `lv_canvas` particle system is deleted) with a single MODE where
-    every element is drawn in round dots: a dot text font baked from unscii-8
-    (`scripts/gen_lvgl_font.py --dots`, sizes `lv_font_dot_20/24/28.c`), a dotted
-    sparse-cmap FontAwesome font as its fallback (`lv_font_dot_sym_*`, so the cog /
-    transport / chevron icons dot too), a "gas-tank" progress bar (Brownian-motion
-    accent dots + a playhead bar), and a 4-dot WiFi strength meter. Font is fixed in
-    GLYPH (FONT setting hidden). *(committed — needs hardware verify; cog has a
-    first on-device check, reads a touch muddy at dot size — noted, deferred)*
+    (the whole `lv_canvas` particle system is deleted). Reworked to a **Nothing-OS
+    light** aesthetic: warm light-grey ground + black ink; dot-matrix font
+    (`lv_font_dot_24.c`, baked from unscii-8 via `gen_lvgl_font.py --dots`) for
+    **headings only** (`font_lg()`), with a dotted FontAwesome fallback
+    (`lv_font_dot_sym_24.c`) so symbols inside headings dot too. Body text,
+    transport icons, and all non-heading labels use clean `lv_font_montserrat_20/28`.
+    Hairline-outlined pills on option chips; selected option fills solid ink with
+    light text. Gas-tank progress bar: hairline-outlined capsule with ink Brownian-
+    motion dots and an accent playhead. Ink WiFi-strength dots / volume-page dots.
+    FONT setting hidden (pairing is fixed). *(committed — needs hardware verify)*
 13. **UI sound + tabbed Settings** — synthesised SFX via the onboard ES8311 speaker
     (`audio.c`/`audio.h`, `esp_codec_dev`): TICK/SELECT/BACK/CONNECT on a dedicated
-    task + queue, named sound sets (SINE/CHIP/AMBIENT/MARIMBA/ARCADE/BELL) or AUTO,
-    user volume with a square-law taper, all NVS-persisted. Settings reorganised into
-    DISPLAY + SOUND tabs. Long browser/now-playing titles scroll horizontally
+    task + queue, named sound sets (SINE/CHIP/AMBIENT/MARIMBA/ARCADE/BELL/TELEX) or
+    AUTO, user volume with a square-law taper, all NVS-persisted. Settings reorganised
+    into DISPLAY + SOUND tabs. Long browser/now-playing titles scroll horizontally
     (`LV_LABEL_LONG_SCROLL_CIRCULAR`) instead of ellipsising. Cover-Flow centre-tap
     play fix. Album-art `JPEGIMAGE` moved to internal SRAM (intermittent
     `JPEGDecodeMCU` store-fault fix). *(committed; sound + tabs need hardware verify,
     titles + decode-fix have a first on-device check)*
+14. **PAPER teletype theme + GLYPH rework** — PAPER is a sixth MODE: cream paper +
+    near-black ink, `lv_font_mono_16/24.c` (unscii-8, Montserrat fallback), 1-bit
+    8×8 Bayer dithered art, printed-form frames/rules, inverted title chips, ruler-
+    tick progress, ink block cursor, TELEX square-wave typewriter SFX (AUTO maps
+    PAPER → TELEX in `audio.c`). GLYPH reworked from dots-everywhere to the
+    Nothing-light aesthetic (dot headings only, clean icons, ink instrument chrome).
+    *(committed — needs hardware verify)*
 
 After all of the above is confirmed on hardware:
-- **PPA hardware acceleration** — `enable_ppa_accel = true` in
-  `bsp_display_cfg_t`. The P4 PPA does the 90° rotation/blit in hardware
-  (currently software every frame).
 - **RAM art decode** — switch from LittleFS round-trip to the existing
   `spotify_download_bytes` + `album_art_decode` RAM path (PSRAM-resident,
   no flash wear). The RAM path already exists; unused today.
-- **Adaptive poll backoff** — already done (5 s playing, 15 s paused/idle).
+
+PPA rotation and adaptive poll backoff are already done (do not re-list as TODOs):
+- PPA: the vendored BSP hardcodes `.enable_ppa_accel = true` in `bsp_display_lcd_init`.
+- Poll backoff: 5 s playing / 15 s paused; 429 holdoff with Retry-After awareness.
 
 See [`../../docs/P4-TODO.md`](../../docs/P4-TODO.md) for the rolling backlog
 and [`../../docs/PENDING.md`](../../docs/PENDING.md) for the verify-pending list.
