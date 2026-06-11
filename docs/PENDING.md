@@ -47,6 +47,25 @@ is "done":
 | PPA hardware acceleration | `.enable_ppa_accel = true` in vendored BSP; offloads 90° software rotation to the P4 hardware 2D accelerator. | pending |
 | Cover Flow 2-side | CF card slot 220→180 px, gap 28→16 px (step 248→196). Card ±2 centres at 792/8 px — fully on-screen. Squash rate 150→100, floor 70→85, dim_rise 150→80 so second side card still reads. | pending |
 | FPS display | Settings → FPS DISPLAY toggle (ON/OFF); live `N FPS` label in browser top bar updated every 1 s via `LV_EVENT_FLUSH_READY` counter. NVS-persisted. | pending |
+| FPS-maxing batch (2026-06-10) | FPS counter reworked to **achieved frame rate** (RENDER_READY burst accounting — includes handler/rasterise/flush time); PSRAM thumb pools (raw ~5.4 MB feeds CF/PIXEL/pool builds, 286 px card-native ~9.2 MB makes Carousel/Focus centre blits 1:1); GLYPH gas-tank ticker frozen while now-playing is off-screen; EXPERIMENT `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2` (one SW draw unit per core). | `89c3816`, `7af90de`, `f9a0337`, `dee8651` |
+
+**Next flash session — reminders (written 2026-06-11):**
+
+1. **Delete the stale local `waveshare/esp-idf/sdkconfig` before building.** The
+   dual-draw-unit experiment lives in `sdkconfig.defaults`
+   (`CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2`), and defaults are only folded in when
+   `sdkconfig` is regenerated — building with the old file silently tests the
+   wrong config.
+2. **The FPS counter now reads achieved frame rate** (presented frames per
+   second, including scroll-handler/rasterise/flush time). Two readings that are
+   correct, not regressions: GLYPH now-playing idles at ~16 FPS (the gas tank's
+   60 ms tick cadence — and it now freezes to 0 when now-playing is off-screen),
+   and every theme is capped by `LV_DEF_REFR_PERIOD` (~30 FPS at the default
+   33 ms) when idle.
+3. **A/B the dual-core draw experiment with the new counter**: note scroll FPS
+   in Focus + Cover Flow, `git revert dee8651` (or flip the one
+   `sdkconfig.defaults` line), delete `sdkconfig`, reflash, compare. If hardware
+   shows artifacts or crashes, that single line is the first thing to revert.
 
 Sanity-check menu for next flash (waveshare):
 1. **Sonos album-start** — pick a Sonos in device selector, tap an album from
