@@ -48,6 +48,7 @@ is "done":
 | Cover Flow 2-side | CF card slot 220→180 px, gap 28→16 px (step 248→196). Card ±2 centres at 792/8 px — fully on-screen. Squash rate 150→100, floor 70→85, dim_rise 150→80 so second side card still reads. | pending |
 | FPS display | Settings → FPS DISPLAY toggle (ON/OFF); live `N FPS` label in browser top bar updated every 1 s via `LV_EVENT_FLUSH_READY` counter. NVS-persisted. | pending |
 | FPS-maxing batch (2026-06-10) | FPS counter reworked to **achieved frame rate** (RENDER_READY burst accounting — includes handler/rasterise/flush time); PSRAM thumb pools (raw ~5.4 MB feeds CF/PIXEL/pool builds, 286 px card-native ~9.2 MB makes Carousel/Focus centre blits 1:1); GLYPH gas-tank ticker frozen while now-playing is off-screen; EXPERIMENT `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2` (one SW draw unit per core). | `89c3816`, `7af90de`, `f9a0337`, `dee8651` |
+| PAPER theme | Sixth MODE slot: teletype data-brutalism — cream paper + ink, unscii-8 mono fonts (`lv_font_mono_16/24.c`), 1-bit Bayer-dithered art/thumbs, printed-form frames + rules, ruler-tick progress with ink block cursor, OUTPUT/LEVEL data fields, album index counter, inverted title chips, ink-framed keys/cards, TELEX typewriter sound set. | this session |
 
 **Next flash session — reminders (written 2026-06-11):**
 
@@ -127,6 +128,18 @@ Sanity-check menu for next flash (waveshare):
 16. **FPS display** — Settings → FPS DISPLAY → ON: a `N FPS` readout appears in
     the browser top bar (right of the WiFi bars). Should update every ~1 s. NVS
     persists across reboot. Toggle OFF: label disappears.
+17. **PAPER theme** — Settings → MODE → PAPER: cream background, all text in the
+    blocky unscii mono font, section headers vermilion (accent); every screen
+    framed in a 2 px ink border with hairline rules; browser shows an `NN / NN`
+    album counter top-centre, covers 1-bit dithered with ink frames; now-playing
+    art dithered with OUTPUT (device) and LEVEL (fader) data fields beside it;
+    progress is a tick ruler with a solid ink block riding the playhead (block
+    follows a scrub drag; round thumb stays hidden); transport keys square with
+    ink borders. FONT row hidden in Settings. Scroll SFX on AUTO are typewriter
+    clicks (TELEX). Check Cover Flow + Focus render dithered covers; switch
+    MODE back to DARK — full-colour art returns, no crash, PSRAM pool freed
+    (watch the heap log). Accent RED turns the look maroon-ledger; all four
+    accents must stay legible on cream.
 
 ### CYD (board not available 2026-05-30)
 

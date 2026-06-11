@@ -298,8 +298,8 @@ What's in `ui.c` as committed:
   `settings_page()`/`settings_header()` helpers). DISPLAY: MODE / COLOUR / BROWSER
   STYLE / FONT / SELECTION LINE / BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND
   on-off / VOLUME / SOUND SET. All NVS-persisted.
-- **Five MODE options: Dark / Black / Light / GLYPH / PIXEL** (`THEME_*_IDX`,
-  `THEME_COUNT=5`). (History: the old Yudho/Fuhrer VFX-backdrop themes were removed
+- **Six MODE options: Dark / Black / Light / GLYPH / PIXEL / PAPER** (`THEME_*_IDX`,
+  `THEME_COUNT=6`). (History: the old Yudho/Fuhrer VFX-backdrop themes were removed
   and merged into the single GLYPH dot theme — see below. The whole `lv_canvas`
   particle system, vortex/emission tick callbacks, and the `s_vfx_*` state are gone.)
 - Colour accent system: four accents (Orange / Red / Green / Purple), drives
@@ -331,17 +331,46 @@ What's in `ui.c` as committed:
   - Settings cog is `LV_SYMBOL_SETTINGS` (the dotted cog), matching the devices
     button. **Known nit (not yet fixed):** at dot size the cog's dots can merge and
     read a little muddy in GLYPH — noted, deferred.
+- **PAPER teletype data-brutalist theme** (`is_paper_theme()`, slot 5) — modelled on
+  the cream-paper/ink "data sheet" reference UIs (mono type, ruled frames, 1-bit
+  imagery), NOT a recolour of the other themes:
+  - **Palette**: warm cream paper + near-black ink; the accent supplies the
+    vermilion "live" pops (ORANGE is the canonical pairing, RED reads maroon-ledger).
+  - **Mono fonts** `lv_font_mono_16/24.c` baked from unscii-8 (clean pixel render,
+    no `--dots`) with Montserrat fallbacks for symbols/accents. FONT setting hidden
+    (like GLYPH).
+  - **1-bit duotone art** — `paperize_rgb565()`: nearest resample + 8×8 ordered
+    Bayer dither of luminance to paper/ink. Now-playing art dithered at 256 px
+    (= `ART_W`, 1:1 on panel, 128 KB PSRAM scratch); card pool re-dithers at card
+    res so the grain is never resampled; `s_paper_thumbs` (raw-res, ~5.4 MB PSRAM)
+    feeds Cover Flow + the pool-failure fallback. All freed/rebuilt on theme switch.
+  - **Printed-form chrome** — `paper_frame()` 2 px ink border on every screen +
+    `paper_rule()` hairlines dividing zones; inverted ink title chips
+    (`paper_title_chip`); accent corner field labels (`paper_field_label`):
+    settings headers, plus OUTPUT (device) and LEVEL (fader) data fields on
+    now-playing; browser gets an `NN / NN` album index counter (`s_br_index_lbl`).
+  - **Ruler progress** — tick scale under the bar (41 ticks, every 5th taller) with
+    a solid ink block cursor (`s_paper_cursor`) riding the playhead; the block is
+    also the scrub indicator (round seek thumb stays hidden in PAPER).
+  - **Ink-framed keys/cards** — `style_key_btn()` squares every boxy button and adds
+    a 2 px ink border in PAPER (radius-3 charcoal elsewhere); browser cards framed
+    in ink (playing card keeps the 3 px accent frame, now applied at build time so
+    rebuilds don't lose it); sliders/fader/sel-line squared.
+  - **TELEX sound set** — square-wave 5–12 ms key-strike clicks + carriage-bell
+    connect; AUTO maps PAPER → TELEX (`AUDIO_THEME_TELEX`).
 - **UI sound effects** (`audio.c`/`audio.h`) — synthesised tones through the onboard
   **ES8311 speaker** (`esp_codec_dev`), played on a dedicated FreeRTOS task fed by a
   queue so callers never block on the I2S write. Four SFX (TICK / SELECT / BACK /
   CONNECT) fired from scroll, select, option-change, and connect events. A table of
-  named **sound sets** (SINE/CHIP/AMBIENT/MARIMBA/ARCADE/BELL, `k_sets`) selectable
-  in Settings → SOUND SET, or AUTO (follows MODE). User VOLUME (0–100) applied as a
-  perceptual **square-law** gain. SOUND on-off + VOLUME + SET all NVS-persisted.
+  named **sound sets** (SINE/CHIP/AMBIENT/MARIMBA/ARCADE/BELL/TELEX, `k_sets`)
+  selectable in Settings → SOUND SET, or AUTO (follows MODE). User VOLUME (0–100)
+  applied as a perceptual **square-law** gain. SOUND on-off + VOLUME + SET all
+  NVS-persisted.
 - **FONT setting** — Settings → FONT: SANS (Montserrat) or SLAB (Arvo Bold, OFL,
   Google Fonts, embedded). NVS-persisted. All title/artist/settings labels route
   through `font_lg()`/`font_md()` which check `s_font_choice`. PIXEL overrides to
-  Press Start 2P and GLYPH overrides to the dot font, regardless of FONT setting.
+  Press Start 2P, GLYPH to the dot font and PAPER to the unscii mono font,
+  regardless of FONT setting.
 - **Title marquee** — long browser/now-playing titles scroll horizontally
   (`LV_LABEL_LONG_SCROLL_CIRCULAR`) instead of ellipsising; titles that fit stay
   centred. Speed is a fixed `lv_obj_set_style_anim_duration` (ms) set **before**
@@ -630,17 +659,20 @@ git log --oneline -10          # recent history
   cp1–3 verified: display renders at 800×480 landscape, WiFi via onboard C6,
   Spotify token refresh + poll every 5 s. The UI (`ui.c`) has been committed with:
   full LVGL browser + now-playing, three browser styles (Carousel/Focus/Cover Flow),
-  tabbed Settings (DISPLAY + SOUND) with five MODE options
-  (Dark/Black/Light/GLYPH/PIXEL), charcoal palette, flat buttons, colour accent
+  tabbed Settings (DISPLAY + SOUND) with six MODE options
+  (Dark/Black/Light/GLYPH/PIXEL/PAPER), charcoal palette, flat buttons, colour accent
   system (Orange/Red/Green/Purple), tiny_ttf kerning crash fix, PIXEL retro theme
   (1bpp Press Start 2P font, Bayer-dithered pixelated art/thumbnails, dark-CRT
   palette), the **GLYPH dot-matrix theme** (round-dot text + icon fonts, gas-tank
   progress bar with Brownian dots + playhead, dot WiFi meter; replaced the old
-  Yudho/Fuhrer VFX backdrops, which are deleted), **synthesised UI sound effects**
+  Yudho/Fuhrer VFX backdrops, which are deleted), the **PAPER teletype theme**
+  (cream paper + ink, unscii mono fonts, 1-bit dithered art, printed-form
+  frames/rules/field labels, ruler-tick progress, TELEX typewriter SFX),
+  **synthesised UI sound effects**
   (ES8311 speaker, selectable sound sets + volume), scrolling long titles, a
   Cover-Flow centre-tap fix, the settings cog icon, and the album-art-decode crash
   fix (JPEGIMAGE in internal SRAM). FONT setting (SANS/SLAB, Arvo Bold embedded;
-  overridden in PIXEL and GLYPH). **All of this still needs a full hardware
+  overridden in PIXEL, GLYPH and PAPER). **All of this still needs a full hardware
   verification pass** (cog, scrolling titles, and the decode crash fix have had a
   first on-device check). Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
   5.5.4 PowerShell profile, `idf.py set-target esp32p4`, `idf.py build flash

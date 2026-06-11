@@ -26,6 +26,7 @@ typedef enum {
     AUDIO_THEME_MODERN = 0,   /* clean sine set                          */
     AUDIO_THEME_PIXEL,        /* chiptune square set                     */
     AUDIO_THEME_AMBIENT,      /* soft, lower, longer-decay set           */
+    AUDIO_THEME_TELEX,        /* dry typewriter clicks (PAPER theme)     */
     AUDIO_THEME_COUNT
 } audio_theme_t;
 

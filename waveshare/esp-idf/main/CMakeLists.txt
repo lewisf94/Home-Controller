@@ -50,6 +50,8 @@ idf_component_register(
         "lv_font_dot_sym_20.c"  # GLYPH dotted FontAwesome icons 20px (fallback of dot_20)
         "lv_font_dot_sym_24.c"  # GLYPH dotted FontAwesome icons 24px (fallback of dot_24)
         "lv_font_dot_sym_28.c"  # GLYPH dotted FontAwesome icons 28px (fallback of dot_28)
+        "lv_font_mono_16.c"     # PAPER teletype text font 16px (unscii-8, gen_lvgl_font.py)
+        "lv_font_mono_24.c"     # PAPER teletype text font 24px (unscii-8, gen_lvgl_font.py)
         "audio.c"             # synthesised UI sound effects via ES8311 speaker
         # --- added in later checkpoints (see README.md roadmap) ---
         # "input.c"         # cp6: touch dispatch

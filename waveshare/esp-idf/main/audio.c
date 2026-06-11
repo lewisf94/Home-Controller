@@ -71,6 +71,15 @@ static const note_t BEL_SEL []  = { { 784, 90, 0.40f }, { 1175, 150, 0.40f } };
 static const note_t BEL_BACK[]  = { { 659, 90, 0.35f } };
 static const note_t BEL_CON []  = { { 784, 120, 0.40f }, { 1047, 120, 0.40f }, { 1319, 260, 0.40f } };
 
+/* TELEX: dry typewriter mechanics for the PAPER theme. Square-wave notes so
+ * short (5-12 ms) that the attack/decay envelope is most of the sound -- they
+ * read as key strikes, not tones. CONNECT is three rapid strikes and the
+ * carriage bell. */
+static const note_t TLX_TICK[]  = { { 1700, 6, 0.50f } };
+static const note_t TLX_SEL []  = { { 1250, 8, 0.50f }, { 740, 16, 0.45f } };
+static const note_t TLX_BACK[]  = { { 520, 12, 0.45f } };
+static const note_t TLX_CON []  = { { 980, 7, 0.45f }, { 980, 7, 0.45f }, { 980, 7, 0.45f }, { 1320, 70, 0.40f } };
+
 #define SFX4(t, s, b, c) { { t, sizeof(t)/sizeof((t)[0]) }, { s, sizeof(s)/sizeof((s)[0]) }, \
                            { b, sizeof(b)/sizeof((b)[0]) }, { c, sizeof(c)/sizeof((c)[0]) } }
 
@@ -83,6 +92,7 @@ static const sound_set_t k_sets[] = {
     { "MARIMBA", WAVE_TRI,    SFX4(MAR_TICK,  MAR_SEL,  MAR_BACK,  MAR_CON)  },
     { "ARCADE",  WAVE_SQUARE, SFX4(ARC_TICK,  ARC_SEL,  ARC_BACK,  ARC_CON)  },
     { "BELL",    WAVE_SINE,   SFX4(BEL_TICK,  BEL_SEL,  BEL_BACK,  BEL_CON)  },
+    { "TELEX",   WAVE_SQUARE, SFX4(TLX_TICK,  TLX_SEL,  TLX_BACK,  TLX_CON)  },
 };
 #define SET_COUNT ((int)(sizeof k_sets / sizeof k_sets[0]))
 
@@ -91,6 +101,7 @@ static const int k_theme_set[AUDIO_THEME_COUNT] = {
     [AUDIO_THEME_MODERN]  = 0,   /* SINE    */
     [AUDIO_THEME_PIXEL]   = 1,   /* CHIP    */
     [AUDIO_THEME_AMBIENT] = 2,   /* AMBIENT */
+    [AUDIO_THEME_TELEX]   = 6,   /* TELEX   */
 };
 
 static esp_codec_dev_handle_t s_spk      = NULL;

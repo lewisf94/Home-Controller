@@ -251,6 +251,13 @@ static const theme_t THEME_GLYPH  = { 0x080808, 0x111111, 0xF0F0F0, 0x7A7A7A, 0x
  * NOTE: porting to a future waveshare/esp-idf-ha/ is automatic (ui.c is copied);
  * CYD cyd_shared/ui.c would require a separate port. */
 static const theme_t THEME_PIXEL  = { 0x0A0C0A, 0x161616, 0xE6E6E6, 0x8A8A8A, 0x4A4A4A, 0x1C1C1C };
+/* PAPER: teletype data-brutalism. Warm cream "paper" + near-black ink, set in
+ * the unscii-8 monospace bitmap font; album art and thumbnails are reduced to
+ * a 1-bit ink-on-paper ordered dither; chrome is printed-form furniture --
+ * ruled frames, tick rulers, inverted ink title chips, corner data labels.
+ * The accent supplies the vermilion "live" pops (ORANGE is the canonical
+ * pairing; RED gives the maroon ledger look). */
+static const theme_t THEME_PAPER  = { 0xE8E0CC, 0xDED4BC, 0x26211A, 0x4A4438, 0x8A8170, 0xC4BAA0 };
 static const theme_t *s_th = &THEME_DARK;
 
 /* Light/Dark MODE (neutrals) is one setting; COLOUR THEME (accent) is a
@@ -259,10 +266,11 @@ static const theme_t *s_th = &THEME_DARK;
  * backgrounds (no pale/yellow). One accent drives selection highlights AND the
  * live elements (progress bar). */
 enum { THEME_DARK_IDX = 0, THEME_BLACK_IDX = 1, THEME_LIGHT_IDX = 2,
-       THEME_GLYPH_IDX = 3, THEME_PIXEL_IDX = 4,
-       THEME_COUNT = 5 };
+       THEME_GLYPH_IDX = 3, THEME_PIXEL_IDX = 4, THEME_PAPER_IDX = 5,
+       THEME_COUNT = 6 };
 static const theme_t *const k_theme_palettes[THEME_COUNT] = {
     &THEME_DARK, &THEME_BLACK, &THEME_LIGHT, &THEME_GLYPH, &THEME_PIXEL,
+    &THEME_PAPER,
 };
 static uint8_t s_theme = THEME_DARK_IDX;
 
@@ -359,6 +367,25 @@ static lv_image_dsc_t  s_pix_art_dsc  = {0};
 static const uint8_t  *s_last_raw_art  = NULL;    /* pointer into PSRAM art decode buf */
 static uint16_t        s_last_raw_w    = 0;
 static uint16_t        s_last_raw_h    = 0;
+
+/* === PAPER data-brutalist theme state ===
+ * Art + thumbs are reduced to TWO colours (paper + ink) by an 8x8 ordered
+ * Bayer dither on luminance -- the printed-halftone look of the teletype /
+ * data-sheet references. Pools mirror the PIXEL ones: rebuilt per browser
+ * build / art change, freed on switch-away. The card pool re-dithers at card
+ * resolution so the on-screen dither grain is 1:1 (never resampled). */
+#define PAPER_ART_RES  256                        /* == ART_W: 1:1 in the art box, no resample */
+static uint16_t       *s_paper_thumbs  = NULL;    /* PSRAM: dithered ALBUM_THUMB-res copies (CF source) */
+static uint16_t       *s_paper_art_buf = NULL;    /* PSRAM: PAPER_ART_RES^2 dithered now-playing art */
+static lv_image_dsc_t  s_paper_art_dsc = {0};
+/* Ruler-tick progress: a printed tick scale under the bar with a solid ink
+ * block riding the playhead (this theme's sibling of the GLYPH gas tank). */
+#define PAPER_TICK_COUNT  41                      /* 13 px pitch across PROG_W, every 5th taller */
+#define PAPER_TICK_PITCH  (PROG_W / (PAPER_TICK_COUNT - 1))
+#define PAPER_CUR_W   5
+#define PAPER_CUR_H   20
+static lv_obj_t *s_paper_cursor   = NULL;         /* playhead block (child of the NP screen) */
+static lv_obj_t *s_br_index_lbl   = NULL;         /* browser "NN / NN" album counter (PAPER) */
 
 /* True for any style that transforms cards per scroll position (Focus + CF). */
 #define BROWSER_STYLE_TRANSFORMS(s) ((s) == BROWSER_FOCUS || (s) == BROWSER_COVERFLOW)
@@ -460,7 +487,7 @@ static lv_obj_t       *s_cf_img = NULL;
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
 };
-static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT", "GLYPH", "PIXEL" };
+static const char *const k_theme_names[THEME_COUNT] = { "DARK", "BLACK", "LIGHT", "GLYPH", "PIXEL", "PAPER" };
 static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSEL", "FOCUS", "COVER FLOW" };
 
 /* Cached track state. The LVGL progress timer reads progress_ms /
@@ -545,6 +572,7 @@ static void refresh_play_icon(void);
 static void position_seek_thumb(int32_t pct);
 static bool is_glyph_theme(void);
 static bool is_pixel_theme(void);
+static bool is_paper_theme(void);
 static const lv_font_t *font_lg(void);
 static const lv_font_t *font_md(void);
 static const lv_font_t *font_sm(void);
@@ -555,6 +583,9 @@ extern const lv_font_t lv_font_dot_24;
 extern const lv_font_t lv_font_dot_28;
 static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                              uint16_t *dst, uint16_t dw, uint16_t dh);
+static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
+                            uint16_t *dst, uint16_t dw, uint16_t dh);
+static lv_obj_t *paper_rule(lv_obj_t *parent, int x, int y, int w, int h);
 /* Gas-particle progress bar */
 static void prog_particles_start(lv_obj_t *screen);
 static void prog_particles_stop(void);
@@ -629,6 +660,78 @@ static void style_button_press(lv_obj_t *btn)
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
 }
 
+/* Shared flat-key styling for every boxy button (settings rows, tabs, back
+ * keys, transport keys). Radius-3 charcoal keys normally; PAPER squares them
+ * off and frames each in a thin ink border -- the ruled-cell look of the
+ * data-sheet references. */
+static void style_key_btn(lv_obj_t *btn)
+{
+    lv_obj_set_style_radius(btn, is_paper_theme() ? 0 : 3, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    if (is_paper_theme()) {
+        lv_obj_set_style_border_width(btn, 2, 0);
+        lv_obj_set_style_border_color(btn, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
+    }
+}
+
+/* A printed hairline: 1px (or thicker) ink rule used to divide the PAPER
+ * screens into form zones. Inert to input. */
+static lv_obj_t *paper_rule(lv_obj_t *parent, int x, int y, int w, int h)
+{
+    lv_obj_t *r = lv_obj_create(parent);
+    lv_obj_set_size(r, w, h);
+    lv_obj_set_pos(r, x, y);
+    lv_obj_set_style_radius(r, 0, 0);
+    lv_obj_set_style_border_width(r, 0, 0);
+    lv_obj_set_style_pad_all(r, 0, 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_bg_opa(r, (lv_opa_t)200, 0);
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    return r;
+}
+
+/* Full-screen ink frame: the printed-form outer border every PAPER screen
+ * gets. Transparent fill, border only, inert to input -- children created
+ * after it draw on top. */
+static void paper_frame(lv_obj_t *screen)
+{
+    lv_obj_t *f = lv_obj_create(screen);
+    lv_obj_set_size(f, SCREEN_W - 8, SCREEN_H - 8);
+    lv_obj_set_pos(f, 4, 4);
+    lv_obj_set_style_radius(f, 0, 0);
+    lv_obj_set_style_bg_opa(f, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(f, 2, 0);
+    lv_obj_set_style_border_color(f, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_border_opa(f, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(f, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+}
+
+/* PAPER screen titles print as inverted ink chips (8562-style title bars):
+ * ink slab behind paper-coloured letter-spaced text. No-op in other themes. */
+static void paper_title_chip(lv_obj_t *title)
+{
+    if (!is_paper_theme()) return;
+    lv_obj_set_style_text_color(title, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_color(title, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_bg_opa(title, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(title, 10, 0);
+    lv_obj_set_style_pad_ver(title, 3, 0);
+}
+
+/* Tiny tracked-out uppercase field label in the accent -- the "APPROXIMATE
+ * TIME OF DELIVERY" corner labels of the reference sheets. PAPER chrome. */
+static lv_obj_t *paper_field_label(lv_obj_t *parent, const char *txt, int x, int y)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, txt);
+    lv_obj_set_style_text_color(l, lv_color_hex(accent_color()), 0);
+    lv_obj_set_style_text_font(l, font_sm(), 0);
+    lv_obj_set_style_text_letter_space(l, 2, 0);
+    lv_obj_set_pos(l, x, y);
+    return l;
+}
+
 /* Three small vertical faders (mixer look) drawn from rects -- a "controls"
  * glyph for the settings button. Avoids embedding a new symbol font. The button
  * must have pad_all 0 so the TOP_LEFT-aligned children sit at known offsets. */
@@ -639,9 +742,12 @@ static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t
 {
     lv_obj_t *pill = lv_button_create(parent);
     lv_obj_set_size(pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(pill, lv_color_hex(s_th->surface), 0);
+    /* PAPER: the pill prints as an inverted ink tab (square, ink slab, paper
+     * text) sitting on the screen's rules -- not a floating rounded chip. */
+    lv_obj_set_style_bg_color(pill,
+        lv_color_hex(is_paper_theme() ? s_th->text : s_th->surface), 0);
     lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(pill, 14, 0);
+    lv_obj_set_style_radius(pill, is_paper_theme() ? 0 : 14, 0);
     lv_obj_set_style_border_width(pill, 0, 0);
     lv_obj_set_style_shadow_width(pill, 0, 0);
     lv_obj_set_style_pad_hor(pill, 14, 0);
@@ -651,7 +757,8 @@ static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t
 
     lv_obj_t *lbl = lv_label_create(pill);
     lv_label_set_text(lbl, txt);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_color(lbl,
+        lv_color_hex(is_paper_theme() ? s_th->bg : s_th->text2), 0);
     lv_obj_set_style_text_font(lbl, font_sm(), 0);
     lv_obj_set_style_text_letter_space(lbl, 2, 0);
     lv_obj_center(lbl);
@@ -786,6 +893,26 @@ static void build_browser_screen(void)
         }
     }
 
+    /* PAPER theme: pre-dither every thumbnail to ink-on-paper duotone at the
+     * raw thumb resolution. Cover Flow and the pool-failure fallback sample
+     * these; Carousel/Focus get a sharper re-dither at card size below. */
+    if (is_paper_theme() && s_card_count > 0) {
+        size_t pool_sz = s_card_count * ALBUM_THUMB_BYTES;
+        s_paper_thumbs = heap_caps_malloc(pool_sz, MALLOC_CAP_SPIRAM);
+        if (s_paper_thumbs) {
+            for (size_t i = 0; i < s_card_count; i++) {
+                const uint16_t *src = thumb_src(i);
+                if (src) {
+                    paperize_rgb565(src, ALBUM_THUMB_W, ALBUM_THUMB_H,
+                                    s_paper_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H,
+                                    ALBUM_THUMB_W, ALBUM_THUMB_H);
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "PAPER: thumb pool alloc failed (%zu B SPIRAM)", pool_sz);
+        }
+    }
+
     /* Card-native pool: every thumb pre-scaled to CARD_SIZE with this theme's
      * look, so Carousel/Focus card images blit 1:1 (scale == LV_SCALE_NONE)
      * instead of resampling 220 -> 286 on every frame. Allocated once,
@@ -803,6 +930,14 @@ static void build_browser_screen(void)
                     nearest_resize_rgb565(s_pix_thumbs + i * PIX_THUMB_RES * PIX_THUMB_RES,
                                           PIX_THUMB_RES, PIX_THUMB_RES,
                                           dst, CARD_SIZE, CARD_SIZE);
+                } else if (is_paper_theme()) {
+                    /* Dither AT card resolution (resample inside paperize) so
+                     * the on-screen halftone grain is exactly 1px -- upscaling
+                     * a pre-dithered thumb would smear the pattern. */
+                    const uint16_t *t = thumb_src(i);
+                    if (t) paperize_rgb565(t, ALBUM_THUMB_W, ALBUM_THUMB_H,
+                                           dst, CARD_SIZE, CARD_SIZE);
+                    else   memset(dst, 0, (size_t)CARD_SIZE * CARD_SIZE * sizeof(uint16_t));
                 } else {
                     const uint16_t *t = thumb_src(i);
                     if (t) nearest_resize_rgb565(t, ALBUM_THUMB_W, ALBUM_THUMB_H,
@@ -822,7 +957,18 @@ static void build_browser_screen(void)
         lv_obj_t *card = lv_obj_create(s_browser_scroller);
         lv_obj_set_size(card, cs(), cs());
         lv_obj_set_style_radius(card, 0, 0);
-        lv_obj_set_style_border_width(card, 0, 0);
+        /* PAPER frames every cover in ink (ruled-cell look); the playing album
+         * keeps its accent border in all themes. Applying the playing border
+         * here (not just on track change) preserves it across theme rebuilds. */
+        if ((int)i == s_playing_card_idx) {
+            lv_obj_set_style_border_color(card, lv_color_hex(accent_color()), 0);
+            lv_obj_set_style_border_width(card, 3, 0);
+        } else if (is_paper_theme()) {
+            lv_obj_set_style_border_color(card, lv_color_hex(s_th->text), 0);
+            lv_obj_set_style_border_width(card, 2, 0);
+        } else {
+            lv_obj_set_style_border_width(card, 0, 0);
+        }
         lv_obj_set_style_pad_all(card, 0, 0);
         lv_obj_set_style_bg_color(card, lv_color_hex(s_th->bg), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -856,6 +1002,13 @@ static void build_browser_screen(void)
                 s_card_dscs[i].header.h   = PIX_THUMB_RES;
                 s_card_dscs[i].data       = (const uint8_t *)pix;
                 s_card_dscs[i].data_size  = PIX_THUMB_RES * PIX_THUMB_RES * sizeof(uint16_t);
+            } else if (is_paper_theme() && s_paper_thumbs) {
+                const uint16_t *pap = s_paper_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
+                s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
+                s_card_dscs[i].header.w   = ALBUM_THUMB_W;
+                s_card_dscs[i].header.h   = ALBUM_THUMB_H;
+                s_card_dscs[i].data       = (const uint8_t *)pap;
+                s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
             } else {
                 s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
                 s_card_dscs[i].header.w   = ALBUM_THUMB_W;
@@ -940,12 +1093,30 @@ static void build_browser_screen(void)
     /* Apply initial transforms (CF calls cf_render; Focus uses image scales). */
     apply_card_transforms();
 
+    /* PAPER printed-form furniture. The frame is created after the scroller so
+     * its border paints over cards sliding past the screen edge -- covers run
+     * "under" the printed frame. The index counter is the data-sheet "NN / NN"
+     * record readout, kept current by on_browser_scroll. */
+    s_br_index_lbl = NULL;
+    if (is_paper_theme()) {
+        paper_frame(s_screen_browser);
+        paper_rule(s_screen_browser, 8, 26, SCREEN_W - 16, 1);
+        s_br_index_lbl = lv_label_create(s_screen_browser);
+        lv_obj_set_style_text_color(s_br_index_lbl, lv_color_hex(accent_color()), 0);
+        lv_obj_set_style_text_font(s_br_index_lbl, font_sm(), 0);
+        lv_obj_set_style_text_letter_space(s_br_index_lbl, 2, 0);
+        lv_obj_align(s_br_index_lbl, LV_ALIGN_TOP_MID, 0, 5);
+        char ib[20];
+        snprintf(ib, sizeof ib, "%02d / %02d", s_card_count ? 1 : 0, (int)s_card_count);
+        lv_label_set_text(s_br_index_lbl, ib);
+    }
+
     /* Selection marker: a short accent underline fixed beneath the centred card
      * slot (cards always centre-snap to the screen middle), so the active album
      * is unambiguous even in flat Carousel mode. Toggleable in Settings. */
     s_sel_line = lv_obj_create(s_screen_browser);
     lv_obj_set_size(s_sel_line, 88, 3);
-    lv_obj_set_style_radius(s_sel_line, 2, 0);
+    lv_obj_set_style_radius(s_sel_line, is_paper_theme() ? 0 : 2, 0);
     lv_obj_set_style_border_width(s_sel_line, 0, 0);
     lv_obj_set_style_bg_color(s_sel_line, lv_color_hex(accent_color()), 0);
     lv_obj_set_style_bg_opa(s_sel_line, LV_OPA_COVER, 0);
@@ -1051,6 +1222,15 @@ static void build_np_screen(void)
     lv_obj_remove_flag(s_screen_np, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_np, on_gesture, LV_EVENT_GESTURE, NULL);
 
+    /* PAPER printed-form furniture: outer ink frame + horizontal rules dividing
+     * the sheet into its zones (top bar / art + data fields / title block).
+     * Created first so every functional element prints on top of the rules. */
+    if (is_paper_theme()) {
+        paper_frame(s_screen_np);
+        paper_rule(s_screen_np, 8, 42,  SCREEN_W - 16, 1);
+        paper_rule(s_screen_np, 8, 298, SCREEN_W - 16, 1);
+    }
+
     /* Tappable "albums" hint pill at the top (matches the "now playing" pill on
      * the browser). Tap or swipe down to go back to the browser. */
     lv_obj_t *hint = make_hint_pill(s_screen_np, LV_SYMBOL_DOWN "  ALBUMS",
@@ -1069,7 +1249,15 @@ static void build_np_screen(void)
      * aspect-preserved, no crop. CONTAIN re-applies on every src change. */
     lv_image_set_inner_align(s_np_art, LV_IMAGE_ALIGN_CONTAIN);
     lv_obj_set_style_radius(s_np_art, 0, 0);
-    lv_obj_set_style_border_width(s_np_art, 0, 0);
+    /* PAPER: the cover prints inside an ink plate frame (PAPER art is dithered
+     * at exactly ART_W so the frame sits flush on the image). */
+    if (is_paper_theme()) {
+        lv_obj_set_style_border_width(s_np_art, 2, 0);
+        lv_obj_set_style_border_color(s_np_art, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_border_opa(s_np_art, LV_OPA_COVER, 0);
+    } else {
+        lv_obj_set_style_border_width(s_np_art, 0, 0);
+    }
     if (s_art_dsc && s_art_dsc->data) {
         lv_image_set_src(s_np_art, s_art_dsc);
     }
@@ -1090,11 +1278,24 @@ static void build_np_screen(void)
 
     s_np_device = lv_label_create(s_screen_np);
     lv_label_set_text(s_np_device, "");
-    lv_obj_set_width(s_np_device, SCREEN_W - 32);
-    lv_obj_set_style_text_align(s_np_device, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(s_np_device, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_text_font(s_np_device, font_sm(), 0);
-    lv_obj_set_pos(s_np_device, 16, NP_DEVICE_Y);
+    if (is_paper_theme()) {
+        /* PAPER: the device becomes a labelled data field in the empty left
+         * column beside the art -- "OUTPUT" corner label over the value,
+         * left-aligned like the reference sheets' carrier/transport cells. */
+        paper_field_label(s_screen_np, "OUTPUT", 28, 58);
+        lv_obj_set_width(s_np_device, ART_X - 44);
+        lv_obj_set_style_text_align(s_np_device, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_text_color(s_np_device, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_text_font(s_np_device, font_sm(), 0);
+        lv_label_set_long_mode(s_np_device, LV_LABEL_LONG_DOT);
+        lv_obj_set_pos(s_np_device, 28, 84);
+    } else {
+        lv_obj_set_width(s_np_device, SCREEN_W - 32);
+        lv_obj_set_style_text_align(s_np_device, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(s_np_device, lv_color_hex(s_th->dim), 0);
+        lv_obj_set_style_text_font(s_np_device, font_sm(), 0);
+        lv_obj_set_pos(s_np_device, 16, NP_DEVICE_Y);
+    }
 
     s_np_progress = lv_bar_create(s_screen_np);
     lv_obj_set_size(s_np_progress, PROG_W, PROG_H);
@@ -1105,8 +1306,8 @@ static void build_np_screen(void)
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(accent_color()), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(s_np_progress, 3, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_np_progress, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_np_progress, is_paper_theme() ? 0 : 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_np_progress, is_paper_theme() ? 0 : 3, LV_PART_INDICATOR);
     lv_obj_remove_flag(s_np_progress, LV_OBJ_FLAG_CLICKABLE);
 
     /* Elapsed (left) / remaining (right) timestamps flanking the bar. Montserrat
@@ -1158,6 +1359,32 @@ static void build_np_screen(void)
     lv_obj_add_flag(s_seek_thumb, LV_OBJ_FLAG_HIDDEN);
     position_seek_thumb(0);
 
+    /* PAPER ruler: a printed tick scale under the bar (taller tick every 5th,
+     * like the reference radio dial) and a solid ink block riding the playhead.
+     * The block doubles as the scrub indicator -- the round thumb stays hidden
+     * in this theme (see on_seek_start). All inert to input so the seek overlay
+     * underneath keeps receiving the drag. */
+    s_paper_cursor = NULL;
+    if (is_paper_theme()) {
+        for (int i = 0; i < PAPER_TICK_COUNT; i++) {
+            bool major = (i % 5) == 0;
+            lv_obj_t *tk = paper_rule(s_screen_np,
+                                      PROG_X + i * PAPER_TICK_PITCH,
+                                      PROG_Y + PROG_H + 3,
+                                      1, major ? 10 : 5);
+            if (!major) lv_obj_set_style_bg_opa(tk, (lv_opa_t)130, 0);
+        }
+        s_paper_cursor = lv_obj_create(s_screen_np);
+        lv_obj_set_size(s_paper_cursor, PAPER_CUR_W, PAPER_CUR_H);
+        lv_obj_set_style_radius(s_paper_cursor, 0, 0);
+        lv_obj_set_style_border_width(s_paper_cursor, 0, 0);
+        lv_obj_set_style_bg_color(s_paper_cursor, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_bg_opa(s_paper_cursor, LV_OPA_COVER, 0);
+        lv_obj_remove_flag(s_paper_cursor, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_pos(s_paper_cursor, PROG_X - PAPER_CUR_W / 2,
+                       PROG_Y + PROG_H / 2 - PAPER_CUR_H / 2);
+    }
+
     /* Transport keys: prev / play-pause / next. Square flat tactile keys
      * matching the settings buttons (radius 3), with a pressed accent flash.
      * Created after the seek overlay so they win the hit-test where the two
@@ -1173,8 +1400,7 @@ static void build_np_screen(void)
         lv_obj_t *key = lv_button_create(s_screen_np);
         lv_obj_set_size(key, TKEY_SZ, TKEY_SZ);
         lv_obj_set_pos(key, x0 + i * (TKEY_SZ + TKEY_GAP), TKEY_Y);
-        lv_obj_set_style_radius(key, 3, 0);
-        lv_obj_set_style_shadow_width(key, 0, 0);
+        style_key_btn(key);
         lv_obj_set_style_bg_color(key, lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_bg_opa(key, LV_OPA_COVER, 0);
         style_button_press(key);
@@ -1209,7 +1435,9 @@ static void build_np_screen(void)
 
     s_vol_hud = lv_label_create(s_screen_np);
     lv_label_set_text(s_vol_hud, "");
-    lv_obj_set_style_text_color(s_vol_hud, lv_color_hex(0xFF4040), 0);
+    /* The fixed warm alert hues vanish on PAPER's cream -- use the accent. */
+    lv_obj_set_style_text_color(s_vol_hud,
+        lv_color_hex(is_paper_theme() ? accent_color() : 0xFF4040), 0);
     lv_obj_set_style_text_font(s_vol_hud, font_md(), 0);
     lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -8, 6);
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
@@ -1221,7 +1449,8 @@ static void build_np_screen(void)
     lv_label_set_text(s_toast, "");
     lv_obj_set_width(s_toast, SCREEN_W - 40);
     lv_obj_set_style_text_align(s_toast, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(s_toast, lv_color_hex(0xFFA000), 0);
+    lv_obj_set_style_text_color(s_toast,
+        lv_color_hex(is_paper_theme() ? accent_color() : 0xFFA000), 0);
     lv_obj_set_style_text_font(s_toast, font_md(), 0);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
@@ -1241,6 +1470,12 @@ static void build_np_screen(void)
         lv_obj_add_flag(vol_ico, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(vol_ico, on_open_volume, LV_EVENT_CLICKED, NULL);
     }
+    /* PAPER: the fader is a labelled data field like OUTPUT -- swap the icon
+     * for a tracked-out accent "LEVEL" corner label. */
+    if (is_paper_theme()) {
+        lv_obj_add_flag(vol_ico, LV_OBJ_FLAG_HIDDEN);
+        paper_field_label(s_screen_np, "LEVEL", 700, 44);
+    }
 
     s_np_volume = lv_slider_create(s_screen_np);
     lv_obj_set_size(s_np_volume, 44, 236);          /* h > w -> vertical slider; 44px wide for touch */
@@ -1254,9 +1489,9 @@ static void build_np_screen(void)
         lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(s_th->track), LV_PART_MAIN);
         lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(accent_color()), LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(s_np_volume, lv_color_hex(accent_color()), LV_PART_KNOB);
-        lv_obj_set_style_radius(s_np_volume, 6, LV_PART_MAIN);
-        lv_obj_set_style_radius(s_np_volume, 6, LV_PART_INDICATOR);
-        lv_obj_set_style_radius(s_np_volume, 22, LV_PART_KNOB);
+        lv_obj_set_style_radius(s_np_volume, is_paper_theme() ? 0 : 6, LV_PART_MAIN);
+        lv_obj_set_style_radius(s_np_volume, is_paper_theme() ? 0 : 6, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(s_np_volume, is_paper_theme() ? 0 : 22, LV_PART_KNOB);
         lv_obj_set_style_pad_all(s_np_volume, 4, LV_PART_KNOB);
     }
     /* PRESSED sets s_vol_dragging so on_gesture won't misread the drag as a
@@ -1328,10 +1563,21 @@ static bool is_pixel_theme(void)
     return s_theme == THEME_PIXEL_IDX;
 }
 
+static bool is_paper_theme(void)
+{
+    return s_theme == THEME_PAPER_IDX;
+}
+
 /* 1bpp bitmap fonts for the PIXEL retro theme (Press Start 2P + FA5 symbols).
  * Generated offline by lv_font_conv; committed as .c files in main/. */
 extern const lv_font_t lv_font_pixel_16;
 extern const lv_font_t lv_font_pixel_24;
+
+/* Monospace teletype fonts for the PAPER theme: unscii-8 baked at 2x/3x its
+ * 8px grid by scripts/gen_lvgl_font.py (clean pixel render, no --dots), with
+ * Montserrat fallbacks carrying the LVGL symbol glyphs + accented characters. */
+extern const lv_font_t lv_font_mono_16;
+extern const lv_font_t lv_font_mono_24;
 
 /* Bespoke round-dot matrix fonts for the GLYPH theme (each glyph is built from
  * round dots; generated by scripts/gen_lvgl_font.py --dots). Declared up with the
@@ -1350,6 +1596,7 @@ static const lv_font_t *font_lg(void)
      * the 8px grid) for body/title text; long titles scroll (see build_*_screen).
      * The 32px dot_28 stays for the chunky transport icons. */
     if (is_glyph_theme()) return &lv_font_dot_24;
+    if (is_paper_theme()) return &lv_font_mono_24;
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_28;
     return &lv_font_montserrat_28;
 }
@@ -1357,6 +1604,7 @@ static const lv_font_t *font_md(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_16;
     if (is_glyph_theme()) return &lv_font_dot_24;
+    if (is_paper_theme()) return &lv_font_mono_16;
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_24;
     return &lv_font_montserrat_24;
 }
@@ -1364,6 +1612,7 @@ static const lv_font_t *font_sm(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_16;
     if (is_glyph_theme()) return &lv_font_dot_20;
+    if (is_paper_theme()) return &lv_font_mono_16;
     return &lv_font_montserrat_20;
 }
 
@@ -1400,6 +1649,49 @@ static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
             b &= 0xF0;
             /* Repack to RGB565. */
             dst[(size_t)dy * dw + dx] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+        }
+    }
+}
+
+/* PAPER duotone pipeline: nearest resample + 8x8 ordered Bayer dither of the
+ * LUMINANCE down to one bit, mapped to the active palette's paper/ink colours
+ * -- printed halftone, exactly the 1-bit imagery of the reference sheets. The
+ * 64-level matrix keeps full covers reading as fine print grain (the 4x4 used
+ * by PIXEL is too coarse once there's no colour left to carry the image).
+ * Same call shape as pixelate_rgb565; resamples internally, so callers dither
+ * directly at the resolution that hits the screen. */
+static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
+                            uint16_t *dst, uint16_t dw, uint16_t dh)
+{
+    static const uint8_t bayer8[8][8] = {
+        {  0, 32,  8, 40,  2, 34, 10, 42 },
+        { 48, 16, 56, 24, 50, 18, 58, 26 },
+        { 12, 44,  4, 36, 14, 46,  6, 38 },
+        { 60, 28, 52, 20, 62, 30, 54, 22 },
+        {  3, 35, 11, 43,  1, 33,  9, 41 },
+        { 51, 19, 59, 27, 49, 17, 57, 25 },
+        { 15, 47,  7, 39, 13, 45,  5, 37 },
+        { 63, 31, 55, 23, 61, 29, 53, 21 },
+    };
+    uint32_t ink = s_th->text, pap = s_th->bg;
+    uint16_t ink_px = (uint16_t)((((ink >> 19) & 0x1Fu) << 11) |
+                                 (((ink >> 10) & 0x3Fu) <<  5) |
+                                  ((ink >>  3) & 0x1Fu));
+    uint16_t pap_px = (uint16_t)((((pap >> 19) & 0x1Fu) << 11) |
+                                 (((pap >> 10) & 0x3Fu) <<  5) |
+                                  ((pap >>  3) & 0x1Fu));
+    for (uint16_t dy = 0; dy < dh; dy++) {
+        for (uint16_t dx = 0; dx < dw; dx++) {
+            int sx = (int)dx * sw / dw;
+            int sy = (int)dy * sh / dh;
+            uint16_t pix = src[(size_t)sy * sw + sx];
+            int r = ((pix >> 11) & 0x1F) << 3;
+            int g = ((pix >>  5) & 0x3F) << 2;
+            int b = ( pix        & 0x1F) << 3;
+            /* Rec.601 luma; threshold 2..254 from the Bayer cell. */
+            int lum = (r * 299 + g * 587 + b * 114) / 1000;
+            int thr = bayer8[dy & 7][dx & 7] * 4 + 2;
+            dst[(size_t)dy * dw + dx] = (lum > thr) ? pap_px : ink_px;
         }
     }
 }
@@ -1584,6 +1876,10 @@ static void cf_render(void)
             src   = s_pix_thumbs + i * PIX_THUMB_RES * PIX_THUMB_RES;
             src_w = PIX_THUMB_RES;
             src_h = PIX_THUMB_RES;
+        } else if (is_paper_theme() && s_paper_thumbs) {
+            src   = s_paper_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
+            src_w = ALBUM_THUMB_W;
+            src_h = ALBUM_THUMB_H;
         } else {
             /* PSRAM copy when available -- the per-column sampling below is
              * exactly the read pattern that hurts through the flash cache. */
@@ -2077,12 +2373,15 @@ static void title_reform(void)
     }
 }
 
-/* A left-aligned uppercase section header used throughout the Settings pages. */
+/* A left-aligned uppercase section header used throughout the Settings pages.
+ * PAPER prints these as the references' accent corner labels -- vermilion
+ * tracked-out captions naming each ruled field. */
 static lv_obj_t *settings_header(lv_obj_t *parent, const char *txt, int x, int y)
 {
     lv_obj_t *l = lv_label_create(parent);
     lv_label_set_text(l, txt);
-    lv_obj_set_style_text_color(l, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_color(l,
+        lv_color_hex(is_paper_theme() ? accent_color() : s_th->text2), 0);
     lv_obj_set_style_text_font(l, font_md(), 0);
     lv_obj_set_style_text_letter_space(l, 2, 0);
     lv_obj_align(l, LV_ALIGN_TOP_LEFT, x, y);
@@ -2116,8 +2415,7 @@ static void build_settings_screen(void)
     lv_obj_set_size(back, 120, 44);
     lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
     lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
-    lv_obj_set_style_radius(back, 3, 0);
-    lv_obj_set_style_shadow_width(back, 0, 0);
+    style_key_btn(back);
     lv_obj_add_event_cb(back, on_settings_back, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
@@ -2132,6 +2430,7 @@ static void build_settings_screen(void)
     /* Letter-spacing gives the uppercase title a cleaner, more deliberate feel. */
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+    paper_title_chip(title);
 
     /* Category tabs: one chip per page; tapping one swaps the visible page. */
     static const char *const k_tab_names[SET_TAB_COUNT] = { "DISPLAY", "SOUND" };
@@ -2139,8 +2438,7 @@ static void build_settings_screen(void)
         lv_obj_t *chip = lv_button_create(s_screen_settings);
         lv_obj_set_size(chip, 220, 44);
         lv_obj_align(chip, LV_ALIGN_TOP_MID, (int)((i - 0.5f) * 232.0f), 60);
-        lv_obj_set_style_radius(chip, 3, 0);
-        lv_obj_set_style_shadow_width(chip, 0, 0);
+        style_key_btn(chip);
         style_button_press(chip);
         lv_obj_add_event_cb(chip, on_settings_tab, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(chip);
@@ -2156,14 +2454,13 @@ static void build_settings_screen(void)
     s_set_pages[0] = pg_disp;
 
     settings_header(pg_disp, "MODE", 24, 6);
-    /* 5 themes in 2 rows (3 + 2): row = i/3, col = i%3, uniform centering. */
+    /* 6 themes in a 2x3 grid: row = i/3, col = i%3, uniform centering. */
     for (int i = 0; i < THEME_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(pg_disp);
         lv_obj_set_size(btn, 170, 48);
         int row = i / 3, col = i % 3;
         lv_obj_align(btn, LV_ALIGN_TOP_MID, (col - 1) * 176, 38 + row * 54);
-        lv_obj_set_style_radius(btn, 3, 0);
-        lv_obj_set_style_shadow_width(btn, 0, 0);
+        style_key_btn(btn);
         style_button_press(btn);
         lv_obj_add_event_cb(btn, on_theme_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(btn);
@@ -2178,7 +2475,9 @@ static void build_settings_screen(void)
         lv_obj_t *btn = lv_button_create(pg_disp);
         lv_obj_set_size(btn, 168, 48);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 176) - 264, 190);
-        lv_obj_set_style_radius(btn, 3, 0);
+        /* Swatches keep their own border (the selection ring set by
+         * refresh_accent_selection) -- square the corners only in PAPER. */
+        lv_obj_set_style_radius(btn, is_paper_theme() ? 0 : 3, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_add_event_cb(btn, on_accent_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(btn);
@@ -2193,8 +2492,7 @@ static void build_settings_screen(void)
         lv_obj_t *btn = lv_button_create(pg_disp);
         lv_obj_set_size(btn, 170, 48);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 176, 286);
-        lv_obj_set_style_radius(btn, 3, 0);
-        lv_obj_set_style_shadow_width(btn, 0, 0);
+        style_key_btn(btn);
         lv_obj_add_event_cb(btn, on_browser_style_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(btn);
         lv_obj_set_style_text_font(lbl, font_sm(), 0);
@@ -2203,10 +2501,11 @@ static void build_settings_screen(void)
         s_brstyle_labels[i] = lbl;
     }
 
-    /* FONT chooser: hidden in GLYPH mode -- that theme's round-dot font is fixed
-     * and the SANS/SLAB choice doesn't apply. Clear the refs so refresh_font_
-     * selection() skips the (non-existent) buttons. */
-    if (is_glyph_theme()) {
+    /* FONT chooser: hidden in GLYPH and PAPER -- those themes' bespoke fonts
+     * (round-dot / teletype mono) are fixed and the SANS/SLAB choice doesn't
+     * apply. Clear the refs so refresh_font_selection() skips the
+     * (non-existent) buttons. */
+    if (is_glyph_theme() || is_paper_theme()) {
         memset(s_font_btns,   0, sizeof s_font_btns);
         memset(s_font_labels, 0, sizeof s_font_labels);
     } else {
@@ -2216,8 +2515,7 @@ static void build_settings_screen(void)
             lv_obj_t *btn = lv_button_create(pg_disp);
             lv_obj_set_size(btn, 256, 48);
             lv_obj_align(btn, LV_ALIGN_TOP_MID, (i == 0) ? -132 : 132, 382);
-            lv_obj_set_style_radius(btn, 3, 0);
-            lv_obj_set_style_shadow_width(btn, 0, 0);
+            style_key_btn(btn);
             style_button_press(btn);
             lv_obj_add_event_cb(btn, on_font_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
             lv_obj_t *lbl = lv_label_create(btn);
@@ -2233,8 +2531,7 @@ static void build_settings_screen(void)
     s_line_toggle_btn = lv_button_create(pg_disp);
     lv_obj_set_size(s_line_toggle_btn, 520, 48);
     lv_obj_align(s_line_toggle_btn, LV_ALIGN_TOP_MID, 0, 482);
-    lv_obj_set_style_radius(s_line_toggle_btn, 3, 0);
-    lv_obj_set_style_shadow_width(s_line_toggle_btn, 0, 0);
+    style_key_btn(s_line_toggle_btn);
     style_button_press(s_line_toggle_btn);
     lv_obj_add_event_cb(s_line_toggle_btn, on_line_toggle, LV_EVENT_CLICKED, NULL);
     s_line_toggle_lbl = lv_label_create(s_line_toggle_btn);
@@ -2261,8 +2558,9 @@ static void build_settings_screen(void)
     lv_obj_set_style_bg_color(s_brightness_slider, lv_color_hex(s_th->track), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_brightness_slider, lv_color_hex(accent_color()), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(s_brightness_slider, lv_color_hex(accent_color()), LV_PART_KNOB);
-    lv_obj_set_style_radius(s_brightness_slider, 4, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_brightness_slider, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_brightness_slider, is_paper_theme() ? 0 : 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_brightness_slider, is_paper_theme() ? 0 : 4, LV_PART_INDICATOR);
+    if (is_paper_theme()) lv_obj_set_style_radius(s_brightness_slider, 0, LV_PART_KNOB);
     lv_obj_add_event_cb(s_brightness_slider, on_brightness_changed,  LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_brightness_slider, on_brightness_released, LV_EVENT_RELEASED,      NULL);
 
@@ -2270,8 +2568,7 @@ static void build_settings_screen(void)
     s_fps_toggle_btn = lv_button_create(pg_disp);
     lv_obj_set_size(s_fps_toggle_btn, 520, 48);
     lv_obj_align(s_fps_toggle_btn, LV_ALIGN_TOP_MID, 0, 682);
-    lv_obj_set_style_radius(s_fps_toggle_btn, 3, 0);
-    lv_obj_set_style_shadow_width(s_fps_toggle_btn, 0, 0);
+    style_key_btn(s_fps_toggle_btn);
     style_button_press(s_fps_toggle_btn);
     lv_obj_add_event_cb(s_fps_toggle_btn, on_fps_toggle, LV_EVENT_CLICKED, NULL);
     s_fps_toggle_lbl = lv_label_create(s_fps_toggle_btn);
@@ -2283,8 +2580,7 @@ static void build_settings_screen(void)
         lv_obj_t *btn = lv_button_create(pg_disp);
         lv_obj_set_size(btn, 520, 48);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 786 + i * 54);
-        lv_obj_set_style_radius(btn, 3, 0);
-        lv_obj_set_style_shadow_width(btn, 0, 0);
+        style_key_btn(btn);
         lv_obj_add_event_cb(btn, on_transition_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(btn);
         lv_obj_set_style_text_font(lbl, font_md(), 0);
@@ -2301,8 +2597,7 @@ static void build_settings_screen(void)
     s_sound_toggle_btn = lv_button_create(pg_snd);
     lv_obj_set_size(s_sound_toggle_btn, 520, 48);
     lv_obj_align(s_sound_toggle_btn, LV_ALIGN_TOP_MID, 0, 38);
-    lv_obj_set_style_radius(s_sound_toggle_btn, 3, 0);
-    lv_obj_set_style_shadow_width(s_sound_toggle_btn, 0, 0);
+    style_key_btn(s_sound_toggle_btn);
     style_button_press(s_sound_toggle_btn);
     lv_obj_add_event_cb(s_sound_toggle_btn, on_sound_toggle, LV_EVENT_CLICKED, NULL);
     s_sound_toggle_lbl = lv_label_create(s_sound_toggle_btn);
@@ -2328,8 +2623,9 @@ static void build_settings_screen(void)
     lv_obj_set_style_bg_color(s_volume_slider, lv_color_hex(s_th->track), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_volume_slider, lv_color_hex(accent_color()), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(s_volume_slider, lv_color_hex(accent_color()), LV_PART_KNOB);
-    lv_obj_set_style_radius(s_volume_slider, 4, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_volume_slider, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_volume_slider, is_paper_theme() ? 0 : 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_volume_slider, is_paper_theme() ? 0 : 4, LV_PART_INDICATOR);
+    if (is_paper_theme()) lv_obj_set_style_radius(s_volume_slider, 0, LV_PART_KNOB);
     lv_obj_add_event_cb(s_volume_slider, on_volume_changed,  LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_volume_slider, on_volume_released, LV_EVENT_RELEASED,      NULL);
 
@@ -2342,8 +2638,7 @@ static void build_settings_screen(void)
         lv_obj_set_size(btn, 124, 44);
         int row = i / 4, col = i % 4;
         lv_obj_align(btn, LV_ALIGN_TOP_MID, (int)((col - 1.5f) * 132.0f), 220 + row * 52);
-        lv_obj_set_style_radius(btn, 3, 0);
-        lv_obj_set_style_shadow_width(btn, 0, 0);
+        style_key_btn(btn);
         style_button_press(btn);
         lv_obj_add_event_cb(btn, on_sound_set_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         lv_obj_t *lbl = lv_label_create(btn);
@@ -2352,6 +2647,13 @@ static void build_settings_screen(void)
         lv_obj_center(lbl);
         s_sndset_btns[i] = btn;
         s_sndset_lbls[i] = lbl;
+    }
+
+    /* PAPER form furniture goes on LAST so page content scrolling past the
+     * bottom edge slides UNDER the printed frame, not over it. */
+    if (is_paper_theme()) {
+        paper_frame(s_screen_settings);
+        paper_rule(s_screen_settings, 8, 108, SCREEN_W - 16, 1);
     }
 
     /* Show the active page (preserved across theme rebuilds), hide the rest. */
@@ -2393,13 +2695,16 @@ static void build_devices_screen(void)
     lv_obj_set_style_bg_color(s_screen_devices, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_devices, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_screen_devices, LV_OBJ_FLAG_SCROLLABLE);
+    if (is_paper_theme()) {
+        paper_frame(s_screen_devices);
+        paper_rule(s_screen_devices, 8, 60, SCREEN_W - 16, 1);
+    }
 
     lv_obj_t *back = lv_button_create(s_screen_devices);
     lv_obj_set_size(back, 120, 44);
     lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
     lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
-    lv_obj_set_style_radius(back, 3, 0);
-    lv_obj_set_style_shadow_width(back, 0, 0);
+    style_key_btn(back);
     lv_obj_add_event_cb(back, on_devices_back, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
@@ -2413,6 +2718,7 @@ static void build_devices_screen(void)
     lv_obj_set_style_text_font(title, font_lg(), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+    paper_title_chip(title);
 
     /* Scrollable list container; ui_set_devices() fills it with one row per
      * device. Starts empty (on_open_devices shows a placeholder). */
@@ -2520,15 +2826,18 @@ static void apply_theme_cb(void *unused)
     memset(s_prog_objs, 0, sizeof s_prog_objs);
     memset(s_wifi_dots, 0, sizeof s_wifi_dots);
     memset(s_dissolve_dots, 0, sizeof s_dissolve_dots);
+    s_paper_cursor = NULL;   /* children of the screens about to be deleted; */
+    s_br_index_lbl = NULL;   /* the builders recreate them when PAPER is on  */
 
     lv_obj_t *old_volume = s_screen_volume;
     s_screen_volume  = NULL;
     s_vol_page_label = NULL;
     memset(s_vol_page_dots, 0, sizeof s_vol_page_dots);
 
-    /* Free the pixelated thumbnail pool; build_browser_screen() will reallocate
-     * it if the new theme is PIXEL. */
-    if (s_pix_thumbs) { heap_caps_free(s_pix_thumbs); s_pix_thumbs = NULL; }
+    /* Free the theme-look thumbnail pools; build_browser_screen() reallocates
+     * whichever the new theme needs (PIXEL / PAPER). */
+    if (s_pix_thumbs)   { heap_caps_free(s_pix_thumbs);   s_pix_thumbs = NULL; }
+    if (s_paper_thumbs) { heap_caps_free(s_paper_thumbs); s_paper_thumbs = NULL; }
 
     build_browser_screen();
     build_np_screen();
@@ -2550,6 +2859,11 @@ static void apply_theme_cb(void *unused)
             lv_label_set_text(s_browser_title,  a->title);
             lv_label_set_text(s_browser_artist, a->artist);
         }
+        if (s_br_index_lbl) {
+            char ib[20];
+            snprintf(ib, sizeof ib, "%02d / %02d", saved_card + 1, (int)s_card_count);
+            lv_label_set_text(s_br_index_lbl, ib);
+        }
         apply_card_transforms();
     }
 
@@ -2564,8 +2878,9 @@ static void apply_theme_cb(void *unused)
     }
     update_progress_bar();
 
-    /* If entering or leaving PIXEL, update the now-playing art image immediately
-     * from the cached raw art pointer (no need to wait for the next poll). */
+    /* If entering or leaving PIXEL/PAPER, update the now-playing art image
+     * immediately from the cached raw art pointer (no need to wait for the
+     * next poll). */
     if (s_last_raw_art && s_last_raw_w > 0 && s_np_art) {
         if (is_pixel_theme()) {
             if (!s_pix_art_buf)
@@ -2584,8 +2899,25 @@ static void apply_theme_cb(void *unused)
                 lv_image_set_antialias(s_np_art, false);
                 lv_obj_invalidate(s_np_art);
             }
+        } else if (is_paper_theme()) {
+            if (!s_paper_art_buf)
+                s_paper_art_buf = heap_caps_malloc(
+                    PAPER_ART_RES * PAPER_ART_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+            if (s_paper_art_buf) {
+                paperize_rgb565((const uint16_t *)s_last_raw_art,
+                                s_last_raw_w, s_last_raw_h,
+                                s_paper_art_buf, PAPER_ART_RES, PAPER_ART_RES);
+                s_paper_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+                s_paper_art_dsc.header.w   = PAPER_ART_RES;
+                s_paper_art_dsc.header.h   = PAPER_ART_RES;
+                s_paper_art_dsc.data       = (const uint8_t *)s_paper_art_buf;
+                s_paper_art_dsc.data_size  = PAPER_ART_RES * PAPER_ART_RES * sizeof(uint16_t);
+                lv_image_set_src(s_np_art, &s_paper_art_dsc);
+                lv_image_set_antialias(s_np_art, false);
+                lv_obj_invalidate(s_np_art);
+            }
         } else {
-            /* Leaving PIXEL: restore full-resolution art. */
+            /* Leaving PIXEL/PAPER: restore full-resolution art. */
             s_art_dsc->header.cf  = LV_COLOR_FORMAT_RGB565;
             s_art_dsc->header.w   = s_last_raw_w;
             s_art_dsc->header.h   = s_last_raw_h;
@@ -2763,13 +3095,14 @@ static void save_volume(uint8_t v)
 }
 
 /* Map the active visual MODE to a UI-sound palette so the sounds match the look:
- * PIXEL -> chiptune squares, GLYPH -> ambient, the
+ * PIXEL -> chiptune squares, GLYPH -> ambient, PAPER -> typewriter clicks, the
  * rest -> the clean modern set. */
 static void apply_audio_theme(void)
 {
     audio_theme_t at = AUDIO_THEME_MODERN;
     if (s_theme == THEME_PIXEL_IDX)        at = AUDIO_THEME_PIXEL;
     else if (s_theme == THEME_GLYPH_IDX)   at = AUDIO_THEME_AMBIENT;
+    else if (s_theme == THEME_PAPER_IDX)   at = AUDIO_THEME_TELEX;
     audio_set_theme(at);
 }
 
@@ -2891,6 +3224,11 @@ void ui_set_track_info(const spotify_track_t *info)
                         lv_obj_set_style_border_color(s_cards[i],
                                                       lv_color_hex(accent_color()), 0);
                         lv_obj_set_style_border_width(s_cards[i], 3, 0);
+                    } else if (is_paper_theme()) {
+                        /* Back to the PAPER ruled-cell ink frame. */
+                        lv_obj_set_style_border_color(s_cards[i],
+                                                      lv_color_hex(s_th->text), 0);
+                        lv_obj_set_style_border_width(s_cards[i], 2, 0);
                     } else {
                         lv_obj_set_style_border_width(s_cards[i], 0, 0);
                     }
@@ -2949,6 +3287,27 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
                 lv_obj_invalidate(s_np_art);
             }
         }
+    } else if (is_paper_theme()) {
+        /* 128 KB PSRAM scratch, allocated on first use and kept (same policy
+         * as the PIXEL buffer): dither at exactly ART_W so the halftone grain
+         * lands 1:1 on the panel. */
+        if (!s_paper_art_buf)
+            s_paper_art_buf = heap_caps_malloc(
+                PAPER_ART_RES * PAPER_ART_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+        if (s_paper_art_buf) {
+            paperize_rgb565((const uint16_t *)rgb_data, w, h,
+                            s_paper_art_buf, PAPER_ART_RES, PAPER_ART_RES);
+            s_paper_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+            s_paper_art_dsc.header.w   = PAPER_ART_RES;
+            s_paper_art_dsc.header.h   = PAPER_ART_RES;
+            s_paper_art_dsc.data       = (const uint8_t *)s_paper_art_buf;
+            s_paper_art_dsc.data_size  = PAPER_ART_RES * PAPER_ART_RES * sizeof(uint16_t);
+            if (s_np_art) {
+                lv_image_set_src(s_np_art, &s_paper_art_dsc);
+                lv_image_set_antialias(s_np_art, false);
+                lv_obj_invalidate(s_np_art);
+            }
+        }
     } else {
         s_art_dsc->header.cf  = LV_COLOR_FORMAT_RGB565;
         s_art_dsc->header.w   = w;
@@ -2986,14 +3345,16 @@ void ui_set_devices(const ui_device_t *list, int count)
 
             lv_obj_t *row = lv_button_create(s_dev_list);
             lv_obj_set_size(row, lv_pct(100), 64);
-            lv_obj_set_style_radius(row, 3, 0);
-            lv_obj_set_style_shadow_width(row, 0, 0);
+            style_key_btn(row);
             lv_obj_set_style_bg_color(row, lv_color_hex(s_th->surface), 0);
             if (list[i].is_active) {
-                lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
-                lv_obj_set_style_border_width(row, 4, 0);
+                /* PAPER keeps the full ruled frame and recolours it accent;
+                 * other themes use the accent left-edge tab. */
+                if (!is_paper_theme())
+                    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
+                lv_obj_set_style_border_width(row, is_paper_theme() ? 3 : 4, 0);
                 lv_obj_set_style_border_color(row, lv_color_hex(accent_color()), 0);
-            } else {
+            } else if (!is_paper_theme()) {
                 lv_obj_set_style_border_width(row, 0, 0);
             }
             lv_obj_add_event_cb(row, on_device_tap, LV_EVENT_CLICKED,
@@ -3071,7 +3432,9 @@ static void on_seek_start(lv_event_t *e)
 {
     (void)e;
     s_seeking = true;
-    if (s_seek_thumb) {
+    /* PAPER: the ruler's ink block is the scrub indicator; keep the round
+     * accent thumb hidden so the playhead stays a single printed mark. */
+    if (s_seek_thumb && !is_paper_theme()) {
         int32_t pct = (s_track.duration_ms > 0)
             ? (int32_t)((uint64_t)s_track.progress_ms * 1000 / s_track.duration_ms) : 0;
         position_seek_thumb(pct);
@@ -3294,6 +3657,11 @@ static void on_browser_scroll(lv_event_t *e)
     if (idx < 0 || idx == s_centered_card) return;
     s_centered_card = idx;
     audio_play(AUDIO_SFX_TICK);   /* detent tick as the centred album changes */
+    if (s_br_index_lbl) {
+        char ib[20];
+        snprintf(ib, sizeof ib, "%02d / %02d", idx + 1, (int)s_card_count);
+        lv_label_set_text(s_br_index_lbl, ib);
+    }
     const album_entry_t *a = albums_get((size_t)idx);
     if (!a) return;
     if (s_browser_title)  lv_label_set_text(s_browser_title, a->title);
@@ -3321,6 +3689,16 @@ static void update_progress_bar(void)
         format_mmss(t, sizeof t, rem);
         snprintf(b, sizeof b, "-%s", t);
         lv_label_set_text(s_np_remain, b);
+    }
+
+    /* PAPER: ride the ink block along the ruler. While scrubbing, the bar holds
+     * the drag value (on_seek_pressing wrote it just before calling here), so
+     * the block tracks the finger; otherwise it tracks playback. */
+    if (s_paper_cursor) {
+        int32_t cpct = s_seeking ? lv_bar_get_value(s_np_progress) : pct;
+        lv_obj_set_pos(s_paper_cursor,
+                       PROG_X + (int32_t)((int64_t)cpct * PROG_W / 1000) - PAPER_CUR_W / 2,
+                       PROG_Y + PROG_H / 2 - PAPER_CUR_H / 2);
     }
 
     if (s_seeking) return;
