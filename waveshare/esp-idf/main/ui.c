@@ -242,10 +242,13 @@ typedef struct {
 static const theme_t THEME_DARK  = { 0x121212, 0x1E1E1E, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x2C2C2C };
 static const theme_t THEME_BLACK = { 0x000000, 0x141414, 0xFAFAFA, 0x9A9A9A, 0x5E5E5E, 0x242424 };
 static const theme_t THEME_LIGHT = { 0xECEAE6, 0xDAD6CF, 0x1A1A1A, 0x57534C, 0x8C877E, 0xC6C1B8 };
-/* GLYPH: near-black + near-white, red accent. A "dot-matrix" theme -- text uses
- * a bespoke round-dot font and the chrome (gas-tank progress, dot volume page,
- * WiFi dot strength meter) is built from dots. No full-screen backdrop. */
-static const theme_t THEME_GLYPH  = { 0x080808, 0x111111, 0xF0F0F0, 0x7A7A7A, 0x383838, 0x1c1c1c };
+/* GLYPH: Nothing-OS light. Warm light-grey ground + black ink, dot-matrix
+ * type for HEADINGS ONLY (body/labels/icons are clean small type), hairline
+ * outline pills with solid-ink selection, and instrument chrome drawn in ink
+ * dots (gas-tank progress, dot volume page, WiFi meter). The accent is
+ * reserved for live elements: playhead, selection line, volume shortcut.
+ * { bg, surface(chip), text(ink), text2, dim, track(hairline) }. */
+static const theme_t THEME_GLYPH  = { 0xEDEBE7, 0xF6F4F0, 0x141414, 0x4E4B46, 0x98948C, 0xD4D0C8 };
 /* PIXEL: dark CRT near-black with high-contrast off-white text; 1bpp pixel font +
  * Bayer-dithered pixelated art. Accent drives progress bar and selection highlights.
  * NOTE: porting to a future waveshare/esp-idf-ha/ is automatic (ui.c is copied);
@@ -576,11 +579,10 @@ static bool is_paper_theme(void);
 static const lv_font_t *font_lg(void);
 static const lv_font_t *font_md(void);
 static const lv_font_t *font_sm(void);
-/* GLYPH dot fonts -- declared here so build_np_screen() (above their definition)
- * can select lv_font_dot_28 for the transport icons. */
-extern const lv_font_t lv_font_dot_20;
+/* GLYPH heading font: round-dot matrix (Nothing-style), used by font_lg only.
+ * Its fallback chain (dot_24 -> dot_sym_24 -> montserrat) keeps symbols and
+ * accented glyphs rendering inside dotted headings. */
 extern const lv_font_t lv_font_dot_24;
-extern const lv_font_t lv_font_dot_28;
 static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                              uint16_t *dst, uint16_t dw, uint16_t dh);
 static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
@@ -660,17 +662,35 @@ static void style_button_press(lv_obj_t *btn)
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
 }
 
+/* Selected-option colours for the settings pills/tabs. Accent fill + black
+ * text normally; GLYPH (Nothing-style light) selects with a solid INK pill +
+ * light text -- like the reference's filled "SIMPLE" chip -- keeping the
+ * accent for live elements only (playhead, selection line). */
+static lv_color_t opt_sel_bg(void)
+{
+    return lv_color_hex(is_glyph_theme() ? s_th->text : accent_color());
+}
+static lv_color_t opt_sel_fg(void)
+{
+    return is_glyph_theme() ? lv_color_hex(s_th->bg) : lv_color_black();
+}
+
 /* Shared flat-key styling for every boxy button (settings rows, tabs, back
  * keys, transport keys). Radius-3 charcoal keys normally; PAPER squares them
- * off and frames each in a thin ink border -- the ruled-cell look of the
- * data-sheet references. */
+ * off and frames each in a thin ink border (ruled data-sheet cells); GLYPH
+ * rounds them into full pills with a hairline outline (Nothing-style). */
 static void style_key_btn(lv_obj_t *btn)
 {
-    lv_obj_set_style_radius(btn, is_paper_theme() ? 0 : 3, 0);
+    lv_obj_set_style_radius(btn,
+        is_paper_theme() ? 0 : is_glyph_theme() ? LV_RADIUS_CIRCLE : 3, 0);
     lv_obj_set_style_shadow_width(btn, 0, 0);
     if (is_paper_theme()) {
         lv_obj_set_style_border_width(btn, 2, 0);
         lv_obj_set_style_border_color(btn, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
+    } else if (is_glyph_theme()) {
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_set_style_border_color(btn, lv_color_hex(s_th->track), 0);
         lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
     }
 }
@@ -748,7 +768,14 @@ static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t
         lv_color_hex(is_paper_theme() ? s_th->text : s_th->surface), 0);
     lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(pill, is_paper_theme() ? 0 : 14, 0);
-    lv_obj_set_style_border_width(pill, 0, 0);
+    /* GLYPH: hairline-outlined pill on the light ground (Nothing-style). */
+    if (is_glyph_theme()) {
+        lv_obj_set_style_border_width(pill, 1, 0);
+        lv_obj_set_style_border_color(pill, lv_color_hex(s_th->track), 0);
+        lv_obj_set_style_border_opa(pill, LV_OPA_COVER, 0);
+    } else {
+        lv_obj_set_style_border_width(pill, 0, 0);
+    }
     lv_obj_set_style_shadow_width(pill, 0, 0);
     lv_obj_set_style_pad_hor(pill, 14, 0);
     lv_obj_set_style_pad_ver(pill, 5, 0);
@@ -1174,9 +1201,9 @@ static void build_browser_screen(void)
 
     /* Gear button (top-right) -> settings. Sits in the empty strip above the
      * carousel so it never overlaps a card. A cog glyph (LV_SYMBOL_SETTINGS,
-     * 0xF013) -- the universal settings affordance, and it reads clearly in GLYPH
-     * mode too (dot font falls back to the dotted symbol font, which carries the
-     * cog). No surface box; transparent at rest, faint accent flash on press. */
+     * 0xF013) -- the universal settings affordance; font_md carries the symbol
+     * range in every theme (GLYPH included, where icons are clean strokes).
+     * No surface box; transparent at rest, faint accent flash on press. */
     lv_obj_t *gear = lv_button_create(s_screen_browser);
     lv_obj_set_size(gear, 44, 28);
     lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, -6, 0);
@@ -1409,12 +1436,11 @@ static void build_np_screen(void)
         lv_obj_t *lbl = lv_label_create(key);
         lv_label_set_text(lbl, keys[i].sym);
         lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text), 0);
-        /* GLYPH: route through the dot font so the icons render as dots (its
-         * fallback chain carries the dotted FontAwesome symbols). Other modes
-         * use compiled Montserrat, which bundles the symbol range (Arvo/Pixel
-         * don't), so the keys always show real prev/play/next icons. */
-        lv_obj_set_style_text_font(lbl,
-            is_glyph_theme() ? &lv_font_dot_28 : &lv_font_montserrat_28, 0);
+        /* Compiled Montserrat bundles the symbol range (Arvo/Pixel/mono
+         * don't), so the keys always show real prev/play/next icons. GLYPH
+         * uses it too: the Nothing reference draws icons as clean thin
+         * strokes, keeping the dot-matrix voice for headings only. */
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
         lv_obj_center(lbl);
         if (i == 1) s_np_play_lbl = lbl;   /* centre key reflects play state */
     }
@@ -1435,9 +1461,11 @@ static void build_np_screen(void)
 
     s_vol_hud = lv_label_create(s_screen_np);
     lv_label_set_text(s_vol_hud, "");
-    /* The fixed warm alert hues vanish on PAPER's cream -- use the accent. */
+    /* The fixed warm alert hues vanish on the light grounds (PAPER cream,
+     * GLYPH light grey) -- use the accent there. */
     lv_obj_set_style_text_color(s_vol_hud,
-        lv_color_hex(is_paper_theme() ? accent_color() : 0xFF4040), 0);
+        lv_color_hex((is_paper_theme() || is_glyph_theme()) ? accent_color()
+                                                            : 0xFF4040), 0);
     lv_obj_set_style_text_font(s_vol_hud, font_md(), 0);
     lv_obj_align(s_vol_hud, LV_ALIGN_TOP_RIGHT, -8, 6);
     lv_obj_add_flag(s_vol_hud, LV_OBJ_FLAG_HIDDEN);
@@ -1450,7 +1478,8 @@ static void build_np_screen(void)
     lv_obj_set_width(s_toast, SCREEN_W - 40);
     lv_obj_set_style_text_align(s_toast, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_toast,
-        lv_color_hex(is_paper_theme() ? accent_color() : 0xFFA000), 0);
+        lv_color_hex((is_paper_theme() || is_glyph_theme()) ? accent_color()
+                                                            : 0xFFA000), 0);
     lv_obj_set_style_text_font(s_toast, font_md(), 0);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
@@ -1512,9 +1541,9 @@ static void refresh_settings_selection(void)
         if (!s_opt_btns[i] || !s_opt_labels[i]) continue;
         bool sel = (i == (int)s_transition);
         lv_obj_set_style_bg_color(s_opt_btns[i],
-            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+            sel ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_opt_labels[i],
-            sel ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+            sel ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
         lv_label_set_text(s_opt_labels[i], k_transition_names[i]);
     }
 }
@@ -1525,15 +1554,17 @@ static void refresh_theme_selection(void)
         if (!s_theme_btns[i] || !s_theme_labels[i]) continue;
         bool sel = (i == (int)s_theme);
         lv_obj_set_style_bg_color(s_theme_btns[i],
-            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+            sel ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_theme_labels[i],
-            sel ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+            sel ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
         lv_label_set_text(s_theme_labels[i], k_theme_names[i]);
     }
 }
 
 /* Colour theme row. Each button is a swatch filled with its own accent colour
- * (so you can see the choices); the selected one gets a white ring + check. */
+ * (so you can see the choices); the selected one gets a ring + check. The ring
+ * uses the theme's text colour so it reads on light grounds too (white-on-
+ * cream was invisible). */
 static void refresh_accent_selection(void)
 {
     for (int i = 0; i < ACCENT_COUNT; i++) {
@@ -1541,7 +1572,7 @@ static void refresh_accent_selection(void)
         bool sel = (i == (int)s_accent);
         lv_obj_set_style_bg_color(s_accent_btns[i], lv_color_hex(k_accents[i]), 0);
         lv_obj_set_style_border_width(s_accent_btns[i], sel ? 3 : 0, 0);
-        lv_obj_set_style_border_color(s_accent_btns[i], lv_color_white(), 0);
+        lv_obj_set_style_border_color(s_accent_btns[i], lv_color_hex(s_th->text), 0);
         lv_obj_set_style_text_color(s_accent_labels[i], lv_color_white(), 0);
         if (sel) {
             char buf[24];
@@ -1591,10 +1622,11 @@ extern const lv_font_t lv_font_mono_24;
 static const lv_font_t *font_lg(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_24;
-    /* GLYPH: the round-dot font is monospace + wide, so a 32px title overruns
-     * the screen on long album names. Use the clean 24px size (still a tidy 3x
-     * the 8px grid) for body/title text; long titles scroll (see build_*_screen).
-     * The 32px dot_28 stays for the chunky transport icons. */
+    /* GLYPH (Nothing-style): the round-dot font is the HEADING voice only --
+     * titles and screen names -- exactly like Nothing OS's dot-matrix
+     * "EQUALISER" headings. It's monospace + wide, so 24px (a tidy 3x the 8px
+     * grid) keeps long album names workable; they scroll (see build_*_screen).
+     * Body text and icons are clean small type via font_md/font_sm. */
     if (is_glyph_theme()) return &lv_font_dot_24;
     if (is_paper_theme()) return &lv_font_mono_24;
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_28;
@@ -1603,7 +1635,12 @@ static const lv_font_t *font_lg(void)
 static const lv_font_t *font_md(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_16;
-    if (is_glyph_theme()) return &lv_font_dot_24;
+    /* GLYPH: clean SMALL type under the dotted headings (the reference pairs
+     * a dot-matrix heading with airy small labels, not dots everywhere).
+     * Montserrat also carries the LVGL symbols, so the cog/devices/audio
+     * icons render as clean strokes -- which retires the old "dotted cog
+     * reads muddy" nit. */
+    if (is_glyph_theme()) return &lv_font_montserrat_20;
     if (is_paper_theme()) return &lv_font_mono_16;
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_24;
     return &lv_font_montserrat_24;
@@ -1611,7 +1648,6 @@ static const lv_font_t *font_md(void)
 static const lv_font_t *font_sm(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_16;
-    if (is_glyph_theme()) return &lv_font_dot_20;
     if (is_paper_theme()) return &lv_font_mono_16;
     return &lv_font_montserrat_20;
 }
@@ -1950,17 +1986,17 @@ static void prog_particles_start(lv_obj_t *screen)
     if (!screen) return;
     prog_particles_stop();
 
-    /* The "tank": a black box with white walls enclosing the bar. Created
-     * before the dots so they render inside it, and opaque so it hides the
-     * plain bar -- in Glyph the gas IS the progress indicator. */
+    /* The "tank": a hairline-outlined capsule on the light ground (the
+     * reference's fine instrument circles). Created before the dots so they
+     * render inside it, and opaque (theme bg) so it hides the plain bar --
+     * in Glyph the gas IS the progress indicator. */
     s_prog_tank = lv_obj_create(screen);
     lv_obj_set_size(s_prog_tank, PROG_W + 4, PROG_TANK_H);
     lv_obj_set_pos(s_prog_tank, PROG_X - 2, PROG_TANK_Y);
-    lv_obj_set_style_bg_color(s_prog_tank, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(s_prog_tank, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_prog_tank, LV_OPA_COVER, 0);
-    /* Capsule frame in a dim neutral so the accent gas inside is the focus. */
     lv_obj_set_style_border_color(s_prog_tank, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_border_width(s_prog_tank, 2, 0);
+    lv_obj_set_style_border_width(s_prog_tank, 1, 0);
     lv_obj_set_style_radius(s_prog_tank, PROG_TANK_H / 2, 0);
     lv_obj_set_style_pad_all(s_prog_tank, 0, 0);
     lv_obj_remove_flag(s_prog_tank, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
@@ -1972,7 +2008,8 @@ static void prog_particles_start(lv_obj_t *screen)
         lv_obj_set_size(dot, 3, 3);
         lv_obj_set_style_radius(dot, 2, 0);    /* round gas molecule */
         lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(accent_color()), 0);
+        /* Ink dots; the accent is reserved for the playhead below. */
+        lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->text), 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_80, 0);
         lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
         /* Scatter across the left of the chamber + full height so the gas looks
@@ -2092,11 +2129,12 @@ static void vol_page_dots_update(int pct)
             lv_obj_t *dot = s_vol_page_dots[idx];
             if (!dot) continue;
             if (active) {
-                lv_obj_set_style_bg_color(dot, lv_color_hex(accent_color()), 0);
+                /* Ink dots on the light ground, like the reference dial. */
+                lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->text), 0);
                 lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
             } else {
                 lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->track), 0);
-                lv_obj_set_style_bg_opa(dot, (lv_opa_t)100, 0);
+                lv_obj_set_style_bg_opa(dot, (lv_opa_t)160, 0);
             }
         }
     }
@@ -2152,25 +2190,24 @@ static void build_volume_screen(void)
     lv_obj_set_style_bg_opa(s_screen_volume, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_screen_volume, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back button top-left. */
+    /* Back button top-left (outlined pill, same as every GLYPH key). */
     lv_obj_t *back = lv_button_create(s_screen_volume);
     lv_obj_set_size(back, 120, 44);
     lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
     lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
-    lv_obj_set_style_radius(back, 3, 0);
-    lv_obj_set_style_shadow_width(back, 0, 0);
+    style_key_btn(back);
     lv_obj_add_event_cb(back, on_vol_page_back, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(s_th->text), 0);
-    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(back_lbl, font_sm(), 0);
     lv_obj_center(back_lbl);
 
-    /* "VOLUME" title. */
+    /* "VOLUME" title in the dotted heading voice. */
     lv_obj_t *title = lv_label_create(s_screen_volume);
     lv_label_set_text(title, "VOLUME");
     lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(title, font_lg(), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
@@ -2186,7 +2223,7 @@ static void build_volume_screen(void)
             lv_obj_set_size(dot, VOL_DOT_SZ, VOL_DOT_SZ);
             lv_obj_set_style_radius(dot, VOL_DOT_SZ / 2, 0);
             lv_obj_set_style_border_width(dot, 0, 0);
-            lv_obj_set_style_bg_opa(dot, (lv_opa_t)100, 0);
+            lv_obj_set_style_bg_opa(dot, (lv_opa_t)160, 0);
             lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->track), 0);
             lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
             lv_obj_set_pos(dot, dot_x, dot_y);
@@ -2194,11 +2231,11 @@ static void build_volume_screen(void)
         }
     }
 
-    /* Percentage readout below the grid. */
+    /* Percentage readout below the grid -- dotted numerals (heading voice). */
     s_vol_page_label = lv_label_create(s_screen_volume);
     lv_label_set_text(s_vol_page_label, "50%");
     lv_obj_set_style_text_color(s_vol_page_label, lv_color_hex(s_th->text), 0);
-    lv_obj_set_style_text_font(s_vol_page_label, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(s_vol_page_label, font_lg(), 0);
     lv_obj_set_style_text_letter_space(s_vol_page_label, 2, 0);
     lv_obj_align(s_vol_page_label, LV_ALIGN_BOTTOM_MID, 0, -24);
 
@@ -2223,7 +2260,8 @@ static void wifi_dots_stop(void)
     memset(s_wifi_dots, 0, sizeof s_wifi_dots);
 }
 
-/* Light the first `bars` dots in the accent; dim the remainder. */
+/* Light the first `bars` dots in ink (the reference's black instrument dots);
+ * dim the remainder to the hairline grey. */
 static void wifi_dots_update_count(int bars)
 {
     s_wifi_dot_count = bars;
@@ -2232,8 +2270,8 @@ static void wifi_dots_update_count(int bars)
         if (!dot) continue;
         bool lit = (i < bars);
         lv_obj_set_style_bg_color(dot,
-            lit ? lv_color_hex(accent_color()) : lv_color_hex(s_th->track), 0);
-        lv_obj_set_style_bg_opa(dot, lit ? LV_OPA_COVER : (lv_opa_t)90, 0);
+            lit ? lv_color_hex(s_th->text) : lv_color_hex(s_th->track), 0);
+        lv_obj_set_style_bg_opa(dot, lit ? LV_OPA_COVER : (lv_opa_t)160, 0);
     }
 }
 
@@ -2300,7 +2338,7 @@ static void title_dissolve(void)
         lv_obj_set_size(dot, 4, 4);
         lv_obj_set_style_radius(dot, 2, 0);
         lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->text), 0);
         lv_obj_set_style_bg_opa(dot, (lv_opa_t)200, 0);
         lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_pos(dot, dot_x, dot_y);
@@ -2345,7 +2383,7 @@ static void title_reform(void)
         lv_obj_set_size(dot, 4, 4);
         lv_obj_set_style_radius(dot, 2, 0);
         lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->text), 0);
         lv_obj_set_style_bg_opa(dot, 0, 0);
         lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_pos(dot, dot_x, dot_y_from);
@@ -3784,9 +3822,9 @@ static void refresh_browser_style_selection(void)
         if (!s_brstyle_btns[i] || !s_brstyle_labels[i]) continue;
         bool sel = (i == (int)s_browser_style);
         lv_obj_set_style_bg_color(s_brstyle_btns[i],
-            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+            sel ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_brstyle_labels[i],
-            sel ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+            sel ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
         lv_label_set_text(s_brstyle_labels[i], k_browser_style_names[i]);
     }
 }
@@ -3808,9 +3846,9 @@ static void refresh_line_selection(void)
 {
     if (!s_line_toggle_btn || !s_line_toggle_lbl) return;
     lv_obj_set_style_bg_color(s_line_toggle_btn,
-        s_show_sel_line ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+        s_show_sel_line ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
     lv_obj_set_style_text_color(s_line_toggle_lbl,
-        s_show_sel_line ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+        s_show_sel_line ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
     lv_label_set_text(s_line_toggle_lbl, s_show_sel_line ? "ON" : "OFF");
 }
 
@@ -3856,7 +3894,7 @@ static void refresh_font_selection(void)
         if (!s_font_btns[i]) continue;
         bool sel = ((uint8_t)i == s_font_choice);
         lv_obj_set_style_bg_color(s_font_btns[i],
-            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+            sel ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_bg_opa(s_font_btns[i], LV_OPA_COVER, 0);
         lv_obj_set_style_text_color(s_font_labels[i],
             sel ? lv_color_white() : lv_color_hex(s_th->text), 0);
@@ -3880,9 +3918,9 @@ static void refresh_fps_selection(void)
 {
     if (!s_fps_toggle_btn || !s_fps_toggle_lbl) return;
     lv_obj_set_style_bg_color(s_fps_toggle_btn,
-        s_fps_enabled ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+        s_fps_enabled ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
     lv_obj_set_style_text_color(s_fps_toggle_lbl,
-        s_fps_enabled ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+        s_fps_enabled ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
     lv_label_set_text(s_fps_toggle_lbl, s_fps_enabled ? "ON" : "OFF");
 }
 
@@ -3905,9 +3943,9 @@ static void refresh_sound_selection(void)
     if (!s_sound_toggle_btn || !s_sound_toggle_lbl) return;
     bool on = audio_is_enabled();
     lv_obj_set_style_bg_color(s_sound_toggle_btn,
-        on ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+        on ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
     lv_obj_set_style_text_color(s_sound_toggle_lbl,
-        on ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+        on ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
     lv_label_set_text(s_sound_toggle_lbl, on ? "ON" : "OFF");
 }
 
@@ -3950,9 +3988,9 @@ static void refresh_settings_tabs(void)
         if (!s_set_tabs[i] || !s_set_tab_lbls[i]) continue;
         bool sel = (i == (int)s_set_tab);
         lv_obj_set_style_bg_color(s_set_tabs[i],
-            sel ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+            sel ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_set_tab_lbls[i],
-            sel ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+            sel ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
     }
 }
 
@@ -3987,9 +4025,9 @@ static void refresh_sound_set_selection(void)
         if (!s_sndset_btns[i] || !s_sndset_lbls[i]) continue;
         bool on = (i == sel_opt);
         lv_obj_set_style_bg_color(s_sndset_btns[i],
-            on ? lv_color_hex(accent_color()) : lv_color_hex(s_th->surface), 0);
+            on ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_text_color(s_sndset_lbls[i],
-            on ? lv_color_black() : lv_color_hex(s_th->text2), 0);
+            on ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
     }
 }
 

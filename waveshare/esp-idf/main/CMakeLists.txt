@@ -44,12 +44,8 @@ idf_component_register(
         "lv_font_pixel_24.c"  # cp6: 1bpp Press Start 2P 24px for PIXEL retro theme
         "lv_font_arvo_24.c"   # SLAB font choice: Arvo Bold 24px (gen_lvgl_font.py)
         "lv_font_arvo_28.c"   # SLAB font choice: Arvo Bold 28px (gen_lvgl_font.py)
-        "lv_font_dot_20.c"    # GLYPH dot-matrix text font 20px (gen_lvgl_font.py --dots)
-        "lv_font_dot_24.c"    # GLYPH dot-matrix text font 24px (gen_lvgl_font.py --dots)
-        "lv_font_dot_28.c"    # GLYPH dot-matrix text font 28px (gen_lvgl_font.py --dots)
-        "lv_font_dot_sym_20.c"  # GLYPH dotted FontAwesome icons 20px (fallback of dot_20)
-        "lv_font_dot_sym_24.c"  # GLYPH dotted FontAwesome icons 24px (fallback of dot_24)
-        "lv_font_dot_sym_28.c"  # GLYPH dotted FontAwesome icons 28px (fallback of dot_28)
+        "lv_font_dot_24.c"      # GLYPH dot-matrix HEADING font 24px (gen_lvgl_font.py --dots)
+        "lv_font_dot_sym_24.c"  # dotted FontAwesome fallback of dot_24 (symbols in headings)
         "lv_font_mono_16.c"     # PAPER teletype text font 16px (unscii-8, gen_lvgl_font.py)
         "lv_font_mono_24.c"     # PAPER teletype text font 24px (unscii-8, gen_lvgl_font.py)
         "audio.c"             # synthesised UI sound effects via ES8311 speaker

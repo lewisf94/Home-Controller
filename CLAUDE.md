@@ -308,29 +308,29 @@ What's in `ui.c` as committed:
   heading), Bayer 4×4 ordered dither + RGB444 quantize on all album art and browser
   thumbnails, dark-CRT palette. PSRAM thumb pool (~0.5 MB) allocated on PIXEL entry,
   freed on switch-away. Generated font files `lv_font_pixel_16/24.c` committed.
-- **GLYPH dot-matrix theme** (`is_glyph_theme()`, internally still the
-  `THEME_GLYPH` slot that replaced `THEME_YUDHO`). The dots are UI *chrome*, not a
-  backdrop — every element is rendered in round dots:
-  - **Dot text font** baked from the bitmap font unscii-8 via
-    `scripts/gen_lvgl_font.py --dots` (round dots stamped on a pixel grid; a bitmap
-    source + integer scale keeps the dots aligned so letters stay legible). Sizes
-    `lv_font_dot_20/24/28.c`. Body/title route to `dot_24`; transport icons use
-    `dot_28` (32 px). The font is **fixed** in GLYPH — the FONT setting is hidden in
-    Settings and `font_*()` ignore `s_font_choice` here.
-  - **Dotted icons** — a sparse-cmap dotted-FontAwesome font (`lv_font_dot_sym_20/24/28.c`,
-    SPARSE_TINY cmap, codepoints 0xF001..0xF107) is the fallback of the dot text
-    font, so symbols (cog 0xF013, transport, chevrons, audio) render as dots too.
-  - **Gas-tank progress bar** — a capsule "tank" with accent round dots in Brownian
-    motion (per-tick random velocity kick, reflect off all 4 walls) plus a bright
-    accent **playhead bar** at the progress point (`prog_particle_tick_cb`,
-    `PROG_PART_COUNT`).
-  - **Dot WiFi strength meter** — 4 round dots (sizes 4/6/8/10) bottom-aligned,
-    first `bars` lit in accent (`wifi_dots_start`/`wifi_dots_update_count`).
-    `rebuild_browser_cb` stops + recreates them across a screen rebuild (a dangling
-    pointer here was the GLYPH browser-style-change crash; now fixed).
-  - Settings cog is `LV_SYMBOL_SETTINGS` (the dotted cog), matching the devices
-    button. **Known nit (not yet fixed):** at dot size the cog's dots can merge and
-    read a little muddy in GLYPH — noted, deferred.
+- **GLYPH theme — Nothing-OS light** (`is_glyph_theme()`, internally still the
+  `THEME_GLYPH` slot that replaced `THEME_YUDHO`; reworked 2026-06-11 to match the
+  Nothing equaliser reference). Warm light-grey ground + black ink; the dots are
+  the *instrument voice*, not poured over everything:
+  - **Dot-matrix HEADINGS ONLY** — `font_lg()` returns `lv_font_dot_24` (unscii-8
+    via `scripts/gen_lvgl_font.py --dots`; fallback chain dot_24 → `lv_font_dot_sym_24`
+    → Montserrat keeps symbols/accents rendering inside dotted headings). Body,
+    labels and ALL icons are clean `lv_font_montserrat_20/28` — which retired the
+    old "dotted cog reads muddy" nit. The unused dot_20/28 + dot_sym_20/28 fonts
+    were deleted (regenerable). FONT setting stays hidden (pairing is fixed).
+  - **Hairline outline pills** — `style_key_btn()` gives every key
+    `LV_RADIUS_CIRCLE` + a 1 px `track` border; hint pills get the same outline.
+    Selected options fill **solid ink with light text** (`opt_sel_bg()/opt_sel_fg()`,
+    like the reference's filled SIMPLE chip) — the accent is reserved for live
+    elements (playhead, selection line, volume shortcut, pressed flash).
+  - **Gas-tank progress bar** — hairline-outlined capsule on the light ground with
+    INK dots in Brownian motion plus the bright **accent playhead bar**
+    (`prog_particle_tick_cb`, `PROG_PART_COUNT`). Ticker frozen while now-playing
+    is off-screen.
+  - **Dot WiFi meter / volume page** — instrument dots lit in ink, unlit hairline
+    grey. `rebuild_browser_cb` stops + recreates the WiFi dots across a screen
+    rebuild (a dangling pointer here was the GLYPH browser-style-change crash; fixed).
+    Offline title dissolve dots draw in ink (were white — invisible on light).
 - **PAPER teletype data-brutalist theme** (`is_paper_theme()`, slot 5) — modelled on
   the cream-paper/ink "data sheet" reference UIs (mono type, ruled frames, 1-bit
   imagery), NOT a recolour of the other themes:
@@ -369,8 +369,8 @@ What's in `ui.c` as committed:
 - **FONT setting** — Settings → FONT: SANS (Montserrat) or SLAB (Arvo Bold, OFL,
   Google Fonts, embedded). NVS-persisted. All title/artist/settings labels route
   through `font_lg()`/`font_md()` which check `s_font_choice`. PIXEL overrides to
-  Press Start 2P, GLYPH to the dot font and PAPER to the unscii mono font,
-  regardless of FONT setting.
+  Press Start 2P, GLYPH to its fixed dot-heading/Montserrat pairing and PAPER to
+  the unscii mono font, regardless of FONT setting.
 - **Title marquee** — long browser/now-playing titles scroll horizontally
   (`LV_LABEL_LONG_SCROLL_CIRCULAR`) instead of ellipsising; titles that fit stay
   centred. Speed is a fixed `lv_obj_set_style_anim_duration` (ms) set **before**
@@ -663,9 +663,10 @@ git log --oneline -10          # recent history
   (Dark/Black/Light/GLYPH/PIXEL/PAPER), charcoal palette, flat buttons, colour accent
   system (Orange/Red/Green/Purple), tiny_ttf kerning crash fix, PIXEL retro theme
   (1bpp Press Start 2P font, Bayer-dithered pixelated art/thumbnails, dark-CRT
-  palette), the **GLYPH dot-matrix theme** (round-dot text + icon fonts, gas-tank
-  progress bar with Brownian dots + playhead, dot WiFi meter; replaced the old
-  Yudho/Fuhrer VFX backdrops, which are deleted), the **PAPER teletype theme**
+  palette), the **GLYPH Nothing-OS-light theme** (light grey + ink, dot-matrix
+  headings over clean small type, hairline outline pills with solid-ink selection,
+  ink-dot gas-tank/WiFi/volume instruments with an accent playhead; replaced the
+  old Yudho/Fuhrer VFX backdrops, which are deleted), the **PAPER teletype theme**
   (cream paper + ink, unscii mono fonts, 1-bit dithered art, printed-form
   frames/rules/field labels, ruler-tick progress, TELEX typewriter SFX),
   **synthesised UI sound effects**

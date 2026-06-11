@@ -49,6 +49,7 @@ is "done":
 | FPS display | Settings → FPS DISPLAY toggle (ON/OFF); live `N FPS` label in browser top bar updated every 1 s via `LV_EVENT_FLUSH_READY` counter. NVS-persisted. | pending |
 | FPS-maxing batch (2026-06-10) | FPS counter reworked to **achieved frame rate** (RENDER_READY burst accounting — includes handler/rasterise/flush time); PSRAM thumb pools (raw ~5.4 MB feeds CF/PIXEL/pool builds, 286 px card-native ~9.2 MB makes Carousel/Focus centre blits 1:1); GLYPH gas-tank ticker frozen while now-playing is off-screen; EXPERIMENT `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2` (one SW draw unit per core). | `89c3816`, `7af90de`, `f9a0337`, `dee8651` |
 | PAPER theme | Sixth MODE slot: teletype data-brutalism — cream paper + ink, unscii-8 mono fonts (`lv_font_mono_16/24.c`), 1-bit Bayer-dithered art/thumbs, printed-form frames + rules, ruler-tick progress with ink block cursor, OUTPUT/LEVEL data fields, album index counter, inverted title chips, ink-framed keys/cards, TELEX typewriter sound set. | this session |
+| GLYPH Nothing-light rework | GLYPH flipped to the Nothing-OS equaliser reference: light warm-grey ground + black ink; dot-matrix font for HEADINGS only (body/icons clean Montserrat — retires the muddy dotted cog); hairline outline pills, selected = solid ink + light text (`opt_sel_bg/fg`); gas tank = hairline capsule with ink dots + accent playhead; WiFi/volume dots in ink; dissolve dots in ink (were white); accent ring on colour swatches now theme-text (was invisible white on light themes). Unused `lv_font_dot_20/28` + `dot_sym_20/28` deleted. | this session |
 
 **Next flash session — reminders (written 2026-06-11):**
 
@@ -97,12 +98,17 @@ Sanity-check menu for next flash (waveshare):
    now-playing art is pixelated; transport icons are pixel shapes. Switch back to
    DARK: full-res art and smooth fonts return, no crash. Check PSRAM heap log to
    confirm thumb pool allocated then freed correctly.
-10. **GLYPH dot theme** — Settings → MODE → GLYPH: all text renders in round dots
-    and stays legible; icons (cog, transport, chevrons) are dotted too; progress is a
-    gas-tank capsule with drifting accent dots + a playhead bar at the play point;
-    WiFi is 4 dots, first N lit. Change BROWSER STYLE while in GLYPH — must NOT crash
-    (the old dangling WiFi-dot crash). FONT row is hidden in GLYPH. *(Known nit: the
-    dotted cog reads a little muddy — dots merge — fix deferred.)*
+10. **GLYPH theme (Nothing-light rework)** — Settings → MODE → GLYPH: light
+    warm-grey background with black text; ONLY headings (browser/NP titles,
+    SETTINGS/DEVICES/VOLUME, volume %) render in the round-dot font — body
+    labels and all icons (cog, transport, chevrons) are clean Montserrat
+    strokes; every button is a hairline-outlined pill, the selected option
+    fills solid black with light text; progress is a hairline capsule with
+    drifting BLACK dots + an accent playhead bar; WiFi is 4 dots, first N lit
+    in black; the volume page dots are black on light. Pull WiFi on the NP
+    screen: the title dissolves into visible dark dots (they were white).
+    Change BROWSER STYLE while in GLYPH — must NOT crash (the old dangling
+    WiFi-dot crash). FONT row is hidden in GLYPH.
 11. **UI sound** — Settings → SOUND: toggle on; scrolling the carousel ticks, picking
     an album plays the rising select tone, changing an option clicks. VOLUME slider
     scales loudness (fine control at the low end). SOUND SET switches the timbre
