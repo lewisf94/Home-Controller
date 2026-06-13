@@ -18,8 +18,8 @@ build folders: the CYD ESP-IDF direct-Spotify build (`cyd/esp-idf/`, the lead
 build — feature-complete and hardware-verified), its Home Assistant variant
 (`cyd/esp-idf-ha/`, not yet tested), the original Arduino build now ported to
 LVGL (`cyd/platformio/`, needs a hardware pass), and the new Waveshare ESP32-P4
-direct-Spotify build (`waveshare/esp-idf/`, cp1–3 verified; UI committed, needs
-hardware verify). He works
+direct-Spotify build (`waveshare/esp-idf/`, UI hardware-verified — the lead P4
+build). He works
 locally in VS Code with Claude Code and intermittently uses Claude Code on the
 web. This file is the source of truth across sessions.
 
@@ -246,18 +246,16 @@ single fix lands in both CYD-IDF builds at once. Secrets are `HA_HOST` /
 setup. The backend is kept behind the `ui_request_*()` seam — swap the backend,
 don't entangle it with the UI.
 
-### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — UI committed, needs hardware verify
+### Waveshare ESP32-P4 — ESP-IDF build (direct Spotify) — `waveshare/esp-idf/` — UI hardware-verified
 
-**Board in hand; brought up incrementally.** Waveshare
+**Board in hand; brought up incrementally, now hardware-verified.** Waveshare
 ESP32-P4-WIFI6-Touch-LCD-4.3 (ESP32-P4 RISC-V, 4.3" IPS, ST7701 MIPI-DSI, GT911
 capacitive touch, onboard ESP32-C6 WiFi over SDIO, PSRAM, 32 MB flash). Talks
 **directly to the Spotify Web API**; a future `waveshare/esp-idf-ha/` will swap
-to the HA backend. **Checkpoints 1 (display), 2 (WiFi) and 3 (Spotify) are
-hardware-verified.** The UI (cp4+) has been built and committed but
-**the latest code — Cover Flow, the GLYPH dot theme, UI sound effects, tabbed
-Settings — still needs a full hardware verification pass before it is considered
-stable.** (The settings cog, scrolling titles, and the JPEG-decode crash fix have
-had a first on-device check.)
+to the HA backend. **Checkpoints 1 (display), 2 (WiFi) and 3 (Spotify) plus the
+full UI (cp4+) are hardware-verified** — Cover Flow, all four MODE themes with
+their dark/light faces, the 24-swatch accent grid, UI sound effects and the
+tabbed Settings all run on device.
 
 What's in `ui.c` as committed:
 - Full LVGL browser + now-playing + volume HUD + WiFi bars, laid out for 800×480.
@@ -284,7 +282,7 @@ What's in `ui.c` as committed:
   time (CF rasterise), rotation/flush and the `LV_DEF_REFR_PERIOD` cap; holds
   the last reading when idle. (The old metric was 1e6/longest-render — a
   ceiling that ignored everything outside the render pass.)
-- **Render perf batch (needs hardware verify):** PPA rotation is enabled by the
+- **Render perf batch (verified on hardware):** PPA rotation is enabled by the
   vendored BSP (`.enable_ppa_accel = true` hardcoded in `bsp_display_lcd_init`
   — do NOT re-list enabling it as a TODO); PSRAM thumb pools — raw copies
   (~5.4 MB) feed CF sampling/PIXEL/pool builds with no flash XIP reads, and a
@@ -540,11 +538,10 @@ Full detail in `docs/ROADMAP.md`. Three phases:
    See `docs/ROADMAP.md` Phase 3 for WebSocket handshake and HA setup.
 
 ESP32-P4 migration: ACTIVE — `waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5)
-has checkpoints 1–3 hardware-verified (display, WiFi, Spotify). The UI (cp4+)
-including Cover Flow, colour themes, and the tiny_ttf kerning crash fix is
-committed but needs a hardware verification pass. After stability is confirmed,
-the next step is RAM art decode (PPA rotation is already enabled by the
-vendored BSP). A future
+is hardware-verified end to end: checkpoints 1–3 (display, WiFi, Spotify) plus
+the full UI (cp4+) — Cover Flow, the four dark/light MODE themes, the accent
+grid, and the tiny_ttf kerning crash fix. The next step is RAM art decode (PPA
+rotation is already enabled by the vendored BSP). A future
 `waveshare/esp-idf-ha/` carries the Phase 3 HA client over untouched.
 
 ---
@@ -654,7 +651,7 @@ git log --oneline -10          # recent history
 - **Lead build (direct Spotify, verified):** `cyd/esp-idf/`
 - **HA backend variant (untested):** `cyd/esp-idf-ha/`
 - **Arduino build (LVGL port, needs re-verify):** `cyd/platformio/`
-- **Waveshare ESP32-P4 (direct Spotify, UI committed — needs hardware verify):** `waveshare/esp-idf/`
+- **Waveshare ESP32-P4 (direct Spotify, UI hardware-verified):** `waveshare/esp-idf/`
 - **Current status: MILESTONE — CYD fully working on ESP-IDF.** The ESP-IDF
   build is now feature-complete for the CYD hardware and verified smooth on
   device: display, LVGL 9.5, XPT2046 touch, WiFi STA, Spotify HTTPS (token
@@ -678,10 +675,10 @@ git log --oneline -10          # recent history
   - **Next:** Phase 3 — Home Assistant integration (see Architecture →
     "CYD — ESP-IDF HA build" and `docs/ROADMAP.md` Phase 3).
 
-- **Waveshare ESP32-P4 — checkpoints 1–3 HARDWARE-VERIFIED. UI (cp4+) committed,
-  needs hardware verify.**
+- **Waveshare ESP32-P4 — HARDWARE-VERIFIED end to end (checkpoints 1–3 + the full
+  UI, cp4+).**
   cp1–3 verified: display renders at 800×480 landscape, WiFi via onboard C6,
-  Spotify token refresh + poll every 5 s. The UI (`ui.c`) has been committed with:
+  Spotify token refresh + poll every 5 s. The UI (`ui.c`) is verified on device with:
   full LVGL browser + now-playing, three browser styles (Carousel/Focus/Cover Flow),
   tabbed Settings (DISPLAY + SOUND) with four MODE options each having a
   DARK/LIGHT face (BASIC/GLYPH/PIXEL/PAPER + an APPEARANCE dark/light toggle) and
@@ -699,9 +696,8 @@ git log --oneline -10          # recent history
   (ES8311 speaker, selectable sound sets + volume), scrolling long titles, a
   Cover-Flow centre-tap fix, the settings cog icon, and the album-art-decode crash
   fix (JPEGIMAGE in internal SRAM). FONT setting (SANS/SLAB, Arvo Bold embedded;
-  overridden in PIXEL, GLYPH and PAPER). **All of this still needs a full hardware
-  verification pass** (cog, scrolling titles, and the decode crash fix have had a
-  first on-device check). Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
+  overridden in PIXEL, GLYPH and PAPER). **All of this is verified on hardware.**
+  Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
   5.5.4 PowerShell profile, `idf.py set-target esp32p4`, `idf.py build flash
   monitor`. Board enumerates as CH343 USB-serial (COM3/COM4). Creds in
   `waveshare/esp-idf/include/secrets.h` (gitignored; template at
@@ -712,9 +708,9 @@ git log --oneline -10          # recent history
     `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`. Display framebuffers (2.25 MB) live
     in PSRAM. The 256 KB Spotify response buffer + album art must be allocated
     from PSRAM at cp3/cp5. Full analysis + PSRAM-first policy in `docs/PORT-NOTES.md`.
-  - **After hardware verify:** RAM art decode (waveshare has PSRAM). (PPA
-    rotation is already enabled by the vendored BSP; TLS keep-alive and
-    adaptive poll backoff are done.)
+  - **Next:** RAM art decode (waveshare has PSRAM). (PPA rotation is already
+    enabled by the vendored BSP; TLS keep-alive and adaptive poll backoff are
+    done.)
   - **CRITICAL constraints (do not regress):** no object-level transform_scale/opa
     on cards; no LV_USE_MATRIX; always use lv_tiny_ttf_create_data_ex with
     LV_FONT_KERNING_NONE. See the Architecture section for full rationale.

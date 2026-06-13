@@ -8,11 +8,17 @@ landed.
 
 ## Hardware-verify pending
 
-### Waveshare ESP32-P4 (board in hand)
+### Waveshare ESP32-P4 (board in hand) — VERIFIED on hardware (2026-06-13)
 
-Everything on `main` past commit `42405ab` (Sonos album playback + device
-selector) is committed but **not flashed**. Owed verification before the build
-is "done":
+**Cleared.** The whole stack below — everything on `main` past commit `42405ab`
+(Sonos + device selector) through the 2026-06-13 theme restructure (four
+dark/light MODEs, the 24-swatch accent grid, `ui_tune.h`) — is now flashed and
+verified on device. The table is kept as the manifest of what landed; the
+pre-flash reminder + sanity-check checklists that used to follow it have been
+retired now that they're executed. One standing caveat survives:
+`CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT` MUST stay `=1` — the `=2` dual-draw-unit
+experiment (`dee8651`) boot-loops against the BSP's PPA acceleration and was
+reverted (see `sdkconfig.defaults`).
 
 | Area | What landed | Commits |
 |---|---|---|
@@ -44,108 +50,13 @@ is "done":
 | FONT setting | Settings → FONT → SANS (Montserrat) or SLAB (Arvo Bold, OFL). NVS-persisted. PIXEL overrides to Press Start 2P and GLYPH overrides to the dot font regardless. | `c64f543` |
 | Cover Flow 3D perspective | Replaced image-scale CF with a PSRAM column rasteriser (800×244 RGB565, 390 KB). Per-column perspective math produces true trapezoid foreshortening; three-pass draw guarantees centre-card z-order. Dissolve-animation cast bug fixed (`anim_set_bg_opa` wrapper). | `70812a0`, `c79aea4`, `5dd44a4` |
 | CI — GitHub Actions | ESP-IDF build workflow (`.github/workflows/esp-idf-build.yml`) runs `idf.py build` on GitHub's servers (which can reach the Espressif registry) on every push to `waveshare/esp-idf/`. Placeholder `secrets.h` and zero-filled `album_thumbs.bin` generated before build. Currently green. | `9d92764`–`c79aea4` |
-| PPA hardware acceleration | `.enable_ppa_accel = true` in vendored BSP; offloads 90° software rotation to the P4 hardware 2D accelerator. | pending |
-| Cover Flow 2-side | CF card slot 220→180 px, gap 28→16 px (step 248→196). Card ±2 centres at 792/8 px — fully on-screen. Squash rate 150→100, floor 70→85, dim_rise 150→80 so second side card still reads. | pending |
-| FPS display | Settings → FPS DISPLAY toggle (ON/OFF); live `N FPS` label in browser top bar updated every 1 s via `LV_EVENT_FLUSH_READY` counter. NVS-persisted. | pending |
-| FPS-maxing batch (2026-06-10) | FPS counter reworked to **achieved frame rate** (RENDER_READY burst accounting — includes handler/rasterise/flush time); PSRAM thumb pools (raw ~5.4 MB feeds CF/PIXEL/pool builds, 286 px card-native ~9.2 MB makes Carousel/Focus centre blits 1:1); GLYPH gas-tank ticker frozen while now-playing is off-screen; EXPERIMENT `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2` (one SW draw unit per core). | `89c3816`, `7af90de`, `f9a0337`, `dee8651` |
+| PPA hardware acceleration | `.enable_ppa_accel = true` in vendored BSP; offloads 90° software rotation to the P4 hardware 2D accelerator. | verified |
+| Cover Flow 2-side | CF card slot 220→180 px, gap 28→16 px (step 248→196). Card ±2 centres at 792/8 px — fully on-screen. Squash rate 150→100, floor 70→85, dim_rise 150→80 so second side card still reads. | verified |
+| FPS display | Settings → FPS DISPLAY toggle (ON/OFF); live `N FPS` label in browser top bar updated every 1 s via `LV_EVENT_FLUSH_READY` counter. NVS-persisted. | verified |
+| FPS-maxing batch (2026-06-10) | FPS counter reworked to **achieved frame rate** (RENDER_READY burst accounting — includes handler/rasterise/flush time); PSRAM thumb pools (raw ~5.4 MB feeds CF/PIXEL/pool builds, 286 px card-native ~9.2 MB makes Carousel/Focus centre blits 1:1); GLYPH gas-tank ticker frozen while now-playing is off-screen. (The EXPERIMENT `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2`, one SW draw unit per core, was REVERTED — it boot-loops against PPA accel; setting stays `=1`.) | `89c3816`, `7af90de`, `f9a0337`, ~~`dee8651`~~ |
 | PAPER theme | Sixth MODE slot: teletype data-brutalism — cream paper + ink, unscii-8 mono fonts (`lv_font_mono_16/24.c`), 1-bit Bayer-dithered art/thumbs, printed-form frames + rules, ruler-tick progress with ink block cursor, OUTPUT/LEVEL data fields, album index counter, inverted title chips, ink-framed keys/cards, TELEX typewriter sound set. | this session |
 | GLYPH Nothing-light rework | GLYPH flipped to the Nothing-OS equaliser reference: light warm-grey ground + black ink; dot-matrix font for HEADINGS only (body/icons clean Montserrat — retires the muddy dotted cog); hairline outline pills, selected = solid ink + light text (`opt_sel_bg/fg`); gas tank = hairline capsule with ink dots + accent playhead; WiFi/volume dots in ink; dissolve dots in ink (were white); accent ring on colour swatches now theme-text (was invisible white on light themes). Unused `lv_font_dot_20/28` + `dot_sym_20/28` deleted. | this session |
-
-**Next flash session — reminders (written 2026-06-11):**
-
-1. **Delete the stale local `waveshare/esp-idf/sdkconfig` before building.** The
-   dual-draw-unit experiment lives in `sdkconfig.defaults`
-   (`CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2`), and defaults are only folded in when
-   `sdkconfig` is regenerated — building with the old file silently tests the
-   wrong config.
-2. **The FPS counter now reads achieved frame rate** (presented frames per
-   second, including scroll-handler/rasterise/flush time). Two readings that are
-   correct, not regressions: GLYPH now-playing idles at ~16 FPS (the gas tank's
-   60 ms tick cadence — and it now freezes to 0 when now-playing is off-screen),
-   and every theme is capped by `LV_DEF_REFR_PERIOD` (~30 FPS at the default
-   33 ms) when idle.
-3. **A/B the dual-core draw experiment with the new counter**: note scroll FPS
-   in Focus + Cover Flow, `git revert dee8651` (or flip the one
-   `sdkconfig.defaults` line), delete `sdkconfig`, reflash, compare. If hardware
-   shows artifacts or crashes, that single line is the first thing to revert.
-
-Sanity-check menu for next flash (waveshare):
-1. **Sonos album-start** — pick a Sonos in device selector, tap an album from
-   the browser; queue gets the tracks; transport advances; serial log shows
-   the `x-rincon-queue:#0 SetAVTransportURI -> 200` then `Play -> 200`.
-2. **WiFi reconnect** — power on with the router off, wait 30 s, power on the
-   router; controller should reconnect within ~20 s without a power-cycle.
-3. **404 wake-on-play** — let active Spotify device (phone) sit idle until
-   it drops the slot (~30 min), press play; should wake the phone and start
-   the last track.
-4. **Auto-dim** — sit idle 1 min, screen should dim to ~30 %; idle 5 min,
-   ~10 %; touch should snap back to your chosen brightness within 1 s.
-5. **OFFLINE** — pull WiFi, now-playing title flips to "OFFLINE" within ~5 s
-   (next wifi-timer tick); restore WiFi, title comes back.
-6. **Auto-snap** — change track from the phone, open the browser, carousel
-   should land on the album currently playing with an accent-coloured border.
-7. **WiFi init-fail UI** (`25d2ab8`) — boot with a wrong password in
-   `secrets.h`; the browser should still come up, serial log shows "wifi did
-   not connect -- continuing; background reconnect will keep trying". Fix the
-   password, reflash; "wifi connected" should appear within ~20 s with the UI
-   already live, no power-cycle.
-8. **401 token-clear** (`25d2ab8`) — corrupt `s_access_token` just before a
-   `perform` in `_do_cmd` / `spotify_play_album` / `spotify_get_devices`,
-   confirm the log line `got 401, invalidating cached token` and that the next
-   press of the same control works. Remove the corruption afterwards.
-9. **PIXEL theme** — Settings → MODE → PIXEL: all text crisp pixel glyphs (Press
-   Start 2P 16/24 px); palette dark-CRT; all browser thumbnails are blocky/dithered;
-   now-playing art is pixelated; transport icons are pixel shapes. Switch back to
-   DARK: full-res art and smooth fonts return, no crash. Check PSRAM heap log to
-   confirm thumb pool allocated then freed correctly.
-10. **GLYPH theme (Nothing-light rework)** — Settings → MODE → GLYPH: light
-    warm-grey background with black text; ONLY headings (browser/NP titles,
-    SETTINGS/DEVICES/VOLUME, volume %) render in the round-dot font — body
-    labels and all icons (cog, transport, chevrons) are clean Montserrat
-    strokes; every button is a hairline-outlined pill, the selected option
-    fills solid black with light text; progress is a hairline capsule with
-    drifting BLACK dots + an accent playhead bar; WiFi is 4 dots, first N lit
-    in black; the volume page dots are black on light. Pull WiFi on the NP
-    screen: the title dissolves into visible dark dots (they were white).
-    Change BROWSER STYLE while in GLYPH — must NOT crash (the old dangling
-    WiFi-dot crash). FONT row is hidden in GLYPH.
-11. **UI sound** — Settings → SOUND: toggle on; scrolling the carousel ticks, picking
-    an album plays the rising select tone, changing an option clicks. VOLUME slider
-    scales loudness (fine control at the low end). SOUND SET switches the timbre
-    (AUTO follows MODE). All survive a reboot (NVS).
-12. **SLAB font** — Settings → FONT → SLAB: all title/artist/settings labels switch
-    to Arvo Bold immediately. SANS reverts to Montserrat. NVS persists across reboot.
-    PIXEL theme still overrides to Press Start 2P regardless of FONT setting.
-13. **PPA rotation** — boot; confirm display renders correctly (no corruption or
-    colour shift). Watch serial log for any PPA errors. Compare idle render speed
-    vs before: should run noticeably cooler / faster in VFX themes.
-14. **Title marquee** — play (or browse to) an album with a very long title: it
-    should scroll horizontally at a slow, readable pace; a short title stays centred
-    and static. Check both the browser and now-playing titles.
-15. **Cover Flow 3D perspective** — Settings → BROWSER STYLE → COVER FLOW: side
-    albums should appear as genuine trapezoids (inner edge tall, outer edge
-    noticeably shorter), not just squished rectangles. Centre card must always
-    render in front of both adjacent cards regardless of album index order.
-    Scrolling should feel immediate — no lag waiting for the canvas to redraw.
-    Check PSRAM heap for the expected 390 KB allocation while CF is active.
-16. **Cover Flow 2-side** — Settings → BROWSER STYLE → COVER FLOW: two covers
-    should be visible on each side of the centre card (total 5 visible). Side cards
-    squash and dim as before but the 2nd card peeks in from the edge.
-16. **FPS display** — Settings → FPS DISPLAY → ON: a `N FPS` readout appears in
-    the browser top bar (right of the WiFi bars). Should update every ~1 s. NVS
-    persists across reboot. Toggle OFF: label disappears.
-17. **PAPER theme** — Settings → MODE → PAPER: cream background, all text in the
-    blocky unscii mono font, section headers vermilion (accent); every screen
-    framed in a 2 px ink border with hairline rules; browser shows an `NN / NN`
-    album counter top-centre, covers 1-bit dithered with ink frames; now-playing
-    art dithered with OUTPUT (device) and LEVEL (fader) data fields beside it;
-    progress is a tick ruler with a solid ink block riding the playhead (block
-    follows a scrub drag; round thumb stays hidden); transport keys square with
-    ink borders. FONT row hidden in Settings. Scroll SFX on AUTO are typewriter
-    clicks (TELEX). Check Cover Flow + Focus render dithered covers; switch
-    MODE back to DARK — full-colour art returns, no crash, PSRAM pool freed
-    (watch the heap log). Accent RED turns the look maroon-ledger; all four
-    accents must stay legible on cream.
+| Theme restructure (2026-06-13) | Flat 6/7-theme enum collapsed to four MODEs (BASIC/GLYPH/PIXEL/PAPER) each with a DARK/LIGHT face + APPEARANCE toggle (`k_mode_palettes[MODE][2]`, NVS `ui_mode`/`ui_dark`); THEME ALBUM ART on/off toggle (`ui_themeart`); COLOUR grid grown to an 8-hue × 3-variant 24-swatch wheel (default deep orange, contrast-aware check); PAPER/Focus album frames baked into the cover pixels so they scale with the art; tap-to-toggle remaining/total timecode; visible GLYPH volume fader; `main/ui_tune.h` tweak-knob header; `gen_albums.py` ASCII-folds non-ASCII titles. | `d16094f` |
 
 ### CYD (board not available 2026-05-30)
 

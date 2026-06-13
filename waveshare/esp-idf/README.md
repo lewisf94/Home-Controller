@@ -6,8 +6,8 @@ onboard **ESP32-C6** over SDIO, PSRAM, 32 MB flash). Talks **directly to the
 Spotify Web API**. A future `waveshare/esp-idf-ha/` will swap the backend to
 Home Assistant, exactly like the CYD split.
 
-> **STATUS: cp1–3 hardware-verified; cp4+ + Sonos + brightness + reliability/UX
-> batches committed, board in hand, needs hardware verify.** Display (cp1)
+> **STATUS: HARDWARE-VERIFIED end to end — cp1–3 plus the full UI (cp4+), Sonos,
+> brightness and the reliability/UX batches all run on device.** Display (cp1)
 > renders at 800×480 landscape, the board associates to WiFi through the onboard
 > ESP32-C6 (`esp_wifi_remote` + `esp_hosted` over SDIO) and pulls a DHCP lease
 > (cp2), and the Spotify task refreshes the OAuth token (cached in NVS),
@@ -27,7 +27,7 @@ Home Assistant, exactly like the CYD split.
 > playing-album with accent border, OFFLINE indicator, generic toast for
 > play-failures, on-screen `MAX_CARDS` warning, auto-dim/sleep, and a Sonos
 > integration (direct UPnP control + album-start + device selector). **All of
-> that still needs a hardware verification pass** — see
+> that is verified on hardware** — see
 > [`../../docs/PENDING.md`](../../docs/PENDING.md) for the rolling list and
 > [`../../docs/TESTING.md`](../../docs/TESTING.md) for the sanity-check menu.
 > Most board-agnostic logic (Spotify client, album data, art decode, LittleFS)
@@ -119,29 +119,29 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
 4. **UI** — ported `cyd/esp-idf/main/ui.c`; `lvgl_port_lock` → `bsp_display_lock`;
    constants re-laid-out for 800×480; touch scroll + tap-to-play; on-screen
    playback controls; Settings screen (Menu Transition / Mode / Colour / Browser
-   Style / Brightness / Selection Line). *(committed — needs hardware verify)*
+   Style / Brightness / Selection Line). *(verified on hardware)*
 5. **Assets** — `album_thumbs.bin`, now-playing art (album_art.cpp), runtime
-   tiny_ttf fonts (Montserrat + DejaVu fallback). *(committed — needs hardware verify)*
+   tiny_ttf fonts (Montserrat + DejaVu fallback). *(verified on hardware)*
 6. **Touch controls** — on-screen prev/play-pause/next + volume → `ui_request_*()`.
-   *(committed — needs hardware verify; `input.c` seam left for physical controls)*
+   *(verified on hardware; `input.c` seam left for physical controls)*
 7. **Parity** — WiFi indicator, volume HUD, progress bar, view toggle, three
-   browser styles, colour accents. *(committed — needs hardware verify)*
+   browser styles, colour accents. *(verified on hardware)*
 8. **Sonos** — direct UPnP/SOAP control (port 1400) of a Sonos speaker, including
    full album-start (enqueue cpcontainer → point transport at queue → Play).
    Combined device selector (Spotify Connect transfer + Sonos UPnP). Now-playing
    fallback reads UPnP `GetPositionInfo` when Spotify can't see the speaker.
-   *(committed — needs hardware verify)*
+   *(verified on hardware)*
 9. **Reliability/UX** — WiFi background reconnect, 404 wake-on-play, dispatcher
    logging, OFFLINE title, toast on play failure, auto-snap browser to playing
    album, on-screen `MAX_CARDS` warning, empty-list message, volume-HUD guard
-   before first poll, JPEG SOI marker check, auto-dim/sleep. *(committed — needs
-   hardware verify)*
+   before first poll, JPEG SOI marker check, auto-dim/sleep. *(verified on
+   hardware)*
 10. **PIXEL retro theme** — a MODE option: 1bpp Press Start 2P bitmap font
     (16 px body / 24 px heading), Bayer-dithered pixelated art + all browser
     thumbnails, dark-CRT palette, chunky flat UI. PSRAM thumb pool (~0.5 MB)
     allocated on PIXEL activation, freed on switch-away. `lv_font_pixel_16/24.c`
     committed as generated build inputs (Press Start 2P + FontAwesome5 symbols,
-    `npx lv_font_conv --bpp 1`). *(committed — needs hardware verify)*
+    `npx lv_font_conv --bpp 1`). *(verified on hardware)*
 11. **Code quality** — `_do_cmd` forward-declared + `spotify_play_album` routed
     through it for keep-alive reuse; `MAX_DEVICES` constant replaces magic `16`s;
     `scmd_meta_t` table + `_Static_assert` replaces fragile exclusion chain;
@@ -156,7 +156,7 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
     Hairline-outlined pills on option chips; selected option fills solid ink with
     light text. Gas-tank progress bar: hairline-outlined capsule with ink Brownian-
     motion dots and an accent playhead. Ink WiFi-strength dots / volume-page dots.
-    FONT setting hidden (pairing is fixed). *(committed — needs hardware verify)*
+    FONT setting hidden (pairing is fixed). *(verified on hardware)*
 13. **UI sound + tabbed Settings** — synthesised SFX via the onboard ES8311 speaker
     (`audio.c`/`audio.h`, `esp_codec_dev`): TICK/SELECT/BACK/CONNECT on a dedicated
     task + queue, named sound sets (SINE/CHIP/AMBIENT/MARIMBA/ARCADE/BELL/TELEX) or
@@ -164,15 +164,14 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
     into DISPLAY + SOUND tabs. Long browser/now-playing titles scroll horizontally
     (`LV_LABEL_LONG_SCROLL_CIRCULAR`) instead of ellipsising. Cover-Flow centre-tap
     play fix. Album-art `JPEGIMAGE` moved to internal SRAM (intermittent
-    `JPEGDecodeMCU` store-fault fix). *(committed; sound + tabs need hardware verify,
-    titles + decode-fix have a first on-device check)*
+    `JPEGDecodeMCU` store-fault fix). *(verified on hardware)*
 14. **PAPER teletype theme + GLYPH rework** — PAPER is a sixth MODE: cream paper +
     near-black ink, `lv_font_mono_16/24.c` (unscii-8, Montserrat fallback), 1-bit
     8×8 Bayer dithered art, printed-form frames/rules, inverted title chips, ruler-
     tick progress, ink block cursor, TELEX square-wave typewriter SFX (AUTO maps
     PAPER → TELEX in `audio.c`). GLYPH reworked from dots-everywhere to the
     Nothing-light aesthetic (dot headings only, clean icons, ink instrument chrome).
-    *(committed — needs hardware verify)*
+    *(verified on hardware)*
 15. **Theme restructure + tweak knobs** — the flat 6/7-theme enum collapsed to
     four MODEs (BASIC/GLYPH/PIXEL/PAPER) each with a DARK/LIGHT face plus an
     APPEARANCE dark/light toggle (`k_mode_palettes[MODE][2]`, NVS `ui_mode`/
@@ -185,7 +184,7 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
     titles in `gen_albums.py`; and `main/ui_tune.h` — a single header of
     per-MODE layout/colour knobs (text Y, letter-spacing, FPS/button positions,
     devices icon, progress/fader geometry, the accent palette) you edit by eye
-    and rebuild. *(committed — needs hardware verify)*
+    and rebuild. *(verified on hardware)*
 
 After all of the above is confirmed on hardware:
 - **RAM art decode** — switch from LittleFS round-trip to the existing
