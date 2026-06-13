@@ -14,11 +14,14 @@ Home Assistant, exactly like the CYD split.
 > validates the TLS cert bundle, and polls `/me/player` every 5 s (adaptive
 > 15 s when paused) over a persistent keep-alive connection — boot log shows
 > `now playing: <artist> -- <title>`. The UI (`ui.c`) is committed in full:
-> browser + now-playing + Settings screen in two tabs — **DISPLAY** (Mode /
-> Colour accent / Browser Style / Font / Selection Line / Brightness / FPS /
-> Menu Transition) and **SOUND** (on-off / Volume / Sound set), all
-> NVS-persisted — three browser styles (Carousel / Focus / Cover Flow), six
-> MODE options (Dark / Black / Light / **GLYPH** Nothing-light dot theme / **PIXEL** retro / **PAPER** teletype),
+> browser + now-playing + Settings screen in two tabs — **DISPLAY** (Appearance
+> dark/light / Mode / Theme album art / Colour accent / Browser Style / Font /
+> Selection Line / Brightness / FPS / Menu Transition) and **SOUND** (on-off /
+> Volume / Sound set), all NVS-persisted — three browser styles (Carousel /
+> Focus / Cover Flow), four MODE options each with a DARK/LIGHT face
+> (**BASIC** / **GLYPH** Nothing-light dot theme / **PIXEL** retro / **PAPER**
+> teletype), an 8-hue × 3-variant (24-swatch) colour accent grid, a THEME ALBUM
+> ART on/off toggle, all layout/colour knobs exposed in `main/ui_tune.h`,
 > synthesised UI sound effects (ES8311 speaker), scrolling long titles,
 > charcoal palette, flat buttons, tiny_ttf kerning crash fix, auto-snap-to-
 > playing-album with accent border, OFFLINE indicator, generic toast for
@@ -170,6 +173,19 @@ https://github.com/waveshareteam/ESP32-P4-WIFI6-Touch-LCD-4.3
     PAPER → TELEX in `audio.c`). GLYPH reworked from dots-everywhere to the
     Nothing-light aesthetic (dot headings only, clean icons, ink instrument chrome).
     *(committed — needs hardware verify)*
+15. **Theme restructure + tweak knobs** — the flat 6/7-theme enum collapsed to
+    four MODEs (BASIC/GLYPH/PIXEL/PAPER) each with a DARK/LIGHT face plus an
+    APPEARANCE dark/light toggle (`k_mode_palettes[MODE][2]`, NVS `ui_mode`/
+    `ui_dark`); a THEME ALBUM ART on/off toggle (`ui_themeart`) that keeps the
+    theme but disables the per-theme art restyle; the colour grid grown to an
+    8-hue × 3-variant 24-swatch wheel (default deep orange, contrast-aware
+    selection check); PAPER/Focus album frames now baked into the cover pixels so
+    they scale with the art; a tap-to-toggle remaining ↔ total timecode on
+    now-playing; a visible GLYPH volume fader; ASCII-folding of non-ASCII album
+    titles in `gen_albums.py`; and `main/ui_tune.h` — a single header of
+    per-MODE layout/colour knobs (text Y, letter-spacing, FPS/button positions,
+    devices icon, progress/fader geometry, the accent palette) you edit by eye
+    and rebuild. *(committed — needs hardware verify)*
 
 After all of the above is confirmed on hardware:
 - **RAM art decode** — switch from LittleFS round-trip to the existing

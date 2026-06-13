@@ -291,19 +291,43 @@ What's in `ui.c` as committed:
   286 px card-native pool (~9.2 MB, rewritten per browser build with the
   theme's look) makes Carousel/Focus card blits 1:1 (`LV_SCALE_NONE`), falling
   back to the old paths if allocation fails; the GLYPH gas-tank ticker freezes
-  while now-playing is off-screen; and EXPERIMENT
-  `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2` renders with one SW draw unit per core —
-  revert that single sdkconfig line first if hardware shows artifacts/crashes.
+  while now-playing is off-screen. NOTE: `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT` MUST
+  stay `=1` — the earlier `=2` experiment (one SW draw unit per core) boot-loops
+  on this board: two draw units conflict with the BSP's PPA acceleration
+  (`ppa_fill` overruns the pending-transaction queue → `ESP_ERROR_CHECK` abort).
+  See the comment in `sdkconfig.defaults`.
 - Settings screen organised into **two tabs — DISPLAY and SOUND** (`SET_TAB_COUNT`,
-  `settings_page()`/`settings_header()` helpers). DISPLAY: MODE / COLOUR / BROWSER
-  STYLE / FONT / SELECTION LINE / BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND
-  on-off / VOLUME / SOUND SET. All NVS-persisted.
-- **Six MODE options: Dark / Black / Light / GLYPH / PIXEL / PAPER** (`THEME_*_IDX`,
-  `THEME_COUNT=6`). (History: the old Yudho/Fuhrer VFX-backdrop themes were removed
-  and merged into the single GLYPH dot theme — see below. The whole `lv_canvas`
-  particle system, vortex/emission tick callbacks, and the `s_vfx_*` state are gone.)
-- Colour accent system: four accents (Orange / Red / Green / Purple), drives
-  selection highlights and progress bar. Separate from MODE palette.
+  `settings_page()`/`settings_header()` helpers). DISPLAY: APPEARANCE (dark/light)
+  / MODE / THEME ALBUM ART / COLOUR / BROWSER STYLE / FONT / SELECTION LINE /
+  BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND on-off / VOLUME / SOUND SET.
+  All NVS-persisted.
+- **Four MODE options, each with a DARK/LIGHT face** (`MODE_BASIC / MODE_GLYPH /
+  MODE_PIXEL / MODE_PAPER`, `MODE_COUNT=4`; `s_dark` toggle). `k_mode_palettes
+  [MODE_COUNT][2]` maps {mode, dark?} → a `theme_t` palette; `apply_palette()`
+  selects `s_th`. BASIC dark is the old BLACK; BASIC light the old LIGHT; GLYPH /
+  PIXEL / PAPER each carry a dark + light palette. APPEARANCE (dark/light) sits
+  above MODE in Settings. NVS keys `ui_mode` / `ui_dark` (the old single `theme`
+  key is retired — first boot after this change lands in BASIC dark). (History:
+  the old 6/7-theme flat enum and the Yudho/Fuhrer VFX-backdrop themes are gone;
+  the whole `lv_canvas` particle system, vortex/emission tick callbacks and the
+  `s_vfx_*` state were deleted.)
+- **THEME ALBUM ART toggle** (`s_theme_art`, NVS `ui_themeart`, shown directly
+  under MODE) — turns the per-theme art restyle (PIXEL dither, PAPER 1-bit
+  duotone) on/off while keeping the rest of the theme; gated at every art-styling
+  site (`is_pixel_theme() && s_theme_art`, `is_paper_theme() && s_theme_art`).
+- Colour accent system: **8-hue wheel × 3 variants = 24 swatches** (vivid / deep /
+  soft rows; orange / amber / green / teal / blue / purple / magenta / red
+  columns). All values live in `TUNE_ACCENTS` (`ui_tune.h`); the grid is laid out
+  `TUNE_ACCENT_COLS`-wide. Drives selection highlights and progress bar, separate
+  from the MODE palette. Default is deep orange (`s_accent = 8`). The selected
+  swatch shows a contrast-aware check (ink on light swatches, white on dark).
+- **`main/ui_tune.h` — user-tweakable layout/colour knobs.** Central header of
+  per-MODE arrays (`{ BASIC, GLYPH, PIXEL, PAPER }` order) for the values that
+  were repeatedly tuned by eye: accent palette, browser/now-playing text Y,
+  title letter-spacing, selection-line gap, FPS + top-button positions, PAPER
+  rule Y, devices-selector icon, progress-bar Y, timestamp width, transport-key
+  Y, and volume-fader X/Y/H. `ui.c` reads these into `k_tune_*` arrays indexed by
+  `s_mode`; edit a number, rebuild, look — no `ui.c` changes needed.
 - **PIXEL retro theme** — 1bpp Press Start 2P bitmap font (16 px body / 24 px
   heading), Bayer 4×4 ordered dither + RGB444 quantize on all album art and browser
   thumbnails, dark-CRT palette. PSRAM thumb pool (~0.5 MB) allocated on PIXEL entry,
@@ -659,9 +683,11 @@ git log --oneline -10          # recent history
   cp1–3 verified: display renders at 800×480 landscape, WiFi via onboard C6,
   Spotify token refresh + poll every 5 s. The UI (`ui.c`) has been committed with:
   full LVGL browser + now-playing, three browser styles (Carousel/Focus/Cover Flow),
-  tabbed Settings (DISPLAY + SOUND) with six MODE options
-  (Dark/Black/Light/GLYPH/PIXEL/PAPER), charcoal palette, flat buttons, colour accent
-  system (Orange/Red/Green/Purple), tiny_ttf kerning crash fix, PIXEL retro theme
+  tabbed Settings (DISPLAY + SOUND) with four MODE options each having a
+  DARK/LIGHT face (BASIC/GLYPH/PIXEL/PAPER + an APPEARANCE dark/light toggle) and
+  a THEME ALBUM ART on/off toggle, charcoal palette, flat buttons, an 8-hue ×
+  3-variant (24-swatch) colour accent grid, all layout/colour values exposed in
+  `main/ui_tune.h`, tiny_ttf kerning crash fix, PIXEL retro theme
   (1bpp Press Start 2P font, Bayer-dithered pixelated art/thumbnails, dark-CRT
   palette), the **GLYPH Nothing-OS-light theme** (light grey + ink, dot-matrix
   headings over clean small type, hairline outline pills with solid-ink selection,

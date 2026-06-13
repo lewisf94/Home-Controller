@@ -74,3 +74,6 @@ eim_config.toml
 
 # Waveshare demo repo clone used for Step-0 board validation (not part of the project)
 waveshare-test/
+
+# VS Code "Local History" extension snapshots (editor-local, not project files)
+.history/

@@ -14,7 +14,7 @@ static const album_entry_t s_albums[] = {
     { "Whatever People Say I Am, That's What I'm Not", "Arctic Monkeys",    "spotify:album:50Zz8CkIhATKUlQMbHO3k1" },
     { "Social Cues",                                   "Cage the Elephant", "spotify:album:2VuZJsJBPLwg9BeQFQle8G" },
     { "Dance, No One's Watching",                      "Ezra Collective",   "spotify:album:2BwKd9lWotQIhROHSWQ78h" },
-    { "Ö",                                             "Fcukers",           "spotify:album:4RrsgnUbZIFTw42Apa8lXO" },
+    { "O",                                             "Fcukers",           "spotify:album:4RrsgnUbZIFTw42Apa8lXO" },
     { "What Went Down",                                "Foals",             "spotify:album:0RyCpIKlCV0kgEuzrmp73O" },
     { "Skinty Fia",                                    "Fontaines D.C.",    "spotify:album:0aVN6rMKthfuAdDXn8RTXf" },
     { "Gorillaz",                                      "Gorillaz",          "spotify:album:4tUxQkrduOE8sfgwJ5BI2F" },

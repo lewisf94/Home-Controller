@@ -44,10 +44,13 @@ CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_DEF_REFR_PERIOD=15
-# EXPERIMENT (revert this one line if anything renders wrong or crashes):
-# two SW draw units so LVGL renders dirty areas on both P4 cores in
-# parallel (draw threads: 8 KB stack, prio 3 -- LVGL Kconfig defaults).
-CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+# EXPERIMENT REVERTED (2026-06-11, on-hardware boot loop): two SW draw units
+# conflict with the BSP's PPA acceleration. The adapter warns "PPA acceleration
+# requires LV_DRAW_SW_DRAW_UNIT_CNT == 1" but its ppa_fill hook still runs from
+# both render threads, overruns the PPA client's pending-transaction queue on
+# the first frame, and ESP_ERROR_CHECK aborts -> reboot loop. Keep this at 1
+# unless PPA is disabled first (and PPA's hardware rotation is the bigger win).
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
 # cp2: WiFi stack pushed internal SRAM ~2 KB over. Don't force LVGL hot
 # functions into IRAM -- frees several KB of IRAM (and silences the
 # .iram1 section-conflict warnings). Negligible render cost for this UI.

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +55,46 @@ TARGETS = [
 _QUOTED = re.compile(r'"([^"]*)"')
 _ARTICLES = ("the ", "a ", "an ")
 
+# Typographic punctuation -> ASCII. Spotify metadata uses smart quotes/dashes
+# (e.g. U+2019 in "Where's My Utopia?"), but the compiled device fonts
+# (Montserrat / unscii mono / dot) only carry the ASCII range -- the smart
+# forms render as a missing-glyph box on the panel.
+_PUNCT_ASCII = str.maketrans({
+    "‘": "'",  "’": "'",   # single quotes
+    "“": '"',  "”": '"',   # double quotes
+    "–": "-",  "—": "-",   # en/em dash
+    "…": "...",                 # ellipsis
+    " ": " ",                   # no-break space
+})
+
+
+# Letters that NFKD can't decompose to ASCII + a combining mark.
+_LETTER_FOLD = str.maketrans({
+    "ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "œ": "oe", "Œ": "OE",
+    "ß": "ss", "đ": "d", "Đ": "D", "ł": "l", "Ł": "L", "ð": "d", "Ð": "D",
+    "þ": "th", "Þ": "Th",
+})
+
+
+def _ascii_fold(s: str) -> str:
+    """Reduce a title/artist to ASCII the device fonts actually carry.
+
+    The compiled Montserrat / unscii-mono / dot fonts only have the ASCII
+    range, so anything outside it renders as a missing-glyph box (e.g. the
+    "O-umlaut" Fcukers album showed as just a box). NFKD splits accented
+    letters into base + combining mark; we drop the marks, hand-fold the few
+    letters NFKD can't (o-slash, ae, ...), then strip any remaining
+    non-ASCII (which would have been a box anyway).
+    """
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.translate(_LETTER_FOLD)
+    return s.encode("ascii", "ignore").decode("ascii")
+
+
+def _ascii_punct(s: str) -> str:
+    return _ascii_fold(s.translate(_PUNCT_ASCII))
+
 
 def parse_master(path: Path = MASTER) -> list[tuple[str, str, str]]:
     """Return [(title, artist, uri), ...] in file order."""
@@ -66,7 +107,8 @@ def parse_master(path: Path = MASTER) -> list[tuple[str, str, str]]:
         if uri is None:
             continue
         title, artist = [f for f in fields if f != uri][:2]
-        albums.append((title.strip(), artist.strip(), uri.strip()))
+        albums.append((_ascii_punct(title.strip()),
+                       _ascii_punct(artist.strip()), uri.strip()))
     return albums
 
 
