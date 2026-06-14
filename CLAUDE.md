@@ -426,9 +426,26 @@ CRITICAL constraints on this board (never regress):
   `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, ...)`.
 
 Deferred work (do after hardware is confirmed stable):
-- **RAM art decode:** waveshare has PSRAM — switch album art to decode in RAM
-  rather than the LittleFS round-trip (`spotify_download_bytes` + `album_art_decode`
-  RAM path already exists but is unused).
+- **RAM art decode — GATED on validating `JPEG_openRAM` on hardware first.** The
+  `spotify_download_bytes` + `album_art_decode` RAM path exists but is unused for
+  a reason: `album_art.h`/`album_art.cpp` document that JPEGDEC 1.6.2's openRAM
+  "appears to mis-handle Spotify's mozjpeg streams," which is why the LittleFS
+  file detour exists. Do NOT remove LittleFS until openRAM is proven on real
+  covers. `main.c` has an `ART_DECODE_RAM` compile flag (default 0 = file path)
+  that swaps to the RAM path with LittleFS still mounted, for a clean on-device
+  A/B test; at =1, if every cover decodes cleanly, the LittleFS + vfs dependency
+  (and the 4 MB `storage` partition) can then be removed for real.
+- **Cover Flow scroll cost is memory-bandwidth bound, not compute bound**
+  (2026-06-14 perf review). `cf_draw_col` writes `s_cf_buf` column-major (1600-byte
+  stride per pixel) against a 128-byte L2 line and ~185 MB/s PSRAM, so the
+  per-pixel divide is secondary to the access pattern, and the unconditional
+  per-frame full-canvas clear (473 KB) is pure overhead. PROFILE before
+  restructuring: `cf_render` logs a clear-vs-rasterise breakdown when FPS display
+  is on (`cf_profile_tick`, gated on `s_fps_enabled`, zero cost otherwise). The
+  real levers are a cache-friendly rasterise (scratch-tile / row-major) and
+  trimming the clear — both profile-gated. NOT levers: CPU is already maxed
+  (360 MHz is the P4's IDF ceiling and the unset default), build config is optimal
+  (PSRAM 200 MHz, -O2, 256 KB L2), panel caps at 60 Hz, PSRAM is ~70 % free.
 
 PPA rotation — ALREADY ENABLED (do not re-list as a TODO): the vendored BSP
 hardcodes `.enable_ppa_accel = true` in `bsp_display_lcd_init`
@@ -708,9 +725,17 @@ git log --oneline -10          # recent history
     `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n`. Display framebuffers (2.25 MB) live
     in PSRAM. The 256 KB Spotify response buffer + album art must be allocated
     from PSRAM at cp3/cp5. Full analysis + PSRAM-first policy in `docs/PORT-NOTES.md`.
-  - **Next:** RAM art decode (waveshare has PSRAM). (PPA rotation is already
-    enabled by the vendored BSP; TLS keep-alive and adaptive poll backoff are
-    done.)
+  - **Next:** RAM art decode is GATED on validating `JPEG_openRAM` on hardware
+    (the `ART_DECODE_RAM` A/B flag in `main.c` tests it; openRAM mis-handled
+    Spotify's mozjpeg streams in JPEGDEC 1.6.2, which is why LittleFS exists). The
+    bigger perf frontier is the Cover Flow rasteriser — memory-bandwidth bound;
+    profile with the FPS-on `cf_prof` serial log before restructuring. CPU / build
+    config / PSRAM headroom are already maxed. Concurrency was audited 2026-06-14
+    and is clean (lock discipline sound, command queue value-copied, art
+    double-buffer race-free); the single-writer assumption for `spotify_task`-owned
+    state (`s_track`, `s_art_buf`, `s_sonos_*`) must be preserved — a future
+    physical-input task must post to `s_cmd_queue`, not mutate that state directly.
+    (PPA rotation, TLS keep-alive and adaptive poll backoff are done.)
   - **CRITICAL constraints (do not regress):** no object-level transform_scale/opa
     on cards; no LV_USE_MATRIX; always use lv_tiny_ttf_create_data_ex with
     LV_FONT_KERNING_NONE. See the Architecture section for full rationale.

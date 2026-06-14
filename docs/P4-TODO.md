@@ -60,10 +60,26 @@ items, see [`PENDING.md`](PENDING.md).
 
 Deferred until the board confirms the UI is stable. Isolated; re-flash between.
 
-1. **RAM art decode** — waveshare has PSRAM. Switch album art from the
-   LittleFS file round-trip to the existing `spotify_download_bytes` +
-   `album_art_decode` RAM path. Removes flash write/read for every track
-   change, takes one I/O system out of the hot path.
+1. **RAM art decode — GATED on an openRAM hardware check.** Switching album art
+   from the LittleFS file round-trip to the `spotify_download_bytes` +
+   `album_art_decode` RAM path would drop the `littlefs`+`vfs` deps and the 4 MB
+   `storage` partition. BUT the file path is a deliberate workaround: JPEGDEC
+   1.6.2's `JPEG_openRAM` mis-handles some of Spotify's mozjpeg covers (see
+   `album_art.h`). The `ART_DECODE_RAM` compile flag in `main.c` (default 0)
+   A/Bs it on hardware with LittleFS untouched — set =1, flash, confirm every
+   cover decodes cleanly, THEN remove LittleFS. Do not remove it blind. (commit
+   `9bdd80a`)
+
+2. **Cover Flow scroll — memory-bandwidth bound (profile first).** `cf_render`'s
+   unconditional per-frame full-canvas clear (473 KB) plus the column-major
+   `cf_draw_col` writes (1600-byte stride vs a 128-byte L2 line, ~185 MB/s PSRAM)
+   dominate — the per-pixel divide is secondary. `cf_render` now logs a
+   clear-vs-rasterise breakdown when FPS display is on (`cf_profile_tick`, commit
+   `99605ed`). Read those numbers before touching anything; the real levers are a
+   cache-friendly rasterise (scratch-tile / row-major) and trimming the clear.
+   CPU (360 MHz = P4 IDF ceiling), build flags (-O2, PSRAM 200 MHz, 256 KB L2)
+   and PSRAM headroom (~70 %) are already maxed. Panel caps at 60 Hz, so the goal
+   is holding 60 during a flick, not a higher number.
 
 Done, not TODOs (verify on hardware, see PENDING.md): **PPA rotation** is
 already enabled — the vendored BSP hardcodes `.enable_ppa_accel = true`
@@ -74,6 +90,31 @@ thumb pools (1:1 card blits, no flash XIP reads on scroll), GLYPH gas-tank
 ticker frozen off-screen, and the EXPERIMENT `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2`
 (two-core SW render — revert that single sdkconfig line if hardware shows
 artifacts).
+
+---
+
+## Code-quality deep-dive audits (2026-06-14, in progress — one at a time)
+
+Read-only investigations of the current code, Lewis's request. Findings logged
+to PENDING.md; fixes only on request.
+
+- **A. Concurrency / lock discipline — DONE, CLEAN.** Lock discipline sound;
+  command queue value-copied + non-blocking; album-art double buffer race-free
+  (`s_art_buf` is single-task). Constraint: `spotify_task` must stay the sole
+  writer of `s_track` / `s_art_buf` / `s_sonos_*`; future physical input posts to
+  `s_cmd_queue`.
+- **B. Failure-mode / resilience sweep** — pending. Walk every external failure
+  (WiFi drop, TLS fail, Spotify 401/429/5xx, Sonos unreachable, OOM, truncated
+  JPEG); confirm each degrades, not wedges.
+- **C. Credential & TLS security posture** — pending. Token-in-NVS handling, cert
+  bundle verification, no-leak logging, secrets gitignore across all builds.
+- **D. Long-uptime heap / fragmentation** — pending. Pool churn on theme switches
+  + TLS buffers over a multi-day run.
+- **E. Multi-build drift / `app_core` consolidation** — pending. What's diverged
+  across the 4 builds; the `app_core` refactor (see "Deferred architecture work"
+  in PENDING.md).
+- **F. Sonos UPnP/SOAP robustness** — pending. SOAP/DIDL parsing edge cases +
+  device-routing logic.
 
 ---
 

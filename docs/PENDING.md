@@ -58,6 +58,23 @@ reverted (see `sdkconfig.defaults`).
 | GLYPH Nothing-light rework | GLYPH flipped to the Nothing-OS equaliser reference: light warm-grey ground + black ink; dot-matrix font for HEADINGS only (body/icons clean Montserrat — retires the muddy dotted cog); hairline outline pills, selected = solid ink + light text (`opt_sel_bg/fg`); gas tank = hairline capsule with ink dots + accent playhead; WiFi/volume dots in ink; dissolve dots in ink (were white); accent ring on colour swatches now theme-text (was invisible white on light themes). Unused `lv_font_dot_20/28` + `dot_sym_20/28` deleted. | this session |
 | Theme restructure (2026-06-13) | Flat 6/7-theme enum collapsed to four MODEs (BASIC/GLYPH/PIXEL/PAPER) each with a DARK/LIGHT face + APPEARANCE toggle (`k_mode_palettes[MODE][2]`, NVS `ui_mode`/`ui_dark`); THEME ALBUM ART on/off toggle (`ui_themeart`); COLOUR grid grown to an 8-hue × 3-variant 24-swatch wheel (default deep orange, contrast-aware check); PAPER/Focus album frames baked into the cover pixels so they scale with the art; tap-to-toggle remaining/total timecode; visible GLYPH volume fader; `main/ui_tune.h` tweak-knob header; `gen_albums.py` ASCII-folds non-ASCII titles. | `d16094f` |
 
+### Waveshare — committed/researched 2026-06-14 (Claude Code session)
+
+Code committed (needs hardware verify):
+
+| Area | What landed | Commits |
+|---|---|---|
+| Docs | Waveshare README caught up with PAPER theme, GLYPH rework, six MODEs, CF FPS-note fix; PPA/poll-backoff marked done | `990aff9` |
+| Perf — CF profiler | `cf_render` logs a clear-vs-rasterise per-frame breakdown over serial when FPS display is ON (`cf_profile_tick`, gated on `s_fps_enabled`, zero cost otherwise). Flash, turn FPS on, flick Cover Flow, read the `cf_prof:` lines. | `99605ed` |
+| Perf/Arch — `ART_DECODE_RAM` A/B | Compile flag in `main.c` (default 0 = LittleFS file path). Set =1 to decode album art straight from a PSRAM buffer (`spotify_download_bytes` + `album_art_decode`), LittleFS still mounted — validates whether `JPEG_openRAM` handles Spotify's mozjpeg covers before the LittleFS dependency is cut. | `9bdd80a` |
+
+Investigations (read-only; findings folded into CLAUDE.md / P4-TODO.md):
+
+- **Performance review.** Only `littlefs`+`vfs` are worth dropping (the RAM-decode path), GATED on the openRAM A/B above. JPEGDEC / esp_http_client / esp_codec_dev are load-bearing. CPU is already at 360 MHz (P4 IDF ceiling + unset default), build config optimal (PSRAM 200 MHz, -O2, 256 KB L2), panel ~60 Hz, PSRAM ~70 % free. Cover Flow scroll is **memory-bandwidth bound** (column-major `s_cf_buf` writes, 1600-byte stride, 128-byte L2 line, ~185 MB/s PSRAM) — the per-pixel divide is secondary; the unconditional 473 KB per-frame clear is pure overhead. Profile before restructuring.
+- **Concurrency / lock-discipline audit — CLEAN.** All `ui_*` seam functions self-lock; the command queue is value-copied + non-blocking; the album-art double buffer is race-free (`s_art_buf` is read/written only on `spotify_task`, never by the render task, which only reads the lock-published `s_art_dsc->data`). An agent flagged an art-swap-order "race" — verified a FALSE POSITIVE. Standing constraint: keep `spotify_task` the sole writer of `s_track` / `s_art_buf` / `s_sonos_*`; a future physical-input task must post to `s_cmd_queue`, not touch that state.
+
+Deep-dive queue (one at a time, Lewis's request): **A concurrency — DONE (clean).** Pending: **B** failure-mode/resilience sweep, **C** credential & TLS security posture, **D** long-uptime heap/fragmentation, **E** multi-build drift / `app_core` consolidation, **F** Sonos UPnP/SOAP robustness.
+
 ### CYD (board not available 2026-05-30)
 
 A large stack of changes hasn't been hardware-tested because Lewis didn't have
