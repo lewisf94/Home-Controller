@@ -2077,9 +2077,32 @@ static void cf_paper_dither(uint16_t bg_px)
     }
 }
 
+/* When the FPS readout is on, log a periodic breakdown of where each Cover Flow
+ * scroll frame spends its time -- the full-canvas clear vs. the per-card
+ * perspective rasterise -- so the render path can be profiled on hardware
+ * without a debugger. Zero cost unless FPS display is enabled. */
+static void cf_profile_tick(int64_t t0, int64_t t1, int64_t t2)
+{
+    static uint64_t acc_clear, acc_rast;
+    static uint32_t acc_n;
+    acc_clear += (uint64_t)(t1 - t0);
+    acc_rast  += (uint64_t)(t2 - t1);
+    if (++acc_n >= 30) {
+        ESP_LOGI(TAG, "cf_prof: clear=%lu us  rast=%lu us  frame=%lu us  (avg/%lu)",
+                 (unsigned long)(acc_clear / acc_n),
+                 (unsigned long)(acc_rast / acc_n),
+                 (unsigned long)((acc_clear + acc_rast) / acc_n),
+                 (unsigned long)acc_n);
+        acc_clear = acc_rast = 0;
+        acc_n = 0;
+    }
+}
+
 static void cf_render(void)
 {
     if (!s_cf_buf || !s_cf_img || !s_browser_scroller) return;
+
+    int64_t t_prof0 = s_fps_enabled ? esp_timer_get_time() : 0;
 
     /* Clear canvas to theme background (convert 0xRRGGBB → RGB565). */
     uint32_t bg    = s_th->bg;
@@ -2088,6 +2111,8 @@ static void cf_render(void)
                    | (uint16_t) ((bg >>  3) & 0x1Fu);
     uint16_t *p = s_cf_buf, *end = p + (size_t)CF_PERSP_W * CF_PERSP_H;
     while (p < end) *p++ = bg_px;
+
+    int64_t t_prof1 = s_fps_enabled ? esp_timer_get_time() : 0;
 
     int32_t scroll_x = lv_obj_get_scroll_left(s_browser_scroller);
     int32_t pad_left = (SCREEN_W - cs()) / 2;
@@ -2152,6 +2177,8 @@ static void cf_render(void)
     }
 
     if (is_paper_theme() && s_theme_art) cf_paper_dither(bg_px);
+
+    if (s_fps_enabled) cf_profile_tick(t_prof0, t_prof1, esp_timer_get_time());
 
     lv_obj_invalidate(s_cf_img);
 }
