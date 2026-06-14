@@ -110,15 +110,21 @@ to PENDING.md; fixes only on request.
   see the expanded Sonos item under "Open — UX polish". Minor: Spotify 5xx no extra
   backoff; non-JPEG art retried not blacklisted; display-init/WiFi-wait returns
   unchecked (hardware-fault only). Two agent "criticals" were false positives.
-- **C. Credential & TLS security posture** — pending. Token-in-NVS handling, cert
-  bundle verification, no-leak logging, secrets gitignore across all builds.
-- **D. Long-uptime heap / fragmentation** — pending. Pool churn on theme switches
-  + TLS buffers over a multi-day run.
-- **E. Multi-build drift / `app_core` consolidation** — pending. What's diverged
-  across the 4 builds; the `app_core` refactor (see "Deferred architecture work"
-  in PENDING.md).
-- **F. Sonos UPnP/SOAP robustness** — pending. SOAP/DIDL parsing edge cases +
-  device-routing logic.
+- **C. Credential & TLS security posture — DONE (clean).** No secret logged, all
+  6 HTTPS clients verify certs, secrets gitignored, parsing bounded; plaintext-NVS
+  access token is informational (no flash encryption; refresh token not persisted).
+- **D. Long-uptime heap / fragmentation — DONE (clean).** No leaks/double-frees;
+  pools freed-before-realloc; only nit is the per-poll Spotify response-buffer
+  malloc/free (could be a persistent reused buffer; safe as-is).
+- **E. Multi-build drift / `app_core` consolidation — DONE.** `cyd_shared` =
+  UI/input/MCP/art/FS; `spotify.c`+`main.c` per-build (~290 L dup → `app_core`).
+  Port to CYD when that board is back: 429 holdoff + `RESP_INITIAL_CAP=16K`
+  (waveshare-only). The internal-SRAM JPEGIMAGE fix is missing from `cyd_shared`
+  but MOOT on the current no-PSRAM CYD — port only with the CYD-PSRAM item.
+- **F. Sonos UPnP/SOAP robustness — DONE.** No crash bugs (divide-by-zero guarded
+  — verified; unescape overflow-safe; buffers bounded). Minor: 8 KB DIDL
+  truncation only validates the title; no range-check on time/volume; outgoing
+  DIDL not XML-escaped (Spotify URIs are safe). See `sonos.c` recommendations.
 
 ---
 
