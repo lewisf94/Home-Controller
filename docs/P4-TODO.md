@@ -103,9 +103,13 @@ to PENDING.md; fixes only on request.
   (`s_art_buf` is single-task). Constraint: `spotify_task` must stay the sole
   writer of `s_track` / `s_art_buf` / `s_sonos_*`; future physical input posts to
   `s_cmd_queue`.
-- **B. Failure-mode / resilience sweep** — pending. Walk every external failure
-  (WiFi drop, TLS fail, Spotify 401/429/5xx, Sonos unreachable, OOM, truncated
-  JPEG); confirm each degrades, not wedges.
+- **B. Failure-mode / resilience sweep — DONE.** Mostly graceful (WiFi reconnect,
+  token refresh, 429 holdoff, 404 wake, OOM degrades with fallbacks). Real gap:
+  an unreachable Sonos blocks `spotify_task` on 4 s SOAP timeouts — auto/restricted
+  self-heals, an explicitly-picked one does NOT (~12 s/poll until device switched);
+  see the expanded Sonos item under "Open — UX polish". Minor: Spotify 5xx no extra
+  backoff; non-JPEG art retried not blacklisted; display-init/WiFi-wait returns
+  unchecked (hardware-fault only). Two agent "criticals" were false positives.
 - **C. Credential & TLS security posture** — pending. Token-in-NVS handling, cert
   bundle verification, no-leak logging, secrets gitignore across all builds.
 - **D. Long-uptime heap / fragmentation** — pending. Pool churn on theme switches
@@ -141,11 +145,17 @@ These would each be a small/medium PR.
   re-opens the tiny_ttf kerning-crash surface); circular knob-style
   transport buttons; hairline section dividers. Start with the colour-coded
   keys (no new fonts, board-safe).
-- **GetTransportInfo connect timeout (4 s) on Sonos probe** — the
-  "is anything playing?" probe at boot occasionally times out and blocks
-  the Spotify task for the full 4 s. Drop the timeout to 1.5-2 s
-  specifically for the probe so a slow/off speaker can't stall the task
-  that long. Pair with the adaptive-poll backoff work above.
+- **Sonos unreachable stalls the Spotify task (4 s SOAP timeouts)** — confirmed
+  in the B resilience audit. The idle probe (`GetTransportInfo`, gated 10 s)
+  blocks 4 s when a configured speaker is powered off; worse, once a Sonos is the
+  active device, `sonos_fetch_now_playing` runs THREE 4 s queries back-to-back, so
+  an unreachable active Sonos stalls `spotify_task` ~12 s per poll. An auto-probed
+  / restricted Sonos self-heals (a failed fetch clears `s_sonos_active` + 10 s
+  backoff, main.c:460), but an EXPLICITLY user-picked one (`s_sonos_explicit`)
+  does NOT — it stalls every poll until the user switches device. Fixes: drop the
+  SOAP `timeout_ms` to ~1.5-2 s (esp. the probe); add a short TCP connect timeout
+  so a dead host fails fast; and after N consecutive failures clear/back-off the
+  explicit-pick case so a powered-off pinned speaker can't stall forever.
 - **First "place me at the playing album" on browser open** — auto-snap is
   in (`s_target_card`), but if the user opens the browser before any poll
   has matched an album the carousel sits at index 0. After the next match
