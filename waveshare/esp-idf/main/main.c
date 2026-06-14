@@ -128,6 +128,17 @@ static const char *sonos_target_host(void)
 #define ART_RGB_BYTES  (ART_W * ART_H * 2)
 #define ART_JPEG_PATH  "/littlefs/nowplaying.jpg"
 
+/* A/B switch for the album-art decode path (see fetch_and_publish_art):
+ *   0 (default) -- download to a LittleFS file, decode via JPEG_openFile. The
+ *                  proven path: JPEGDEC 1.6.2's openRAM mis-handles some of
+ *                  Spotify's mozjpeg streams, which is why this file detour exists.
+ *   1           -- decode straight from a PSRAM download buffer (no flash, no
+ *                  LittleFS for art). Set this to validate openRAM on the actual
+ *                  covers ON HARDWARE before committing to removing LittleFS.
+ *                  LittleFS still mounts either way -- flipping this flag changes
+ *                  nothing else, so it's a clean on-device comparison. */
+#define ART_DECODE_RAM 0
+
 static EventGroupHandle_t s_wifi_event_group;
 static int s_wifi_retry_count = 0;
 
@@ -319,27 +330,43 @@ static esp_err_t wifi_init_sta(void)
     return (bits & WIFI_CONNECTED_BIT) ? ESP_OK : ESP_FAIL;
 }
 
-/* Decode the JPEG staged at ART_JPEG_PATH into s_art_rgb (PSRAM) and hand the
- * buffer to ui.c, which republishes it under the LVGL lock. */
-static bool decode_and_publish_art(void)
+/* Download the cover at `url`, decode it into the idle s_art_rgb buffer (PSRAM)
+ * and hand it to ui.c, which republishes under the LVGL lock. Decodes into the
+ * idle buffer then swaps, so the render task's current buffer is never touched.
+ * The download+decode path is selected by ART_DECODE_RAM (see its definition).
+ * Returns: 1 = published, 0 = decode failed (record-and-skip this url),
+ * -1 = download failed (transient -- retry next poll). */
+static int fetch_and_publish_art(const char *url)
 {
-    /* Decode into the idle buffer, then swap; never touch the buffer the
-     * render task is currently displaying. */
     int next = s_art_buf ^ 1;
     uint8_t *buf = s_art_rgb[next];
-    if (!buf) return false;
+    if (!buf) return -1;
 
     uint16_t w = 0, h = 0;
-    if (!album_art_decode_file(ART_JPEG_PATH,
-                               (uint16_t *)buf, ART_W * ART_H, &w, &h)) {
+#if ART_DECODE_RAM
+    size_t len = 0;
+    unsigned char *jpeg = spotify_download_bytes(url, &len);
+    if (!jpeg) return -1;
+    ESP_LOGI(TAG, "downloaded %u bytes (RAM decode)", (unsigned)len);
+    bool ok = album_art_decode(jpeg, len, (uint16_t *)buf, ART_W * ART_H, &w, &h);
+    free(jpeg);
+#else
+    size_t bytes = 0;
+    if (!spotify_download_to_file(url, ART_JPEG_PATH, &bytes)) return -1;
+    ESP_LOGI(TAG, "downloaded %u bytes -> %s", (unsigned)bytes, ART_JPEG_PATH);
+    bool ok = album_art_decode_file(ART_JPEG_PATH,
+                                    (uint16_t *)buf, ART_W * ART_H, &w, &h);
+#endif
+
+    if (!ok) {
         ESP_LOGW(TAG, "jpeg decode failed");
-        return false;
+        return 0;
     }
     ESP_LOGI(TAG, "decoded %ux%u album art (%u bytes)",
              (unsigned)w, (unsigned)h, (unsigned)(w * h * 2));
     ui_art_refresh(buf, w, h);
     s_art_buf = next;
-    return true;
+    return 1;
 }
 
 /* Gate the per-poll "now playing" INFO lines to actual state changes (track,
@@ -442,24 +469,27 @@ static bool poll_and_publish(spotify_track_t *info)
          * route commands via Spotify API even if s_sonos_active is set. */
         s_sonos_has_audio = info->device_restricted && s_sonos_active[0];
         ui_set_track_info(info);
+        /* The file decode path needs LittleFS mounted; the RAM path doesn't. */
+#if ART_DECODE_RAM
+        bool art_ready = true;
+#else
+        bool art_ready = littlefs_is_mounted();
+#endif
         if (info->album_art_url[0] &&
             strcmp(info->album_art_url, s_art_url_loaded) != 0 &&
             strcmp(info->album_art_url, s_art_url_failed) != 0 &&
-            littlefs_is_mounted()) {
-            size_t bytes = 0;
-            if (spotify_download_to_file(info->album_art_url, ART_JPEG_PATH, &bytes)) {
-                ESP_LOGI(TAG, "downloaded %u bytes -> %s", (unsigned)bytes, ART_JPEG_PATH);
-                if (decode_and_publish_art()) {
-                    strlcpy(s_art_url_loaded, info->album_art_url, sizeof s_art_url_loaded);
-                } else {
-                    /* Decode is deterministic -- a malformed JPEG fails the
-                     * same way every time. Record so the next poll doesn't
-                     * re-download the same broken file every 5 s. */
-                    strlcpy(s_art_url_failed, info->album_art_url, sizeof s_art_url_failed);
-                    ESP_LOGW(TAG, "art decode failed, not retrying this url");
-                }
+            art_ready) {
+            int r = fetch_and_publish_art(info->album_art_url);
+            if (r == 1) {
+                strlcpy(s_art_url_loaded, info->album_art_url, sizeof s_art_url_loaded);
+            } else if (r == 0) {
+                /* Decode is deterministic -- a malformed cover fails the same way
+                 * every time. Record so the next poll doesn't re-fetch + re-decode
+                 * the same broken art every 5 s. */
+                strlcpy(s_art_url_failed, info->album_art_url, sizeof s_art_url_failed);
+                ESP_LOGW(TAG, "art decode failed, not retrying this url");
             }
-            /* Download failure left unrecorded (transient -- retry next poll). */
+            /* r == -1: download failed, unrecorded (transient -- retry next poll). */
         }
         return true;
     }
