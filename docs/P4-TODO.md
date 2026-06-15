@@ -141,6 +141,24 @@ to PENDING.md. The one actionable runtime gap (B, the Sonos stall) is now fixed
 
 ---
 
+## Post-hardware refactor candidates (readability)
+
+From the 2026-06-15 readability pass. The two clearly-safe wins shipped
+(`2917fca`: NVS `save_*` dedup -> one `nvs_save_u8` helper; the RGB565-packing
+expression at 6 sites -> the existing `rgb888_to_565`). These were DEFERRED
+because they touch verified / perf-sensitive code and want an on-device re-test:
+
+- **Split the big screen-builders** — `build_browser_screen` (~427 L),
+  `build_np_screen`, `build_settings_screen` are long procedural LVGL object
+  stacks; extracting helpers risks a draw-order bug. Do once you can flash.
+- **Dither-loop helpers** — factor the RGB565 *unpack* (`r=((px>>11)&0x1F)<<3`…),
+  the Rec.601 luma, and the Bayer threshold into `static inline` helpers
+  (zero-cost at -O2) used by `paperize_rgb565` / `cf_paper_dither` /
+  `accent_text_color`. Safe but in the hottest pixel loops — batch with the
+  Cover Flow perf work.
+- **Minor naming** — a few one-off settings-page dimensions could move to
+  `ui_tune.h`; `cf_draw_col` -> `cf_draw_column`. Marginal.
+
 ## Open — UX polish
 
 These would each be a small/medium PR.

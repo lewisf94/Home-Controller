@@ -1,28 +1,53 @@
 /*
- * Music Controller -- ESP32-P4 (Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3),
- * DIRECT SPOTIFY backend (no Home Assistant).
+ * Music Controller -- firmware for a handheld Spotify remote built on the
+ * Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 board (a small computer with a touch
+ * screen). This file, main.c, is the STARTING POINT: app_main() near the bottom
+ * runs once at power-on, sets everything up, then launches the background
+ * workers that run forever. If you are new to the project, read this header
+ * first -- it explains how the whole thing fits together.
  *
- * STATUS: checkpoint-5 -- album art. WiFi via the onboard ESP32-C6; a Spotify
- * task refreshes the OAuth token, polls /me/player every 5 s, and drives the
- * LVGL UI (ui.c): an album-browser carousel + a now-playing screen (320x320
- * art / title / artist / progress) laid out for 800x480. On a track change the
- * 640px cover is downloaded to LittleFS, JPEG-decoded /2 to 320x320 (PSRAM) and
- * shown. Tapping a card posts SCMD_PLAY_ALBUM to the scmd_t queue, drained by
- * the Spotify task off the render path. Physical controls (cp6) come later;
- * touch (GT911) is the only input so far.
+ * --- The big picture ---
+ * The ESP32-P4 has two CPU cores. We split the work into a few independent
+ * "tasks" (think of them as lightweight threads the chip rapidly switches
+ * between) so that a slow job never freezes another. The important ones:
  *
- * Memory: large HTTPS/JPEG buffers spill to PSRAM via the threshold policy in
- * sdkconfig.defaults (see docs/PORT-NOTES.md), so the 256 KB response buffer
- * never lands in the scarce 768 KB internal SRAM.
+ *   - The LVGL task: does ALL the on-screen drawing -- the album browser, the
+ *     now-playing screen, animations. ("LVGL" is the graphics library; it is
+ *     started for us inside the display driver / BSP, not in this file.)
+ *   - spotify_task (in this file): does the SLOW work -- talking to Spotify
+ *     over the internet (HTTPS), which can take a second or two per call. It
+ *     runs separately so the screen stays smooth while it waits on the network.
+ *   - A small audio task (audio.c): plays the UI click/beep sounds.
  *
- * Checkpoint roadmap (see README.md):
- *  1  Display skeleton (hardware-verified)
- *  2  WiFi (hardware-verified)
- *  3  Spotify (hardware-verified)
- *  4  UI: port cyd ui.c (lvgl_port_lock -> bsp_display_lock); 800x480 layout (hardware-verified)
- *  5  Assets: album_art.cpp + littlefs + bigger thumbs/art (album-art download)  <-- HERE
- *  6  Touch controls: prev/play-pause/next + volume -> ui_request_*()
- *  7  Parity: WiFi-strength indicator, volume HUD, progress bar, view toggle
+ * --- How a tap becomes music without freezing the screen ---
+ * When you tap an album, the UI does NOT call Spotify directly (that would
+ * block drawing for a second). Instead it drops a small message -- a command,
+ * type `scmd_t`, e.g. SCMD_PLAY_ALBUM -- into a QUEUE (a thread-safe mailbox,
+ * `s_cmd_queue`). spotify_task takes commands out one at a time and makes the
+ * real network call. Information flows ONE way: UI/input -> queue -> spotify_task.
+ *
+ * --- The "display lock" rule ---
+ * Only one task may touch on-screen objects at a time. So any code OUTSIDE the
+ * LVGL task that needs to update the UI (e.g. spotify_task showing a new track
+ * title) must first take a lock, make its change, then release it. The ui_*()
+ * helper functions in ui.c handle that locking for you -- call those, never
+ * poke LVGL objects directly from here.
+ *
+ * --- Speakers / Sonos ---
+ * Normally Spotify plays on a phone, laptop, or Spotify Connect speaker. A Sonos
+ * is a special case: Spotify's API refuses to control it, so when a Sonos is the
+ * chosen target we talk to it ourselves over the local network (see sonos.c).
+ *
+ * --- Memory note ---
+ * The chip has a little fast memory (768 KB "internal SRAM") and a lot of slower
+ * memory ("PSRAM"). Big buffers -- the 256 KB web-response buffer, the album art
+ * -- are steered into PSRAM by a rule in sdkconfig.defaults so they do not use
+ * up the scarce fast memory. (Full explanation in docs/PORT-NOTES.md.)
+ *
+ * Status: the UI is feature-complete and hardware-verified. The original
+ * bring-up steps (display -> WiFi -> Spotify -> UI -> album art) are listed in
+ * README.md. Physical knob/button controls are future work; touch is the only
+ * input today.
  */
 
 #include "freertos/FreeRTOS.h"
@@ -226,14 +251,24 @@ static TickType_t      s_sonos_fetch_hold = 0;
 
 
 
+/* --- Posting commands to the Spotify task (the "mailbox") ---
+ * When the user does something, the UI (and, later, physical buttons) call one
+ * of the ui_request_*() functions below. Those do NOT make the slow network
+ * call here -- they package the request into a small `scmd_t` struct and drop it
+ * into the queue (s_cmd_queue). spotify_task collects it later and does the real
+ * work. This is what keeps taps responsive: posting is instant, the waiting
+ * happens on the other task. */
 static void _post_cmd(scmd_type_t type, uint32_t param, const char *str)
 {
-    if (!s_cmd_queue) return;
+    if (!s_cmd_queue) return;                            /* not set up yet -> ignore */
     scmd_t cmd = { .type = type, .param = param };
-    if (str) { strlcpy(cmd.str, str, sizeof cmd.str); }
-    (void)xQueueSend(s_cmd_queue, &cmd, 0);
+    if (str) { strlcpy(cmd.str, str, sizeof cmd.str); }  /* copy the string INTO the command,
+                                                          * so the caller's buffer can vanish */
+    (void)xQueueSend(s_cmd_queue, &cmd, 0);              /* the 0 = "post and return at once,
+                                                          * never wait"; dropped if queue full */
 }
 
+/* The UI (see ui.h) calls these; each just enqueues one command and returns. */
 void ui_request_play(const char *uri)  { _post_cmd(SCMD_PLAY_ALBUM,     0,             uri);  }
 void ui_request_toggle_play(void)      { _post_cmd(SCMD_TOGGLE_PLAY,    0,             NULL); }
 void ui_request_prev(void)             { _post_cmd(SCMD_PREV_TRACK,     0,             NULL); }
