@@ -1,5 +1,21 @@
 /*
- * LVGL UI implementation -- see ui.h for the high-level contract.
+ * LVGL UI implementation -- everything you see on the screen is built here: the
+ * album-browser carousel, the now-playing screen, the Settings screens, the
+ * themes, the Cover Flow effect, the volume pop-up, the WiFi bars. "LVGL" is the
+ * graphics library; this file creates LVGL objects (labels, images, buttons) and
+ * arranges them on screen.
+ *
+ * This is the biggest file in the project. Finding your way around:
+ *   - The ui_*() functions near the bottom (declared in ui.h) are the ONLY way
+ *     other code (mainly spotify_task) touches the screen -- they take the
+ *     display lock for you, so callers never have to.
+ *   - build_browser_screen() / build_np_screen() / build_settings_screen() each
+ *     create one whole screen by stacking LVGL objects in order.
+ *   - The "themes" (BASIC / GLYPH / PIXEL / PAPER, each with a dark and light
+ *     face) are colour + font palettes; switching one rebuilds the screens. The
+ *     tweak-by-eye numbers (positions, colours) are gathered in ui_tune.h.
+ * Remember the rule from main.c: only the LVGL task may touch these objects, so
+ * everything here runs either on that task or under bsp_display_lock().
  *
  * Ported from cyd/esp-idf/main/ui.c and re-laid-out for the Waveshare
  * 800x480 landscape panel. Two differences from the CYD build:

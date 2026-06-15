@@ -1,21 +1,36 @@
 /*
- * Spotify Web API client -- ESP-IDF implementation.
+ * Spotify Web API client -- this file is how the device talks to Spotify over
+ * the internet. Every function here makes an HTTPS request to Spotify's servers
+ * (the same API a phone app uses) and is BLOCKING: it waits up to a second or
+ * two for the reply. That's why all of it runs on spotify_task and never on the
+ * drawing path (see main.c's header for why).
  *
- * HTTPS is provided by esp_http_client; TLS roots come from the IDF
- * certificate bundle (CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y) so we don't
- * have to pin DigiCert manually.
+ * What it does: keep a valid login token (below), ask "what's playing?"
+ * (spotify_fetch_player), send play/pause/next/seek/volume, list the user's
+ * devices, and download cover art.
  *
- * JSON: IDF v6.0 removed the bundled cJSON component, so we extract
- * the handful of fields we need with a small purpose-built scanner.
- * Spotify's responses are well-formed and the fields we use never
- * contain raw quotes (Spotify escapes them as \"), so a strstr-based
- * lookup with escape handling is sufficient and avoids pulling a
- * managed-component dependency for the sake of two values.
+ * --- Logging in (OAuth tokens) ---
+ * Spotify never sees your password. Instead you hold a long-lived "refresh
+ * token" (stored in secrets.h) and trade it for a short-lived "access token"
+ * that expires after about an hour. ensure_token() quietly fetches a fresh
+ * access token when the old one is near expiry; it's also cached in NVS (flash)
+ * so a reboot doesn't always need a new one. The access token rides along on
+ * every request as an "Authorization: Bearer <token>" header.
  *
- * Response bodies are accumulated in a heap buffer via the
- * ESP_HTTP_CLIENT_EVENT_ON_DATA callback so the JSON arrives as one
- * NUL-terminated string. esp_http_client_perform() drives the whole
- * exchange synchronously.
+ * --- Reading the replies (JSON) ---
+ * Spotify answers in JSON (a text format). A full JSON library would be overkill
+ * -- we need only a few fields (title, artist, is_playing, ...) -- so this file
+ * has a tiny hand-written scanner (the json_* helpers): find a key by name, copy
+ * its value. It stays simple because Spotify's replies are well-formed and the
+ * fields we read never contain awkward characters. (IDF v6.0 also removed the
+ * bundled cJSON library, so hand-rolling avoids adding a dependency.)
+ *
+ * Technical notes:
+ * - HTTPS via esp_http_client; TLS root certificates come from the IDF bundle
+ *   (CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y), so we don't pin DigiCert by hand.
+ * - Response bodies are accumulated into one NUL-terminated heap string by the
+ *   ESP_HTTP_CLIENT_EVENT_ON_DATA callback; esp_http_client_perform() runs the
+ *   whole exchange synchronously (it returns once the reply is fully received).
  */
 
 #include "spotify.h"

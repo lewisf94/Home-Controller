@@ -1,4 +1,23 @@
-/* See sonos.h. UPnP/SOAP control of a Sonos speaker on the local network. */
+/*
+ * Sonos control -- this file controls a Sonos speaker DIRECTLY over your home
+ * network, because Spotify's web API refuses to drive a Sonos. So when a Sonos
+ * is the chosen target, main.c routes play/pause/next/seek/volume here instead
+ * of to spotify.c.
+ *
+ * How it talks to the speaker: Sonos accepts commands over an older protocol
+ * called UPnP/SOAP -- essentially HTTP requests carrying little XML documents,
+ * sent to the speaker's IP address on port 1400 (plain HTTP on the trusted home
+ * LAN; CLAUDE.md explains why that's acceptable here). This file builds those
+ * XML request bodies (the long string templates below), sends them, and pulls
+ * the few values it needs back out of the XML reply with simple string searches
+ * (the xml_between helper) -- the same "we only need a few fields, so skip the
+ * full parser" approach spotify.c takes with JSON.
+ *
+ * The constants below (service names, control paths, the Spotify-account tag)
+ * are fixed parts of the Sonos/UPnP and Spotify-on-Sonos protocols. See sonos.h
+ * for the function list. NOTE: every call here is BLOCKING (it waits on the
+ * network), so -- like spotify.c -- it only ever runs on spotify_task.
+ */
 
 #include "sonos.h"
 
