@@ -458,7 +458,11 @@ static bool poll_and_publish(spotify_track_t *info)
     }
 
     /* Spotify 204: probe for a Sonos playing natively (e.g. started from the
-     * Spotify app or Sonos app). Backoff avoids hammering powered-off speakers. */
+     * Spotify app or Sonos app). Backoff avoids hammering powered-off speakers.
+     * The "(int32_t)(now - deadline) >= 0" form just means "has the deadline
+     * passed?" -- written this way so it stays correct even when the millisecond
+     * tick counter eventually wraps back to zero (a plain now >= deadline would
+     * misbehave right at that wrap). */
     if (!spotify_ok && !s_sonos_active[0] &&
         (int32_t)(xTaskGetTickCount() - s_sonos_probe_next) >= 0) {
         const char *h = sonos_playing_host();
@@ -815,13 +819,17 @@ void app_main(void)
      * it must run with the display lock released. */
     ui_init(&s_art_dsc);
 
+    /* Create the "mailbox" (room for 8 commands) the UI posts into, then launch
+     * the background worker that drains it. After the next line spotify_task
+     * runs on its own forever, and app_main has done its job. */
     s_cmd_queue = xQueueCreate(8, sizeof(scmd_t));
     if (!s_cmd_queue) {
         ESP_LOGE(TAG, "failed to create command queue");
-        return;
+        return;   /* no mailbox -> nothing could drive playback; give up */
     }
-    /* 10 KB stack: TLS handshake (cert-bundle validation) on top of the
-     * esp_hosted transport is stack-hungry. CYD used 8 KB on native WiFi. */
+    /* xTaskCreate(function, name, stack-size-bytes, arg, priority, out-handle).
+     * 10 KB stack: the TLS handshake (cert-bundle validation) over the esp_hosted
+     * WiFi transport is stack-hungry. (The CYD board used 8 KB on native WiFi.) */
     xTaskCreate(spotify_task, "spotify", 10240, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "checkpoint 5: UI + art, Spotify task started");

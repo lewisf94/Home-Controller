@@ -6,6 +6,10 @@ onboard **ESP32-C6** over SDIO, PSRAM, 32 MB flash). Talks **directly to the
 Spotify Web API**. A future `waveshare/esp-idf-ha/` will swap the backend to
 Home Assistant, exactly like the CYD split.
 
+> **New to the project (or to embedded C)?** Read
+> [`../../docs/CODE-TOUR.md`](../../docs/CODE-TOUR.md) first — a plain-language
+> walkthrough of how the firmware works and where to start reading.
+
 > **STATUS: HARDWARE-VERIFIED end to end — cp1–3 plus the full UI (cp4+), Sonos,
 > brightness and the reliability/UX batches all run on device.** Display (cp1)
 > renders at 800×480 landscape, the board associates to WiFi through the onboard
