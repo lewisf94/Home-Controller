@@ -1872,12 +1872,8 @@ static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                             uint16_t *dst, uint16_t dw, uint16_t dh)
 {
     uint32_t ink = s_th->text, pap = s_th->bg;
-    uint16_t ink_px = (uint16_t)((((ink >> 19) & 0x1Fu) << 11) |
-                                 (((ink >> 10) & 0x3Fu) <<  5) |
-                                  ((ink >>  3) & 0x1Fu));
-    uint16_t pap_px = (uint16_t)((((pap >> 19) & 0x1Fu) << 11) |
-                                 (((pap >> 10) & 0x3Fu) <<  5) |
-                                  ((pap >>  3) & 0x1Fu));
+    uint16_t ink_px = rgb888_to_565(ink);
+    uint16_t pap_px = rgb888_to_565(pap);
     for (uint16_t dy = 0; dy < dh; dy++) {
         for (uint16_t dx = 0; dx < dw; dx++) {
             int sx = (int)dx * sw / dw;
@@ -2007,10 +2003,7 @@ static void cf_render_card(int32_t card_cx, float dist_norm,
      * faces; with themed art off it's the ink colour directly. */
     bool     frame    = is_paper_theme();
     uint32_t inkc     = s_th->text;
-    uint16_t frame_px = s_theme_art ? 0x0000
-                      : (uint16_t)((((inkc >> 19) & 0x1Fu) << 11) |
-                                   (((inkc >> 10) & 0x3Fu) <<  5) |
-                                    ((inkc >>  3) & 0x1Fu));
+    uint16_t frame_px = s_theme_art ? 0x0000 : rgb888_to_565(inkc);
 
     for (int dx = x_start; dx < x_end; dx++) {
         float t = (w_disp > 1)
@@ -2056,12 +2049,8 @@ static void cf_render_card(int32_t card_cx, float dist_norm,
 static void cf_paper_dither(uint16_t bg_px)
 {
     uint32_t ink = s_th->text, pap = s_th->bg;
-    uint16_t ink_px = (uint16_t)((((ink >> 19) & 0x1Fu) << 11) |
-                                 (((ink >> 10) & 0x3Fu) <<  5) |
-                                  ((ink >>  3) & 0x1Fu));
-    uint16_t pap_px = (uint16_t)((((pap >> 19) & 0x1Fu) << 11) |
-                                 (((pap >> 10) & 0x3Fu) <<  5) |
-                                  ((pap >>  3) & 0x1Fu));
+    uint16_t ink_px = rgb888_to_565(ink);
+    uint16_t pap_px = rgb888_to_565(pap);
     for (int dy = 0; dy < CF_PERSP_H; dy++) {
         uint16_t *row = s_cf_buf + (size_t)dy * CF_PERSP_W;
         for (int dx = 0; dx < CF_PERSP_W; dx++) {
@@ -2106,9 +2095,7 @@ static void cf_render(void)
 
     /* Clear canvas to theme background (convert 0xRRGGBB → RGB565). */
     uint32_t bg    = s_th->bg;
-    uint16_t bg_px = (uint16_t)(((bg >> 19) & 0x1Fu) << 11)
-                   | (uint16_t)(((bg >> 10) & 0x3Fu) << 5)
-                   | (uint16_t) ((bg >>  3) & 0x1Fu);
+    uint16_t bg_px = rgb888_to_565(bg);
     uint16_t *p = s_cf_buf, *end = p + (size_t)CF_PERSP_W * CF_PERSP_H;
     while (p < end) *p++ = bg_px;
 
@@ -3359,113 +3346,31 @@ static void load_settings(void)
     apply_audio_theme();   /* AUTO target follows the restored MODE */
 }
 
-static void save_transition(ui_transition_t style)
+/* Every visual/sound setting persists as a single u8 under NVS_SETTINGS_NS, so
+ * one helper holds the open/set/commit/close boilerplate and the save_* wrappers
+ * below just bind a key. A failed open/commit is silently ignored -- a lost
+ * setting is non-fatal (next boot falls back to the default). */
+static void nvs_save_u8(const char *key, uint8_t val)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_TRANSITION, (uint8_t)style);
+    nvs_set_u8(h, key, val);
     nvs_commit(h);
     nvs_close(h);
 }
 
-static void save_theme(uint8_t idx)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_MODE, idx);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_dark(uint8_t v)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_DARK, v);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_theme_art(uint8_t v)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_THEME_ART, v);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_accent(uint8_t idx)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_ACCENT, idx);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_browser_style(uint8_t idx)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_BROWSER_STYLE, idx);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_sel_line(uint8_t v)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_SEL_LINE, v);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_brightness(uint8_t v)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_BRIGHTNESS, v);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_font(uint8_t v)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_FONT, v);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_fps(uint8_t v)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_FPS, v);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_sound(uint8_t v)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_SOUND, v);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void save_volume(uint8_t v)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_VOLUME, v);
-    nvs_commit(h);
-    nvs_close(h);
-}
+static void save_transition(ui_transition_t style) { nvs_save_u8(NVS_KEY_TRANSITION, (uint8_t)style); }
+static void save_theme(uint8_t idx)                { nvs_save_u8(NVS_KEY_MODE, idx); }
+static void save_dark(uint8_t v)                   { nvs_save_u8(NVS_KEY_DARK, v); }
+static void save_theme_art(uint8_t v)              { nvs_save_u8(NVS_KEY_THEME_ART, v); }
+static void save_accent(uint8_t idx)               { nvs_save_u8(NVS_KEY_ACCENT, idx); }
+static void save_browser_style(uint8_t idx)        { nvs_save_u8(NVS_KEY_BROWSER_STYLE, idx); }
+static void save_sel_line(uint8_t v)               { nvs_save_u8(NVS_KEY_SEL_LINE, v); }
+static void save_brightness(uint8_t v)             { nvs_save_u8(NVS_KEY_BRIGHTNESS, v); }
+static void save_font(uint8_t v)                   { nvs_save_u8(NVS_KEY_FONT, v); }
+static void save_fps(uint8_t v)                    { nvs_save_u8(NVS_KEY_FPS, v); }
+static void save_sound(uint8_t v)                  { nvs_save_u8(NVS_KEY_SOUND, v); }
+static void save_volume(uint8_t v)                 { nvs_save_u8(NVS_KEY_VOLUME, v); }
 
 /* Map the active visual MODE to a UI-sound palette so the sounds match the look:
  * PIXEL -> chiptune squares, GLYPH -> ambient, PAPER -> typewriter clicks, the
