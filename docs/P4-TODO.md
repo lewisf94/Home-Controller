@@ -10,11 +10,12 @@ items, see [`PENDING.md`](PENDING.md).
 ## Shipped to date (one-liners — see commit history + per-build README for detail)
 
 - **cp1-3 (display / WiFi / Spotify)** — hardware-verified.
-- **cp4-7 (UI)** — full LVGL browser + now-playing, Settings (Menu Transition,
-  Mode, Colour, Browser Style, Brightness, Selection Line), three browser
-  styles (Carousel / Focus / Cover Flow), runtime tiny_ttf fonts (Montserrat +
-  DejaVu) with kerning-cache crash fix, colour accent system, transport keys,
-  scrub thumb. Committed; needs hardware verify.
+- **cp4-7 + full UI (HARDWARE-VERIFIED 2026-06-13)** — LVGL browser + now-playing;
+  tabbed Settings (DISPLAY: Appearance dark/light, Mode, Theme album art, Colour,
+  Browser Style, Font, Selection Line, Brightness, FPS, Menu Transition; SOUND:
+  on-off, Volume, Sound set); three browser styles (Carousel / Focus / Cover Flow,
+  the latter a PSRAM column rasteriser showing ~3 covers/side); runtime tiny_ttf
+  fonts with the kerning-cache crash fix; scrub thumb.
 - **Spotify TLS keep-alive on poll** — persistent `s_poll_client`, drops on
   transport error.
 - **Adaptive poll backoff** — 5 s playing, 15 s paused/idle.
@@ -40,16 +41,25 @@ items, see [`PENDING.md`](PENDING.md).
   retries exhaust (no more permanent dead-end after a router blip).
 - **Dispatcher logging** — every failed Spotify command gets a named
   `ESP_LOGW` so silent presses are debuggable.
-- **PIXEL retro theme** — a MODE (cp10); Press Start 2P 1bpp font, Bayer-
-  dithered art + thumbnails, dark-CRT palette. PSRAM thumb pool freed on
-  switch-away. Needs hardware verify.
-- **GLYPH dot theme** (cp12) — replaced the Yudho/Fuhrer VFX backdrops (canvas
-  particle system deleted) with one all-dots MODE: dot text + dotted-icon fonts,
-  gas-tank progress bar (Brownian dots + playhead), dot WiFi meter. Font fixed in
-  GLYPH. Cog reads a touch muddy at dot size — deferred.
-- **UI sound + tabbed Settings** (cp13) — synthesised SFX via ES8311 (`audio.c`),
-  sound sets + volume; Settings split into DISPLAY + SOUND tabs; scrolling long
-  titles; Cover-Flow centre-tap fix; album-art `JPEGIMAGE` in internal SRAM.
+- **Theme system overhaul (HARDWARE-VERIFIED 2026-06-13)** — collapsed to four
+  MODEs (BASIC / GLYPH / PIXEL / PAPER), each with a DARK/LIGHT face + an
+  APPEARANCE toggle, a THEME-ALBUM-ART on/off, and an 8-hue x 3-variant
+  (24-swatch) accent grid. Per-MODE layout/colour knobs live in `main/ui_tune.h`;
+  FONT setting (SANS Montserrat / SLAB Arvo, overridden in PIXEL/GLYPH/PAPER). All
+  NVS-persisted.
+  - **PIXEL** — Press Start 2P 1bpp font, Bayer-dithered art/thumbs, dark-CRT.
+  - **GLYPH** — Nothing-OS-light: dot-matrix HEADINGS only over clean Montserrat
+    body/icons (retired the old all-dots "muddy cog"), hairline pills, solid-ink
+    selection, ink gas-tank/WiFi/volume instruments. (Replaced the deleted
+    Yudho/Fuhrer VFX backdrops.)
+  - **PAPER** — teletype data-brutalism: cream + ink, unscii mono fonts, 1-bit
+    Bayer-dithered art, printed-form frames/rules, ruler-tick progress, TELEX SFX.
+- **UI sound + tabbed Settings (cp13)** — synthesised SFX via ES8311 (`audio.c`),
+  sound sets + volume; scrolling long titles; Cover-Flow centre-tap fix; album-art
+  `JPEGIMAGE` in internal SRAM.
+- **Diagnostics / safe experiments (2026-06-14)** — Cover Flow clear-vs-rasterise
+  profiler (`cf_profile_tick`, FPS-gated, `99605ed`) and the `ART_DECODE_RAM` A/B
+  flag (`9bdd80a`); see "Open — perf". Plus the Sonos-stall fix (`56e1a9b`).
 - **Code quality** — `_do_cmd` forward-decl + `spotify_play_album` keep-alive
   reuse; `MAX_DEVICES` constant; `scmd_meta_t` table + `_Static_assert`; `copy_str`
   consistency in `main.c`.
@@ -87,16 +97,17 @@ already enabled — the vendored BSP hardcodes `.enable_ppa_accel = true`
 reuses the persistent `s_cmd_client` (keep_alive_enable), same as the poll.
 The FPS-maxing batch also landed: achieved-frame-rate FPS counter, PSRAM
 thumb pools (1:1 card blits, no flash XIP reads on scroll), GLYPH gas-tank
-ticker frozen off-screen, and the EXPERIMENT `CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2`
-(two-core SW render — revert that single sdkconfig line if hardware shows
-artifacts).
+ticker frozen off-screen. The two-SW-draw-unit experiment
+(`CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2`) was REVERTED — it boot-loops against the
+BSP's PPA accel; the setting MUST stay `=1` (see `sdkconfig.defaults`).
 
 ---
 
-## Code-quality deep-dive audits (2026-06-14, in progress — one at a time)
+## Code-quality deep-dive audits (2026-06-14 — A-F all DONE)
 
 Read-only investigations of the current code, Lewis's request. Findings logged
-to PENDING.md; fixes only on request.
+to PENDING.md. The one actionable runtime gap (B, the Sonos stall) is now fixed
+(`56e1a9b`); the rest are minor/clean.
 
 - **A. Concurrency / lock discipline — DONE, CLEAN.** Lock discipline sound;
   command queue value-copied + non-blocking; album-art double buffer race-free
@@ -104,12 +115,14 @@ to PENDING.md; fixes only on request.
   writer of `s_track` / `s_art_buf` / `s_sonos_*`; future physical input posts to
   `s_cmd_queue`.
 - **B. Failure-mode / resilience sweep — DONE.** Mostly graceful (WiFi reconnect,
-  token refresh, 429 holdoff, 404 wake, OOM degrades with fallbacks). Real gap:
-  an unreachable Sonos blocks `spotify_task` on 4 s SOAP timeouts — auto/restricted
-  self-heals, an explicitly-picked one does NOT (~12 s/poll until device switched);
-  see the expanded Sonos item under "Open — UX polish". Minor: Spotify 5xx no extra
-  backoff; non-JPEG art retried not blacklisted; display-init/WiFi-wait returns
-  unchecked (hardware-fault only). Two agent "criticals" were false positives.
+  token refresh, 429 holdoff, 404 wake, OOM degrades with fallbacks). The one real
+  gap — an unreachable explicitly-pinned Sonos stalling the poll on a SOAP timeout
+  every cycle (~4 s; `sonos_fetch_now_playing` bails after the first query, so it's
+  one timeout, not three) — is now **FIXED** (`56e1a9b`: 2 s timeout + a 10 s
+  fetch-backoff that retries instead of re-stalling). Minor, still open: Spotify 5xx
+  no extra backoff; a persistently non-JPEG art URL retried not blacklisted;
+  display-init/WiFi-wait returns unchecked (hardware-fault only). Two agent
+  "criticals" were false positives.
 - **C. Credential & TLS security posture — DONE (clean).** No secret logged, all
   6 HTTPS clients verify certs, secrets gitignored, parsing bounded; plaintext-NVS
   access token is informational (no flash encryption; refresh token not persisted).
@@ -132,60 +145,51 @@ to PENDING.md; fixes only on request.
 
 These would each be a small/medium PR.
 
-- **Restricted-device 403 hint** — on a `403 Restricted device` write, show
-  the existing toast ("Active device is restricted -- transfer first") so
-  the silent FAILED log isn't the only feedback. Pattern is already in
-  place (`ui_show_toast`); just thread it through.
-- **Cover Flow show more covers either side** — today only 1 shows each side
-  because card slots are 248 px apart (2nd neighbour is off-screen). Needs
-  cover-flow-specific tighter slot spacing AND centre-on-top z-ordering.
-  Both touch the centre-snap math + the fragile image-transform path -- do
-  as an isolated, separately-verified change. Watch: LVGL negative
-  `pad_column` support (if unhonored, `step` math desyncs from layout and
-  breaks centring).
-- **Aesthetic pass (retro-industrial / "TE" look)** — highest-impact first:
-  functional colour-coded transport keys (prev=blue `#1270b8`, play=green
-  `#1aa167`, next=yellow `#ffc003`, red `#ce2021` for active), keeping one
-  accent for the progress bar; monospace tabular numerals for timestamps /
-  volume % (caveat: a 2nd embedded TTF eats ~4 % app-flash headroom and
-  re-opens the tiny_ttf kerning-crash surface); circular knob-style
-  transport buttons; hairline section dividers. Start with the colour-coded
-  keys (no new fonts, board-safe).
-- **Sonos unreachable stalls the Spotify task (4 s SOAP timeouts)** — confirmed
-  in the B resilience audit. The idle probe (`GetTransportInfo`, gated 10 s)
-  blocks 4 s when a configured speaker is powered off; worse, once a Sonos is the
-  active device, `sonos_fetch_now_playing` runs THREE 4 s queries back-to-back, so
-  an unreachable active Sonos stalls `spotify_task` ~12 s per poll. An auto-probed
-  / restricted Sonos self-heals (a failed fetch clears `s_sonos_active` + 10 s
-  backoff, main.c:460), but an EXPLICITLY user-picked one (`s_sonos_explicit`)
-  does NOT — it stalls every poll until the user switches device. Fixes: drop the
-  SOAP `timeout_ms` to ~1.5-2 s (esp. the probe); add a short TCP connect timeout
-  so a dead host fails fast; and after N consecutive failures clear/back-off the
-  explicit-pick case so a powered-off pinned speaker can't stall forever.
-- **First "place me at the playing album" on browser open** — auto-snap is
-  in (`s_target_card`), but if the user opens the browser before any poll
-  has matched an album the carousel sits at index 0. After the next match
-  it scrolls — could feel jumpy. Tiny tweak: animate-OFF the snap when the
-  browser isn't visible (already does this implicitly because the scroll
-  request just updates internal state when not on screen, but worth
-  double-checking on hardware).
+- **Restricted-device 403 hint** — on a `403 Restricted device` write, show the
+  existing toast ("Active device is restricted -- transfer first") so the silent
+  FAILED log isn't the only feedback. `ui_show_toast` exists; just thread it
+  through (status 403 isn't surfaced today — verified). Still open.
+- **Aesthetic pass (functional colour-coded transport keys, mono numerals)** —
+  NOTE the theme SYSTEM was overhauled since this was written (four dark/light
+  MODEs, 24-swatch accents, PAPER's mono fonts), so re-scope first. Still un-done
+  (verified absent in `ui.c`): functional colour-coded transport keys (prev=blue
+  `#1270b8`, play=green `#1aa167`, next=yellow `#ffc003`, active=red `#ce2021`),
+  tabular numerals for timestamps outside PAPER, circular knob-style transport
+  buttons, hairline dividers. Caveat unchanged: a 2nd embedded TTF eats ~4 %
+  app-flash and re-opens the tiny_ttf kerning-crash surface.
+- **First "place me at the playing album" on browser open** — auto-snap is in
+  (`s_target_card`); if the browser is opened before any poll matched an album it
+  sits at index 0 until the next match, then scrolls (could feel jumpy). Minor;
+  double-check on hardware.
+
+Retired since this list was written:
+- **Cover Flow "show more covers each side"** — DONE/obsolete: the old "only 1 per
+  side / 248 px slots" was the pre-rasteriser layout. The PSRAM column rasteriser
+  (`70812a0`) now draws a converging fan capped at `CF_MAX_SIDE = 3` covers/side.
+- **Sonos-unreachable poll stall** — FIXED (`56e1a9b`); see audit B above.
 
 ---
 
 ## Open — physical controls (cp6 successor)
 
-The Settings UI is touch-driven today; there's no MCP23017 on the waveshare.
-The `input.c` seam left in `cyd_shared/input.c` could be re-used for a future
-optional CYD-style hardware panel on the waveshare. Not committed to.
+The Settings UI is touch-driven today; there's no MCP23017 on the waveshare. The
+big planned input is the custom **RP2040 smart-knob daughterboard** (FOC gimbal
+motor, strain-gauge buttons, battery gauge, LED ring) — full hardware design in
+[`DESIGN_NOTES.md`](DESIGN_NOTES.md), reference in `docs/smartknob-repo/`. The
+`ui_*` seam self-locks (audit A), so a future input task can call it directly or
+post to `s_cmd_queue`; the `input.c` seam in `cyd_shared/` is the CYD-style
+alternative.
 
 ---
 
 ## Capacity ceiling
 
-`MAX_CARDS = 64` on waveshare (currently ~56 albums). Real limit: thumbnails
-are embedded in the 8 MB app partition at 220×220 (~95 KB each) and it's
-~96 % full → only ~3-4 more before the build fails to link. Flash is 32 MB
-with ~20 MB unused (8 MB app + 4 MB storage). Options when you hit it:
+`MAX_CARDS = 128` on waveshare (`ui.c`). Real limit: thumbnails are embedded in
+the 8 MB app partition at 220×220 (~95 KB each), and several fonts have been added
+since this note (PIXEL/GLYPH/PAPER/Arvo), so the app partition is the binding
+constraint — **RE-MEASURE the headroom (`idf.py size`)** before adding many albums
+rather than trusting the old "~96 % full" figure. Flash is 32 MB (8 MB app + 4 MB
+`storage`). Options when you hit it:
 
 - **Grow the app partition** in `partitions.csv` (cleanest, ~85+ more albums
   possible). Raise `MAX_CARDS` alongside.
