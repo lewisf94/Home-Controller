@@ -328,7 +328,8 @@ static char *soap_query(const char *host, const char *path, const char *svc,
             .method            = HTTP_METHOD_POST,
             .event_handler     = rbuf_evt,
             .user_data         = &rb,
-            .timeout_ms        = 4000,
+            .timeout_ms        = 2000,   /* fast-fail: a powered-off speaker must
+                                          * not stall the inline poll for long */
             .keep_alive_enable = true,
         };
         s_query_client = esp_http_client_init(&cfg);

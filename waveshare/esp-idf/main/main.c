@@ -219,6 +219,10 @@ static bool            s_sonos_has_audio  = false;
  * natively (when Spotify is 204 and we aren't already driving a Sonos). Backoff
  * keeps a powered-off speaker from being hammered with connect attempts. */
 static TickType_t      s_sonos_probe_next = 0;
+/* After a failed now-playing fetch, hold off the next attempt this long even for
+ * an explicitly-picked Sonos (which the poll otherwise never stops re-fetching),
+ * so a powered-off pinned speaker can't stall the poll every cycle. */
+static TickType_t      s_sonos_fetch_hold = 0;
 
 
 
@@ -430,10 +434,12 @@ static bool poll_and_publish(spotify_track_t *info)
     /* If we have a Sonos target (restricted Connect, explicit user pick, or
      * native probe), read its now-playing over UPnP. This takes priority over
      * the Spotify desktop view so the screen reflects what the Sonos is doing. */
-    if (s_sonos_active[0]) {
+    if (s_sonos_active[0] &&
+        (int32_t)(xTaskGetTickCount() - s_sonos_fetch_hold) >= 0) {
         sonos_np_t np;
         if (sonos_fetch_now_playing(s_sonos_active, &np)) {
-            s_sonos_has_audio = true;
+            s_sonos_has_audio  = true;
+            s_sonos_fetch_hold = 0;   /* reachable -- resume per-poll fetch */
             memset(info, 0, sizeof *info);
             snprintf(info->title,  sizeof info->title,  "%s", np.title);
             snprintf(info->artist, sizeof info->artist, "%s", np.artist);
@@ -457,6 +463,11 @@ static bool poll_and_publish(spotify_track_t *info)
         /* Sonos unreachable or stopped (NOT_IMPLEMENTED in Connect passthrough
          * counts as stopped -- we fall back to Spotify for track display). */
         s_sonos_has_audio = false;
+        /* Back off the next attempt so an unreachable speaker doesn't stall the
+         * poll every cycle. A non-explicit Sonos also un-pins (falls back to the
+         * Spotify view); an explicitly-picked one stays pinned but is retried
+         * only after the hold expires. */
+        s_sonos_fetch_hold = xTaskGetTickCount() + pdMS_TO_TICKS(10000);
         if (!s_sonos_explicit) {
             s_sonos_active[0] = '\0';
             s_sonos_probe_next = xTaskGetTickCount() + pdMS_TO_TICKS(10000);
