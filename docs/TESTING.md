@@ -58,6 +58,12 @@ needs a fresh flash.
 - [ ] **Sonos now-playing** — the title/artist/album/progress reflect what
       the Sonos is actually playing (from UPnP `GetPositionInfo`), even
       though Spotify's `/me/player` returns 204.
+- [ ] **Unreachable Sonos doesn't stall the UI** (commit `56e1a9b`) — pick a
+      Sonos from the device selector, then power it off (or pull its network).
+      The controller must stay responsive: the screen falls back to the
+      Spotify/idle view and at most briefly pauses (~2 s, one SOAP timeout) about
+      every ~10 s while it retries -- NOT a freeze on every poll. Power the
+      speaker back on; within ~10 s it resumes showing the Sonos.
 
 ### UX (05-30 batches)
 
@@ -74,17 +80,35 @@ needs a fresh flash.
       body, the log says "downloaded bytes are not JPEG (magic XX XX) --
       discarding" and the next poll retries (instead of showing last-track
       art forever).
-- [ ] **MAX_CARDS warning** — add 65+ albums (the cap is 64); top of the
-      browser shows an amber `+N more (raise MAX_CARDS)` label.
+- [ ] **MAX_CARDS warning** — add more albums than the cap (`MAX_CARDS = 128`);
+      top of the browser shows an amber `+N more (raise MAX_CARDS)` label.
 - [ ] **No-device toast** — disconnect all Spotify devices, tap an album
       from the browser. Toast appears at the bottom of now-playing: "No
       active Spotify device" (or "Sonos play failed" if routed to Sonos).
+- [ ] **Restricted-device 403 toast** (commit `ad9b9b9`) — make a restricted
+      device the active one (a phone/tablet in Spotify Connect), then tap
+      play/pause/next/volume. Instead of a silent no-op, a toast reads
+      "Active device is restricted -- transfer first".
 - [ ] **Auto-snap to playing album** — change track from your phone. Open
       the browser; carousel should land on the currently-playing album with
       an accent-coloured border. Continues to track as the album changes.
 - [ ] **Auto-dim** — sit idle 60 s, screen should dim to ~30 % of your
       Settings brightness; idle 5 min, ~10 %. Any touch should snap back
       within 1 s. Floored at 2 % so the screen never reads as dead.
+
+### Perf / decode experiments (flash these to gather data)
+
+- [ ] **Cover Flow profiler** (commit `99605ed`) — turn FPS display ON in
+      Settings, switch the browser to Cover Flow, and flick-scroll hard. The
+      serial log prints `cf_prof: clear=.. us  rast=.. us  frame=.. us` every
+      30 frames. Capture those numbers -- they decide whether the per-frame
+      canvas clear or the rasterise dominates, before any Cover Flow perf rework.
+- [ ] **openRAM A/B** (commit `9bdd80a`) — set `#define ART_DECODE_RAM 1` in
+      `main.c` (~line 131), rebuild, flash, and play several albums with
+      different covers. If every cover renders correctly, `JPEG_openRAM` handles
+      Spotify's streams and LittleFS + VFS can be dropped; any blank/garbled
+      cover means keep the file path (set it back to 0). Serial logs the SOF
+      marker per cover.
 
 ### Settings (commits `540df95`, plus earlier theme/transition work)
 

@@ -1,8 +1,10 @@
 # Roadmap
 
-**Lead build: `cyd/esp-idf/`** — feature-complete and hardware-verified on the
-CYD. All other builds (PlatformIO, CYD-IDF-HA, Waveshare) are either in progress
-or awaiting hardware verification. See the build matrix below.
+**Lead build: `waveshare/esp-idf/`** (Waveshare ESP32-P4) — hardware-verified
+end to end (2026-06-13). The `cyd/esp-idf/` build is feature-complete and was
+hardware-verified on the CYD, now awaiting a re-flash; the PlatformIO and
+CYD-IDF-HA builds are committed but not yet hardware-tested. See the build matrix
+below.
 
 ---
 

@@ -490,7 +490,11 @@ Key differences from the CYD IDF build:
   204, and can start an album natively on the speaker
   (`sonos_play_spotify_album`, SetAVTransportURI + DIDL-Lite metadata).
   Speaker name→IP mapping comes from `SONOS_HOST` / `SONOS_DEVICES` in
-  `include/secrets.h`.
+  `include/secrets.h`. An unreachable speaker can't stall the poll: each SOAP
+  call times out in 2 s and a failed now-playing fetch holds the next attempt
+  off ~10 s (`s_sonos_fetch_hold`), even for an explicitly-pinned Sonos. A 403
+  (restricted device) on a Spotify transport command surfaces a "transfer first"
+  toast (`spotify_last_cmd_status`, dispatcher in `main.c`).
 - **SRAM budget:** the full stack overflows internal SRAM by ~451 B at once, so
   sources/deps are staged per checkpoint (`main/CMakeLists.txt` comments).
   See `waveshare/esp-idf/README.md` for the checkpoint roadmap.
@@ -662,6 +666,7 @@ git log --oneline -10          # recent history
 
 ## Where to look first
 
+- **New to the codebase (plain-language tour):** `docs/CODE-TOUR.md`
 - **Plans for next phases:** `docs/ROADMAP.md`
 - **What still needs to be tested on hardware:** `docs/TESTING.md`
 - **IDF port gotchas discovered on hardware:** `docs/PORT-NOTES.md`
