@@ -679,9 +679,16 @@ static void spotify_task(void *arg)
                  * complaint is debuggable from the serial log. Commands whose
                  * handlers already log both outcomes set self_logs=true in
                  * k_scmd_meta, so the generic fallback skips them. */
-                if (!ok && !k_scmd_meta[cmd.type].self_logs)
+                if (!ok && !k_scmd_meta[cmd.type].self_logs) {
                     ESP_LOGW(TAG, "cmd %s FAILED (route=%s)",
                              k_scmd_meta[cmd.type].name, sh ? "sonos" : "spotify");
+                    /* A 403 on the Spotify route means the active device is
+                     * restricted (phone/tablet in Connect) -- surface the
+                     * transfer hint instead of a silent no-op. Sonos can't 403,
+                     * so gate on !sh. */
+                    if (!sh && spotify_last_cmd_status() == 403)
+                        ui_show_toast("Active device is restricted -- transfer first", 3000);
+                }
                 /* Arm settle on the commands that change the current track, so the
                  * loop top re-polls until the new title lands. */
                 if (cmd.type == SCMD_NEXT_TRACK || cmd.type == SCMD_PREV_TRACK ||

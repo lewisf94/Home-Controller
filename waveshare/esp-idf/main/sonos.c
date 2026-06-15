@@ -486,6 +486,9 @@ static uint32_t hms_to_ms(const char *s)
 {
     int h = 0, m = 0, sec = 0;
     if (sscanf(s, "%d:%d:%d", &h, &m, &sec) != 3) return 0;
+    /* Reject negative components ("NOT_IMPLEMENTED" already fails the sscanf): a
+     * negative would wrap to a huge uint32 and skew the progress bar. */
+    if (h < 0 || m < 0 || sec < 0) return 0;
     return (uint32_t)(((h * 60 + m) * 60 + sec) * 1000);
 }
 
@@ -529,8 +532,11 @@ int sonos_get_volume(const char *host)
                          "<InstanceID>0</InstanceID><Channel>Master</Channel>", NULL);
     if (!r) return -1;
     char tmp[8];
-    int vol = xml_between(r, "<CurrentVolume>", "</CurrentVolume>", tmp, sizeof tmp)
-            ? atoi(tmp) : -1;
+    int vol = -1;
+    if (xml_between(r, "<CurrentVolume>", "</CurrentVolume>", tmp, sizeof tmp)) {
+        int v = atoi(tmp);
+        if (v >= 0 && v <= 100) vol = v;   /* clamp to a sane Sonos range */
+    }
     free(r);
     return vol;
 }

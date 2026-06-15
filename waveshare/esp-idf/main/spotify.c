@@ -793,8 +793,16 @@ bool spotify_play_album(const char *context_uri)
 
 /* ── Playback controls ───────────────────────────────────────────────── */
 
+/* HTTP status of the most recent _do_cmd() call (single-threaded: spotify_task
+ * only). Lets the dispatcher distinguish a 403 "restricted device" from other
+ * failures so it can surface the transfer hint. -1 on any pre-request failure. */
+static int s_last_cmd_status = 0;
+
+int spotify_last_cmd_status(void) { return s_last_cmd_status; }
+
 static int _do_cmd(esp_http_client_method_t method, const char *url, const char *body)
 {
+    s_last_cmd_status = -1;
     if (!ensure_token()) return -1;
 
     if (!s_cmd_client) {
@@ -842,6 +850,7 @@ static int _do_cmd(esp_http_client_method_t method, const char *url, const char 
     } else if (status >= 400) {
         ESP_LOGW(TAG, "cmd %s -> %d", url, status);
     }
+    s_last_cmd_status = status;
     return status;
 }
 

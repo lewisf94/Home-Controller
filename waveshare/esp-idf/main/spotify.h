@@ -67,6 +67,10 @@ bool spotify_seek_position(uint32_t position_ms);
 bool spotify_set_volume(int pct);
 bool spotify_toggle_shuffle(void);
 
+/* HTTP status of the most recent playback command (-1 on a pre-request failure).
+ * Lets the dispatcher tell a 403 "restricted device" from other failures. */
+int  spotify_last_cmd_status(void);
+
 /* A Spotify Connect device from GET /me/player/devices. */
 typedef struct {
     char id[64];
