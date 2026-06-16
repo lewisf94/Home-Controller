@@ -331,7 +331,12 @@ static const int16_t k_tune_fader_h[MODE_COUNT]     = TUNE_FADER_H;
 /* Accent palette: a 4-hue x 3-variant grid (vivid/deep/soft rows). The hex
  * values are user-tweakable in ui_tune.h (TUNE_ACCENTS). */
 #define ACCENT_COUNT TUNE_ACCENT_COUNT
-static uint8_t s_accent = 8;   /* deep orange -- first swatch of the DEEP row */
+/* The COLOUR grid offers only ONE variant row of the palette -- the DEEP row
+ * (the favourite). The vivid/soft rows stay defined in ui_tune.h (so the saved
+ * INDEX scheme is unchanged) but aren't shown as choices. */
+#define ACCENT_SHOWN_FIRST TUNE_ACCENT_COLS   /* first index of the DEEP row (8) */
+#define ACCENT_SHOWN_COUNT TUNE_ACCENT_COLS   /* 8 hues, single row */
+static uint8_t s_accent = ACCENT_SHOWN_FIRST;   /* deep orange -- first DEEP swatch */
 static const uint32_t k_accents[ACCENT_COUNT] = TUNE_ACCENTS;
 static uint32_t accent_color(void) { return k_accents[s_accent]; }
 
@@ -441,6 +446,23 @@ static lv_image_dsc_t  s_paper_art_dsc = {0};
 #define PAPER_CUR_H   20
 static lv_obj_t *s_paper_cursor   = NULL;         /* playhead block (child of the NP screen) */
 static lv_obj_t *s_br_index_lbl   = NULL;         /* browser "NN / NN" album counter (PAPER) */
+
+/* === GLYPH dot-matrix theme state ===
+ * Covers render as a grid of uniform round dots on the theme ground, each dot
+ * filled with the COVER's own colour sampled at the cell centre -- so the album
+ * stays legible and colourful while still reading as the Nothing-OS dot display
+ * (a thin ground gap between dots keeps the matrix grid visible). The dot pitch
+ * GLYPH_DOT_CELL is in DESTINATION pixels, so the grid lands 1:1 on the panel
+ * the same way the PAPER halftone does -- callers dither at the final
+ * resolution. Pools mirror PIXEL/PAPER: the thumb pool is rebuilt per browser
+ * build and freed on switch-away; the now-playing art buffer is allocated once
+ * and kept. GLYPH_DOT_CELL is the one knob to tweak by eye -- smaller = finer,
+ * more detail (more, smaller dots); larger = chunkier, fewer dots. */
+#define GLYPH_ART_RES   256                       /* == ART_W: 1:1 in the art box */
+#define GLYPH_DOT_CELL  5                         /* dot pitch in px */
+static uint16_t       *s_glyph_thumbs  = NULL;    /* PSRAM: dot-matrix ALBUM_THUMB-res copies (fallback) */
+static uint16_t       *s_glyph_art_buf = NULL;    /* PSRAM: GLYPH_ART_RES^2 dot-matrix now-playing art */
+static lv_image_dsc_t  s_glyph_art_dsc = {0};
 
 /* True for any style that transforms cards per scroll position (Focus + CF). */
 #define BROWSER_STYLE_TRANSFORMS(s) ((s) == BROWSER_FOCUS || (s) == BROWSER_COVERFLOW)
@@ -652,6 +674,8 @@ extern const lv_font_t lv_font_dot_24;
 static void pixelate_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                              uint16_t *dst, uint16_t dw, uint16_t dh);
 static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
+                            uint16_t *dst, uint16_t dw, uint16_t dh);
+static void glyphize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                             uint16_t *dst, uint16_t dw, uint16_t dh);
 static lv_obj_t *paper_rule(lv_obj_t *parent, int x, int y, int w, int h);
 /* Gas-particle progress bar */
@@ -932,6 +956,12 @@ static void fill_card_tile(size_t i, uint16_t *dst)
         const uint16_t *t = thumb_src(i);
         if (t) paperize_rgb565(t, ALBUM_THUMB_W, ALBUM_THUMB_H, dst, CARD_SIZE, CARD_SIZE);
         else   memset(dst, 0, (size_t)CARD_SIZE * CARD_SIZE * sizeof(uint16_t));
+    } else if (is_glyph_theme() && s_theme_art) {
+        /* Dot-matrix AT card resolution (resample inside glyphize) so the dot
+         * grid is 1px on screen -- upscaling a pre-dotted thumb would smear it. */
+        const uint16_t *t = thumb_src(i);
+        if (t) glyphize_rgb565(t, ALBUM_THUMB_W, ALBUM_THUMB_H, dst, CARD_SIZE, CARD_SIZE);
+        else   memset(dst, 0, (size_t)CARD_SIZE * CARD_SIZE * sizeof(uint16_t));
     } else {
         const uint16_t *t = thumb_src(i);
         if (t) nearest_resize_rgb565(t, ALBUM_THUMB_W, ALBUM_THUMB_H, dst, CARD_SIZE, CARD_SIZE);
@@ -1074,6 +1104,27 @@ static void build_browser_screen(void)
         }
     }
 
+    /* GLYPH theme: pre-render every thumbnail to dot-matrix at the raw thumb
+     * resolution. Used as the Cover Flow / card-pool-failure fallback source;
+     * Carousel/Focus normally take the sharper card-size re-render in
+     * fill_card_tile, and Cover Flow dots its canvas in place after projection. */
+    if (is_glyph_theme() && s_theme_art && s_card_count > 0) {
+        size_t pool_sz = s_card_count * ALBUM_THUMB_BYTES;
+        s_glyph_thumbs = heap_caps_malloc(pool_sz, MALLOC_CAP_SPIRAM);
+        if (s_glyph_thumbs) {
+            for (size_t i = 0; i < s_card_count; i++) {
+                const uint16_t *src = thumb_src(i);
+                if (src) {
+                    glyphize_rgb565(src, ALBUM_THUMB_W, ALBUM_THUMB_H,
+                                    s_glyph_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H,
+                                    ALBUM_THUMB_W, ALBUM_THUMB_H);
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "GLYPH: thumb pool alloc failed (%zu B SPIRAM)", pool_sz);
+        }
+    }
+
     /* Card-native pool: every thumb pre-scaled to CARD_SIZE with this theme's
      * look, so Carousel/Focus card images blit 1:1 (scale == LV_SCALE_NONE)
      * instead of resampling 220 -> 286 on every frame. Allocated once,
@@ -1154,6 +1205,13 @@ static void build_browser_screen(void)
                 s_card_dscs[i].header.w   = ALBUM_THUMB_W;
                 s_card_dscs[i].header.h   = ALBUM_THUMB_H;
                 s_card_dscs[i].data       = (const uint8_t *)pap;
+                s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
+            } else if (is_glyph_theme() && s_glyph_thumbs) {
+                const uint16_t *gl = s_glyph_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
+                s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
+                s_card_dscs[i].header.w   = ALBUM_THUMB_W;
+                s_card_dscs[i].header.h   = ALBUM_THUMB_H;
+                s_card_dscs[i].data       = (const uint8_t *)gl;
                 s_card_dscs[i].data_size  = ALBUM_THUMB_BYTES;
             } else {
                 s_card_dscs[i].header.cf  = LV_COLOR_FORMAT_RGB565;
@@ -1906,6 +1964,39 @@ static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
     }
 }
 
+/* GLYPH dot-matrix: resample src -> dst as a grid of uniform round dots, each
+ * filled with the source COLOUR at its cell centre, on the theme ground. Keeps
+ * the album's colour (so it stays legible) while reading as the Nothing-OS dot
+ * display; a thin ground gap between dots keeps the matrix grid visible. Same
+ * call shape as paperize_rgb565; resamples internally so callers dither at the
+ * resolution that hits the screen. */
+static void glyphize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
+                            uint16_t *dst, uint16_t dw, uint16_t dh)
+{
+    uint16_t gnd_px = rgb888_to_565(s_th->bg);
+    int irad = (int)((float)GLYPH_DOT_CELL * 0.42f);   /* dot < cell -> visible grid gap */
+    if (irad < 1) irad = 1;
+    int ir2 = irad * irad;
+    for (int cy = 0; cy < dh; cy += GLYPH_DOT_CELL) {
+        int y1 = cy + GLYPH_DOT_CELL; if (y1 > dh) y1 = dh;
+        for (int cx = 0; cx < dw; cx += GLYPH_DOT_CELL) {
+            int x1 = cx + GLYPH_DOT_CELL; if (x1 > dw) x1 = dw;
+            int ccx = cx + GLYPH_DOT_CELL / 2; if (ccx >= dw) ccx = dw - 1;
+            int ccy = cy + GLYPH_DOT_CELL / 2; if (ccy >= dh) ccy = dh - 1;
+            int sx = ccx * sw / dw, sy = ccy * sh / dh;
+            uint16_t col = src[(size_t)sy * sw + sx];
+            for (int yy = cy; yy < y1; yy++) {
+                uint16_t *row = dst + (size_t)yy * dw;
+                int ddy = yy - ccy;
+                for (int xx = cx; xx < x1; xx++) {
+                    int ddx = xx - ccx;
+                    row[xx] = (ddx * ddx + ddy * ddy <= ir2) ? col : gnd_px;
+                }
+            }
+        }
+    }
+}
+
 
 /* =====================================================================
  * Cover Flow perspective rasteriser
@@ -2082,6 +2173,38 @@ static void cf_paper_dither(uint16_t bg_px)
     }
 }
 
+/* GLYPH Cover Flow dot-matrix: convert the finished canvas to colour dots IN
+ * PLACE, after every trapezoid is drawn from RAW covers -- so the dot grid lands
+ * 1:1 on screen (sampling a pre-dotted pool through the perspective remap would
+ * smear it). Each cell samples its centre: background cells fall back to ground
+ * (a no-op since ground == the clear colour), cover cells become a uniform dot
+ * in that centre's colour. Integer distance test keeps the per-scroll cost down. */
+static void cf_glyph_dither(uint16_t bg_px)
+{
+    uint16_t gnd_px = bg_px;                          /* GLYPH ground == canvas clear */
+    int irad = (int)((float)GLYPH_DOT_CELL * 0.42f);
+    if (irad < 1) irad = 1;
+    int ir2 = irad * irad;
+    for (int cy = 0; cy < CF_PERSP_H; cy += GLYPH_DOT_CELL) {
+        int y1 = cy + GLYPH_DOT_CELL; if (y1 > CF_PERSP_H) y1 = CF_PERSP_H;
+        for (int cx = 0; cx < CF_PERSP_W; cx += GLYPH_DOT_CELL) {
+            int x1 = cx + GLYPH_DOT_CELL; if (x1 > CF_PERSP_W) x1 = CF_PERSP_W;
+            int ccx = cx + GLYPH_DOT_CELL / 2; if (ccx >= CF_PERSP_W) ccx = CF_PERSP_W - 1;
+            int ccy = cy + GLYPH_DOT_CELL / 2; if (ccy >= CF_PERSP_H) ccy = CF_PERSP_H - 1;
+            uint16_t col = s_cf_buf[(size_t)ccy * CF_PERSP_W + ccx];
+            bool empty = (col == bg_px);
+            for (int yy = cy; yy < y1; yy++) {
+                uint16_t *row = s_cf_buf + (size_t)yy * CF_PERSP_W;
+                int ddy = yy - ccy;
+                for (int xx = cx; xx < x1; xx++) {
+                    int ddx = xx - ccx;
+                    row[xx] = (!empty && ddx * ddx + ddy * ddy <= ir2) ? col : gnd_px;
+                }
+            }
+        }
+    }
+}
+
 /* When the FPS readout is on, log a periodic breakdown of where each Cover Flow
  * scroll frame spends its time -- the full-canvas clear vs. the per-card
  * perspective rasterise -- so the render path can be profiled on hardware
@@ -2179,7 +2302,8 @@ static void cf_render(void)
         cf_render_card(card_cx, dist_norm, src, src_w, src_h);
     }
 
-    if (is_paper_theme() && s_theme_art) cf_paper_dither(bg_px);
+    if (is_paper_theme() && s_theme_art)      cf_paper_dither(bg_px);
+    else if (is_glyph_theme() && s_theme_art) cf_glyph_dither(bg_px);
 
     if (s_fps_enabled) cf_profile_tick(t_prof0, t_prof1, esp_timer_get_time());
 
@@ -2763,7 +2887,7 @@ static void build_settings_screen(void)
         s_dl_labels[i] = lbl;
     }
 
-    settings_header(pg_disp, "MODE", 24, 102);
+    settings_header(pg_disp, "THEME", 24, 102);
     /* 4 design languages in one row, same pitch as the COLOUR swatches. */
     for (int i = 0; i < MODE_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(pg_disp);
@@ -2792,16 +2916,16 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_font(s_art_toggle_lbl, font_md(), 0);
     lv_obj_center(s_art_toggle_lbl);
 
-    /* COLOUR: 8 hues x 3 variants (vivid/deep/soft) -- values in ui_tune.h. */
+    /* COLOUR: a single row of 8 hues (the DEEP variant) -- values in ui_tune.h. */
     settings_header(pg_disp, "COLOUR", 24, 294);
-    for (int i = 0; i < ACCENT_COUNT; i++) {
+    for (int col = 0; col < ACCENT_SHOWN_COUNT; col++) {
+        int i = ACCENT_SHOWN_FIRST + col;
         lv_obj_t *btn = lv_button_create(pg_disp);
         lv_obj_set_size(btn, 88, 44);
-        int row = i / TUNE_ACCENT_COLS, col = i % TUNE_ACCENT_COLS;
         /* 8 columns at 96px pitch, centred (mid column = 3.5). */
         lv_obj_align(btn, LV_ALIGN_TOP_MID,
-                     (int)((col - (TUNE_ACCENT_COLS - 1) / 2.0f) * 96.0f),
-                     326 + row * 52);
+                     (int)((col - (ACCENT_SHOWN_COUNT - 1) / 2.0f) * 96.0f),
+                     326);
         /* Swatches keep their own border (the selection ring set by
          * refresh_accent_selection) -- square the corners only in PAPER. */
         lv_obj_set_style_radius(btn, is_paper_theme() ? 0 : 3, 0);
@@ -3189,9 +3313,10 @@ static void apply_theme_cb(void *unused)
     memset(s_vol_page_dots, 0, sizeof s_vol_page_dots);
 
     /* Free the theme-look thumbnail pools; build_browser_screen() reallocates
-     * whichever the new theme needs (PIXEL / PAPER). */
+     * whichever the new theme needs (PIXEL / PAPER / GLYPH). */
     if (s_pix_thumbs)   { heap_caps_free(s_pix_thumbs);   s_pix_thumbs = NULL; }
     if (s_paper_thumbs) { heap_caps_free(s_paper_thumbs); s_paper_thumbs = NULL; }
+    if (s_glyph_thumbs) { heap_caps_free(s_glyph_thumbs); s_glyph_thumbs = NULL; }
 
     build_browser_screen();
     build_np_screen();
@@ -3270,8 +3395,25 @@ static void apply_theme_cb(void *unused)
                 lv_image_set_antialias(s_np_art, false);
                 lv_obj_invalidate(s_np_art);
             }
+        } else if (is_glyph_theme() && s_theme_art) {
+            if (!s_glyph_art_buf)
+                s_glyph_art_buf = heap_caps_malloc(
+                    GLYPH_ART_RES * GLYPH_ART_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+            if (s_glyph_art_buf) {
+                glyphize_rgb565((const uint16_t *)s_last_raw_art,
+                                s_last_raw_w, s_last_raw_h,
+                                s_glyph_art_buf, GLYPH_ART_RES, GLYPH_ART_RES);
+                s_glyph_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+                s_glyph_art_dsc.header.w   = GLYPH_ART_RES;
+                s_glyph_art_dsc.header.h   = GLYPH_ART_RES;
+                s_glyph_art_dsc.data       = (const uint8_t *)s_glyph_art_buf;
+                s_glyph_art_dsc.data_size  = GLYPH_ART_RES * GLYPH_ART_RES * sizeof(uint16_t);
+                lv_image_set_src(s_np_art, &s_glyph_art_dsc);
+                lv_image_set_antialias(s_np_art, false);
+                lv_obj_invalidate(s_np_art);
+            }
         } else {
-            /* Leaving PIXEL/PAPER: restore full-resolution art. */
+            /* Leaving a themed-art mode: restore full-resolution art. */
             s_art_dsc->header.cf  = LV_COLOR_FORMAT_RGB565;
             s_art_dsc->header.w   = s_last_raw_w;
             s_art_dsc->header.h   = s_last_raw_h;
@@ -3331,7 +3473,9 @@ static void load_settings(void)
     if (nvs_get_u8(h, NVS_KEY_THEME_ART, &ta) == ESP_OK) s_theme_art = (ta != 0);
     uint8_t ac = 0;
     if (nvs_get_u8(h, NVS_KEY_ACCENT, &ac) == ESP_OK && ac < ACCENT_COUNT) {
-        s_accent = ac;
+        /* Only the DEEP row is offered now; fold any prior vivid/soft pick onto
+         * the same hue in that row so the selection ring stays visible. */
+        s_accent = ACCENT_SHOWN_FIRST + (ac % TUNE_ACCENT_COLS);
     }
     uint8_t bs = BROWSER_CAROUSEL;
     if (nvs_get_u8(h, NVS_KEY_BROWSER_STYLE, &bs) == ESP_OK && bs < BROWSER_STYLE_COUNT) {
@@ -3604,6 +3748,27 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
             s_paper_art_dsc.data_size  = PAPER_ART_RES * PAPER_ART_RES * sizeof(uint16_t);
             if (s_np_art) {
                 lv_image_set_src(s_np_art, &s_paper_art_dsc);
+                lv_image_set_antialias(s_np_art, false);
+                lv_obj_invalidate(s_np_art);
+            }
+        }
+    } else if (is_glyph_theme() && s_theme_art) {
+        /* 128 KB PSRAM scratch, allocated on first use and kept (same policy as
+         * the PIXEL/PAPER buffers): dot-matrix at exactly ART_W so the dot grid
+         * lands 1:1 on the panel. */
+        if (!s_glyph_art_buf)
+            s_glyph_art_buf = heap_caps_malloc(
+                GLYPH_ART_RES * GLYPH_ART_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+        if (s_glyph_art_buf) {
+            glyphize_rgb565((const uint16_t *)rgb_data, w, h,
+                            s_glyph_art_buf, GLYPH_ART_RES, GLYPH_ART_RES);
+            s_glyph_art_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+            s_glyph_art_dsc.header.w   = GLYPH_ART_RES;
+            s_glyph_art_dsc.header.h   = GLYPH_ART_RES;
+            s_glyph_art_dsc.data       = (const uint8_t *)s_glyph_art_buf;
+            s_glyph_art_dsc.data_size  = GLYPH_ART_RES * GLYPH_ART_RES * sizeof(uint16_t);
+            if (s_np_art) {
+                lv_image_set_src(s_np_art, &s_glyph_art_dsc);
                 lv_image_set_antialias(s_np_art, false);
                 lv_obj_invalidate(s_np_art);
             }
@@ -4376,9 +4541,12 @@ static void rebuild_browser_cb(void *unused)
     int     saved_card  = s_centered_card;
     lv_obj_t *old_browser = s_screen_browser;
 
-    /* Free any existing pixel thumbnail pool; build_browser_screen() will
-     * reallocate it if PIXEL is still active. */
-    if (s_pix_thumbs) { heap_caps_free(s_pix_thumbs); s_pix_thumbs = NULL; }
+    /* Free the theme-look thumbnail pools; build_browser_screen() reallocates
+     * whichever the active theme needs (PIXEL / PAPER / GLYPH). Freeing all
+     * three avoids leaking the pool when a restyle keeps the same theme. */
+    if (s_pix_thumbs)   { heap_caps_free(s_pix_thumbs);   s_pix_thumbs = NULL; }
+    if (s_paper_thumbs) { heap_caps_free(s_paper_thumbs); s_paper_thumbs = NULL; }
+    if (s_glyph_thumbs) { heap_caps_free(s_glyph_thumbs); s_glyph_thumbs = NULL; }
     /* Free the CF canvas PSRAM buffer; the lv_image widget is a child of
      * old_browser and is freed when that screen is deleted below. */
     cf_deinit();
