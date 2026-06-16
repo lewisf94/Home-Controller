@@ -253,8 +253,9 @@ ESP32-P4-WIFI6-Touch-LCD-4.3 (ESP32-P4 RISC-V, 4.3" IPS, ST7701 MIPI-DSI, GT911
 capacitive touch, onboard ESP32-C6 WiFi over SDIO, PSRAM, 32 MB flash). Talks
 **directly to the Spotify Web API**; a future `waveshare/esp-idf-ha/` will swap
 to the HA backend. **Checkpoints 1 (display), 2 (WiFi) and 3 (Spotify) plus the
-full UI (cp4+) are hardware-verified** — Cover Flow, all four MODE themes with
-their dark/light faces, the 24-swatch accent grid, UI sound effects and the
+full UI (cp4+) are hardware-verified** — Cover Flow, all four THEME modes with
+their dark/light faces (incl. per-theme album art: PIXEL dither, PAPER duotone,
+GLYPH colour dot-matrix), the colour accent picker, UI sound effects and the
 tabbed Settings all run on device.
 
 What's in `ui.c` as committed:
@@ -296,11 +297,12 @@ What's in `ui.c` as committed:
   See the comment in `sdkconfig.defaults`.
 - Settings screen organised into **two tabs — DISPLAY and SOUND** (`SET_TAB_COUNT`,
   `settings_page()`/`settings_header()` helpers). DISPLAY: APPEARANCE (dark/light)
-  / MODE / THEME ALBUM ART / COLOUR / BROWSER STYLE / FONT / SELECTION LINE /
+  / THEME / THEME ALBUM ART / COLOUR / BROWSER STYLE / FONT / SELECTION LINE /
   BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND on-off / VOLUME / SOUND SET.
   All NVS-persisted.
 - **Four MODE options, each with a DARK/LIGHT face** (`MODE_BASIC / MODE_GLYPH /
-  MODE_PIXEL / MODE_PAPER`, `MODE_COUNT=4`; `s_dark` toggle). `k_mode_palettes
+  MODE_PIXEL / MODE_PAPER`, `MODE_COUNT=4`; `s_dark` toggle). (The on-screen
+  Settings header reads **THEME**; the enum/NVS key stay `MODE_*` / `ui_mode`.) `k_mode_palettes
   [MODE_COUNT][2]` maps {mode, dark?} → a `theme_t` palette; `apply_palette()`
   selects `s_th`. BASIC dark is the old BLACK; BASIC light the old LIGHT; GLYPH /
   PIXEL / PAPER each carry a dark + light palette. APPEARANCE (dark/light) sits
@@ -310,13 +312,16 @@ What's in `ui.c` as committed:
   the whole `lv_canvas` particle system, vortex/emission tick callbacks and the
   `s_vfx_*` state were deleted.)
 - **THEME ALBUM ART toggle** (`s_theme_art`, NVS `ui_themeart`, shown directly
-  under MODE) — turns the per-theme art restyle (PIXEL dither, PAPER 1-bit
-  duotone) on/off while keeping the rest of the theme; gated at every art-styling
-  site (`is_pixel_theme() && s_theme_art`, `is_paper_theme() && s_theme_art`).
-- Colour accent system: **8-hue wheel × 3 variants = 24 swatches** (vivid / deep /
-  soft rows; orange / amber / green / teal / blue / purple / magenta / red
-  columns). All values live in `TUNE_ACCENTS` (`ui_tune.h`); the grid is laid out
-  `TUNE_ACCENT_COLS`-wide. Drives selection highlights and progress bar, separate
+  under the THEME picker) — turns the per-theme art restyle (PIXEL dither, PAPER
+  1-bit duotone, GLYPH colour dot-matrix) on/off while keeping the rest of the
+  theme; gated at every art-styling site (`is_pixel_theme() && s_theme_art`,
+  `is_paper_theme() && s_theme_art`, `is_glyph_theme() && s_theme_art`).
+- Colour accent system: the **COLOUR picker shows a single row of 8 hues** — the
+  DEEP variant row (orange / amber / green / teal / blue / purple / magenta / red).
+  The full 8-hue × 3-variant palette still lives in `TUNE_ACCENTS` (`ui_tune.h`) so
+  saved indices stay valid, but only the DEEP row (`ACCENT_SHOWN_FIRST` ..
+  `+ACCENT_SHOWN_COUNT`) is offered; a prior vivid/soft pick folds onto the same
+  hue in that row on load. Drives selection highlights and progress bar, separate
   from the MODE palette. Default is deep orange (`s_accent = 8`). The selected
   swatch shows a contrast-aware check (ink on light swatches, white on dark).
 - **`main/ui_tune.h` — user-tweakable layout/colour knobs.** Central header of
@@ -353,6 +358,16 @@ What's in `ui.c` as committed:
     grey. `rebuild_browser_cb` stops + recreates the WiFi dots across a screen
     rebuild (a dangling pointer here was the GLYPH browser-style-change crash; fixed).
     Offline title dissolve dots draw in ink (were white — invisible on light).
+  - **Colour dot-matrix album art** (THEME ALBUM ART on) — `glyphize_rgb565()`
+    resamples the cover to a `GLYPH_DOT_CELL`-pitch grid (5 px) of uniform round
+    dots, each filled with the cover's OWN colour on the theme ground — so the
+    album stays legible and colourful while reading as the Nothing dot display (a
+    thin ground gap keeps the matrix grid visible). Mirrors PIXEL/PAPER: now-playing
+    dotted at 256 px (1:1 on panel), the card pool re-dots at card res so the grid
+    is never resampled, Cover Flow dots the finished canvas in place after
+    projection (`cf_glyph_dither`), and `s_glyph_thumbs` (raw-res PSRAM) is the
+    pool-failure fallback. All freed/rebuilt on theme switch. `GLYPH_DOT_CELL` is
+    the one pitch knob (smaller = finer/more dots).
 - **PAPER teletype data-brutalist theme** (`is_paper_theme()`, slot 5) — modelled on
   the cream-paper/ink "data sheet" reference UIs (mono type, ruled frames, 1-bit
   imagery), NOT a recolour of the other themes:

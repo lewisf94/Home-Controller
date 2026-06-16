@@ -39,7 +39,7 @@ swaps out.
 |---|---|---|
 | **PlatformIO CYD** (Arduino) | Shipped (Phase 1 + 1.5); now ported to LVGL, needs re-verify on hardware. | Not started. |
 | **ESP-IDF CYD** | **Done — feature-complete and verified on hardware** (lead build). | First build exists (`cyd/esp-idf-ha/`), not yet hardware-tested. |
-| **ESP-IDF P4** (Waveshare) | **Active — UI hardware-verified end-to-end (2026-06-13)**: cp1–3 + full UI (Cover Flow, four dark/light MODEs, 24-swatch accents). Open: RAM-art-decode (gated on an openRAM A/B check), Cover Flow memory-bandwidth perf, and a rolling code-quality audit — see `docs/P4-TODO.md` / `docs/PENDING.md`. | Future — copy of the P4 non-HA build with the backend swapped. |
+| **ESP-IDF P4** (Waveshare) | **Active — UI hardware-verified end-to-end (2026-06-13)**: cp1–3 + full UI (Cover Flow, four dark/light MODEs incl. GLYPH colour dot-matrix art, single-row colour accents). Open: RAM-art-decode (gated on an openRAM A/B check), Cover Flow memory-bandwidth perf, and a rolling code-quality audit — see `docs/P4-TODO.md` / `docs/PENDING.md`. | Future — copy of the P4 non-HA build with the backend swapped. |
 
 **Status legend:** "Needs polish" = functional on hardware but has open
 bugs / rough edges to clean up before it's a finished variant.

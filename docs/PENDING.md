@@ -12,7 +12,8 @@ landed.
 
 **Cleared.** The whole stack below — everything on `main` past commit `42405ab`
 (Sonos + device selector) through the 2026-06-13 theme restructure (four
-dark/light MODEs, the 24-swatch accent grid, `ui_tune.h`) — is now flashed and
+dark/light MODEs, the colour accent picker, `ui_tune.h`) and the later THEME-label
+/ GLYPH colour dot-matrix art / single-row COLOUR tweaks — is now flashed and
 verified on device. The table is kept as the manifest of what landed; the
 pre-flash reminder + sanity-check checklists that used to follow it have been
 retired now that they're executed. One standing caveat survives:
