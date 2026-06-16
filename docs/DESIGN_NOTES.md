@@ -217,6 +217,129 @@ consequence of the simpler architecture.
 
 ---
 
+## Landscape & prior-art research (2026-06-16)
+
+Web research into the device's design space (prior art, the Spotify-platform
+risk, the haptic knob, and the UI design languages), to inform direction. The
+through-line: the concept is well-validated, the planned haptic knob is proven
+ground, and the main strategic risk is Spotify's tightening API — which the
+planned Home Assistant / Music Assistant backend hedges against.
+
+### 1. Prior art — a close DIY sibling and a discontinued commercial twin
+
+- **Knobby** (Milo Winningham) is the nearest open-source analog: an ESP32 + a
+  single rotary encoder + small display acting as a **Spotify Connect remote** —
+  it controls playback on *other* devices (Echo, Sonos, …), exactly this project's
+  "the device is the controller, not the speaker" model. Spin the knob to browse
+  6,000+ genres plus your playlists (preloaded from "Every Noise at Once"). Open
+  source. ([hackaday.io](https://hackaday.io/project/184630-knobby-a-little-remote-a-lot-of-possibilities),
+  [hackster](https://www.hackster.io/milo-winningham/knobby-a-little-spotify-remote-for-a-lot-of-music-d64977))
+  *Differentiator for us:* a far richer UI (4.3" screen, themed skins, Cover Flow,
+  direct Sonos UPnP, the haptic knob) vs Knobby's deliberately minimal one-encoder
+  design. The Connect-remote control model is shared.
+- **ThingPulse ESP32 Spotify Remote** (Color Kit Grande) is another ESP32 Spotify
+  remote in the same space. ([thingpulse](https://thingpulse.com/esp32-spotify-remote-with-the-color-kit-grande/))
+- **Spotify Car Thing** is the commercial twin: a dedicated Spotify controller
+  with a screen, a rotary knob, 4 preset buttons and a back button (Amlogic SoC).
+  Spotify discontinued it (2022) then **remotely bricked it on 2024-12-09**, which
+  spawned a custom-firmware revival — **DeskThing**, **GlanceThing**, **Nocturne**,
+  Thing Labs — that reflash the hardware into desktop Spotify controllers /
+  glanceable displays. ([techissuestoday](https://techissuestoday.com/spotify-car-thing-deskthing-and-other-custom-firmware-solutions/),
+  [Car Thing — Wikipedia](https://en.wikipedia.org/wiki/Car_Thing))
+  *Takeaways:* (1) the concept is validated — clear demand for a dedicated physical
+  Spotify controller; (2) DeskThing/Nocturne are a free source of proven
+  small-screen now-playing + browse UX to borrow from; (3) cautionary tale —
+  Spotify killed *its own* hardware and bricked it remotely.
+
+### 2. Spotify-API platform risk — real, but our core endpoints are safe
+
+- On **2024-11-27** Spotify deprecated a swath of Web API endpoints **for new
+  apps**: `audio-features`, `audio-analysis`, `recommendations`, related-artists,
+  featured/category playlists, 30-second previews, and algorithmic/editorial
+  playlists. Existing approved apps are grandfathered. Stated reason "security";
+  widely read as limiting AI/scraping. ([Spotify dev blog](https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api),
+  [TechCrunch](https://techcrunch.com/2024/11/27/spotify-cuts-developer-access-to-several-of-its-recommendation-features/))
+- **The endpoints this device depends on are NOT affected**: the player/control
+  endpoints — `GET /me/player`, `play`/`pause`/`next`/`previous`/`seek`/`volume`,
+  `/me/player/devices`, transfer-playback — remain available (they need a Premium
+  account). Core function is safe *today*.
+- But the direction (deprecations + Premium-gating + bricking the Car Thing) is a
+  genuine platform risk. **The planned Home Assistant + Music Assistant backend
+  (Phase 3) is the hedge** — it decouples from depending directly on Spotify's API
+  goodwill, and Music Assistant can drive multiple sources. A second strategic
+  argument for Phase 3 beyond Sonos.
+
+### 3. The haptic knob is proven, RP2040-FOC-capable ground
+
+- The planned input follows **SmartKnob** (Scott Bezek): a BLDC gimbal motor + a
+  magnetic encoder + FOC that synthesises **software-defined detents and endstops**
+  (the motor can briefly push back against motion for force feedback). SmartKnob's
+  firmware is ~3 FreeRTOS tasks incl. a Motor Task doing FOC + detent physics;
+  host interfaces are Web Serial + Python. ([smartknob — GitHub](https://github.com/scottbez1/smartknob))
+- **FOC on the RP2040 is feasible and documented** — exactly the daughterboard
+  plan in this file. SimpleFOC officially supports RP2040/RP2350, there's a
+  Pico + BLDC + encoder **haptic-knob tutorial**, and FOC works with just an
+  encoder (no current sensing required). ([SimpleFOC RP2040 docs](https://docs.simplefoc.com/rpi_mcu),
+  [Hackaday — Motors Make The Best Knobs](https://hackaday.com/2025/10/09/motors-make-the-best-knobs-with-simplefoc/))
+  *De-risks the RP2040 FOC decision* (caveat: the Pico GPIO budget — 3 PWM + 1 EN
+  per motor — is fine for our single motor).
+- **The music-control UX win is context-dependent feel:** chunky detents while
+  flicking the album carousel, fine smooth steps for volume, free-spin for
+  scrubbing, hard endstops at list ends, a click/bump on select. A single knob
+  that *physically reconfigures per screen* is what a touch-only device can't
+  match. Adjacent devices (Surface Dial, Nuimo, Griffin PowerMate) share the same
+  turn / press / long-press vocabulary.
+
+### 4. UI/UX: Cover Flow tradeoffs + the design-language lineage
+
+- **Cover Flow** (which we implement): Apple removed it (iTunes 11 in 2012; iOS 7
+  music → tiled art; macOS Mojave Finder → Gallery view), largely due to a
+  **Mirror Worlds patent settlement** and the mid-2010s flat-design shift away
+  from heavy animation/reflections — not purely usability. Its weakness is scanning
+  *large* libraries; its strength (and why users mourned it) is exactly
+  **album-cover browsing that feels like flipping through LPs** — our use case. So
+  Cover Flow is a defensible, on-theme choice here; keep the faster Carousel/Focus
+  styles for large lists (already done). ([Cover Flow — Wikipedia](https://en.wikipedia.org/wiki/Cover_Flow),
+  [512 Pixels history](https://512pixels.net/2023/10/the-history-of-cover-flow/))
+- **The theme system maps onto a real design lineage** worth leaning into:
+  - **Braun / Dieter Rams** — functionalism, "weniger, aber besser" (less but
+    better), the 10 principles, minimal labels + standout physical controls. (Our
+    BASIC theme sits here.)
+  - **Teenage Engineering** — the modern Braun homage (OP-1 / TP-7): minimal,
+    tactile, playful-yet-functional. The "TE look" already in the backlog.
+  - **Nothing OS** — dot-matrix "Glyph" monochrome aesthetic (our GLYPH theme).
+    Notably the *same design house* (Jesper Kouthoofd / Teenage Engineering) shaped
+    the early Nothing phone — so the TE and GLYPH directions are siblings, not
+    competitors.
+  - **Data-brutalist / teletype / 1-bit** — our PAPER theme.
+  ([Braun → Teenage Engineering](https://onlyonceshop.com/blog/from-braun-to-teenage-engineering),
+  [TE design](https://designwanted.com/teenage-engineering-creating-design-perspective/))
+
+### 5. Bonus (from the Sonos research): push beats polling
+
+- For local Sonos, **UPnP event subscription (GENA)** lets the speaker *push* state
+  changes instead of being polled — the architecture SoCo / node-sonos / Home
+  Assistant all use, and the root-cause fix for the poll-stall we patched. Costs an
+  HTTP callback server + subscription lifecycle on-device; position (`RelTime`)
+  still isn't pushed (poll/estimate it — which our progress bar already does
+  locally). Music Assistant already implements all of this, reinforcing that Sonos
+  belongs in the Phase 3 HA backend rather than hand-maintained.
+
+### Actionable takeaways
+
+1. **Concept is validated** (Knobby, the Car Thing afterlife) — differentiate on UI
+   richness + the haptic knob, not on the control model.
+2. **Core Spotify endpoints are safe**, but treat the **HA / Music Assistant
+   backend as a strategic hedge**, not just a Sonos convenience.
+3. **RP2040 FOC is de-risked** (SimpleFOC + Pico haptic-knob precedent) — proceed
+   with the daughterboard; the differentiator is per-screen detent maps.
+4. **Cover Flow is the right call** for album browsing specifically; keep the
+   lighter styles for big lists.
+5. **Lean into the Braun → TE → Nothing lineage** — BASIC/TE/GLYPH are a coherent
+   family, not arbitrary skins.
+
+---
+
 ## How to use this file
 
 - Edit it as decisions get locked in (move items from "Open" to "Decisions").
