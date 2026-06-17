@@ -71,6 +71,11 @@ bool spotify_toggle_shuffle(void);
  * Lets the dispatcher tell a 403 "restricted device" from other failures. */
 int  spotify_last_cmd_status(void);
 
+/* Diagnostics: seconds until token refresh (-1 if unknown), and seconds left on
+ * a 429 poll backoff (0 if none). */
+int  spotify_token_expiry_seconds(void);
+int  spotify_poll_holdoff_seconds(void);
+
 /* A Spotify Connect device from GET /me/player/devices. */
 typedef struct {
     char id[64];

@@ -66,6 +66,9 @@
 #include <math.h>
 #include "esp_heap_caps.h"
 #include "esp_timer.h"   /* esp_timer_get_time() for FPS render-duration timing */
+#include "esp_system.h"  /* esp_reset_reason() for the stats dump */
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"   /* uxTaskGetStackHighWaterMark() for the stats dump */
 
 static const char *TAG = "ui";
 
@@ -539,6 +542,11 @@ static uint32_t   s_fps_burst_frames   = 0;   /* frames in the running burst */
 static uint32_t   s_fps_acc_intervals  = 0;   /* closed-burst frame intervals this window */
 static uint32_t   s_fps_acc_span_us    = 0;   /* closed-burst elapsed time this window */
 static uint32_t   s_fps_last_rate      = 0;   /* last computed FPS (held on idle) */
+/* Last Cover Flow profile averages (us), retained from cf_profile_tick for the
+ * periodic stats dump. Zero until a CF scroll has been measured. */
+static uint32_t   s_cf_clear_us = 0;
+static uint32_t   s_cf_rast_us  = 0;
+static uint32_t   s_cf_frame_us = 0;
 
 /* CF perspective canvas: SCREEN_W × CF_PERSP_H PSRAM RGB565 buffer rasterized
  * on each scroll event.  Only allocated when BROWSER_COVERFLOW is active.
@@ -640,6 +648,7 @@ static void refresh_sound_set_selection(void);
 static void save_sound_set(int8_t v);
 static void fps_render_ready_cb(lv_event_t *e);
 static void fps_timer_cb(lv_timer_t *t);
+static void ui_log_stats(void);
 static void cf_init(lv_obj_t *screen);
 static void cf_deinit(void);
 static void cf_render(void);
@@ -2216,10 +2225,13 @@ static void cf_profile_tick(int64_t t0, int64_t t1, int64_t t2)
     acc_clear += (uint64_t)(t1 - t0);
     acc_rast  += (uint64_t)(t2 - t1);
     if (++acc_n >= 30) {
+        s_cf_clear_us = (uint32_t)(acc_clear / acc_n);
+        s_cf_rast_us  = (uint32_t)(acc_rast / acc_n);
+        s_cf_frame_us = (uint32_t)((acc_clear + acc_rast) / acc_n);
         ESP_LOGI(TAG, "cf_prof: clear=%lu us  rast=%lu us  frame=%lu us  (avg/%lu)",
-                 (unsigned long)(acc_clear / acc_n),
-                 (unsigned long)(acc_rast / acc_n),
-                 (unsigned long)((acc_clear + acc_rast) / acc_n),
+                 (unsigned long)s_cf_clear_us,
+                 (unsigned long)s_cf_rast_us,
+                 (unsigned long)s_cf_frame_us,
                  (unsigned long)acc_n);
         acc_clear = acc_rast = 0;
         acc_n = 0;
@@ -4529,11 +4541,122 @@ static void fps_timer_cb(lv_timer_t *t)
     }
     s_fps_acc_intervals = 0;
     s_fps_acc_span_us   = 0;
+
+    /* Diagnostics: while FPS DISPLAY is on, emit a parseable settings+perf block
+     * to the serial log every STATS_PERIOD_S seconds so it can be copy-pasted
+     * for analysis. Gated on s_fps_enabled to keep normal logs clean. */
+    if (s_fps_enabled) {
+        static uint32_t stat_ticks = 0;
+        #define STATS_PERIOD_S 5
+        if (++stat_ticks >= STATS_PERIOD_S) { stat_ticks = 0; ui_log_stats(); }
+    }
+
     if (!s_fps_enabled || !s_fps_label) return;
     char buf[12];
     snprintf(buf, sizeof buf, "%lu FPS", (unsigned long)s_fps_last_rate);
     lv_label_set_text(s_fps_label, buf);
 }
+
+/* Short label for the last reset cause -- so a pasted block reveals whether the
+ * previous boot ended in a panic / watchdog / brownout vs a clean restart. */
+static const char *reset_reason_str(void)
+{
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:  return "POWERON";
+        case ESP_RST_SW:       return "SW";
+        case ESP_RST_PANIC:    return "PANIC";
+        case ESP_RST_INT_WDT:  return "INT_WDT";
+        case ESP_RST_TASK_WDT: return "TASK_WDT";
+        case ESP_RST_WDT:      return "WDT";
+        case ESP_RST_BROWNOUT: return "BROWNOUT";
+        case ESP_RST_DEEPSLEEP:return "DEEPSLEEP";
+        case ESP_RST_USB:      return "USB";
+        default:               return "OTHER";
+    }
+}
+
+/* One-shot diagnostic dump: every active setting plus uptime/reset cause, the
+ * live FPS, last Cover Flow profile, WiFi signal, a playback snapshot, the
+ * PSRAM art-pool map, render-task stack headroom and heap/PSRAM headroom -- in a
+ * delimited key=value block that's easy to copy-paste from the serial monitor
+ * and machine-parse afterwards. Runs on the LVGL task (via fps_timer_cb), so it
+ * may safely read the UI state. */
+static void ui_log_stats(void)
+{
+    int snd_set = audio_get_set();
+    ESP_LOGI(TAG, "===== STATS BEGIN =====");
+    ESP_LOGI(TAG, "uptime=%lus reset=%s lvgl_stack_hwm=%u",
+             (unsigned long)(esp_timer_get_time() / 1000000),
+             reset_reason_str(), (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    ESP_LOGI(TAG,
+        "theme=%s appearance=%s theme_art=%s accent=%u(0x%06X) browser=%s font=%s",
+        k_mode_names[s_mode], s_dark ? "DARK" : "LIGHT", s_theme_art ? "ON" : "OFF",
+        (unsigned)s_accent, (unsigned)k_accents[s_accent],
+        k_browser_style_names[s_browser_style],
+        s_font_choice == FONT_SLAB ? "SLAB" : "SANS");
+    ESP_LOGI(TAG,
+        "brightness=%u sel_line=%s transition=%u sound=%s sound_vol=%d sound_set=%s glyph_dot_cell=%d",
+        (unsigned)s_brightness, s_show_sel_line ? "ON" : "OFF", (unsigned)s_transition,
+        audio_is_enabled() ? "ON" : "OFF", audio_get_volume(),
+        snd_set < 0 ? "AUTO" : audio_set_name(snd_set), GLYPH_DOT_CELL);
+
+    int rssi = 0;
+    bool have_rssi = (esp_wifi_sta_get_rssi(&rssi) == ESP_OK);
+    if (have_rssi) ESP_LOGI(TAG, "net: rssi=%ddBm", rssi);
+    else           ESP_LOGI(TAG, "net: rssi=n/a (not associated)");
+
+    ESP_LOGI(TAG,
+        "play: state=%s pos=%lu:%02lu/%lu:%02lu device='%s' centered_card=%d playing_card=%d/%d",
+        s_track.is_playing ? "PLAYING" : "PAUSED",
+        (unsigned long)(s_track.progress_ms / 60000),
+        (unsigned long)((s_track.progress_ms / 1000) % 60),
+        (unsigned long)(s_track.duration_ms / 60000),
+        (unsigned long)((s_track.duration_ms / 1000) % 60),
+        s_track.device_name[0] ? s_track.device_name : "-",
+        s_centered_card, s_playing_card_idx, (int)s_card_count);
+
+    ESP_LOGI(TAG, "fps=%lu (frames/s while animating; idle is low by design)",
+             (unsigned long)s_fps_last_rate);
+    if (s_cf_frame_us)
+        ESP_LOGI(TAG, "cf_prof: clear=%lu us rast=%lu us frame=%lu us",
+                 (unsigned long)s_cf_clear_us, (unsigned long)s_cf_rast_us,
+                 (unsigned long)s_cf_frame_us);
+    else
+        ESP_LOGI(TAG, "cf_prof: n/a (set browser to Cover Flow and flick-scroll to measure)");
+
+    /* PSRAM art-pool map: only the pools currently allocated, with sizes -- so a
+     * leak or an unexpectedly-live pool from a prior theme shows up immediately. */
+    {
+        char pools[224]; int n = 0; pools[0] = 0;
+        size_t thumb_b = (size_t)s_card_count * ALBUM_THUMB_BYTES;
+        #define POOL_APP(ptr, name, bytes) \
+            if (ptr) n += snprintf(pools + n, (n < (int)sizeof pools) ? sizeof pools - n : 0, \
+                                   " %s=%uKB", name, (unsigned)((bytes) / 1024))
+        POOL_APP(s_thumbs_psram, "thumbs",     thumb_b);
+        POOL_APP(s_card_pool,    "card",       (size_t)s_card_count * CARD_SIZE * CARD_SIZE * 2);
+        POOL_APP(s_pix_thumbs,   "pix_thumb",  (size_t)s_card_count * PIX_THUMB_RES * PIX_THUMB_RES * 2);
+        POOL_APP(s_paper_thumbs, "paper_thumb", thumb_b);
+        POOL_APP(s_glyph_thumbs, "glyph_thumb", thumb_b);
+        POOL_APP(s_cf_buf,       "cf",         (size_t)CF_PERSP_W * CF_PERSP_H * 2);
+        POOL_APP(s_pix_art_buf,  "pix_art",    (size_t)PIX_ART_RES * PIX_ART_RES * 2);
+        POOL_APP(s_paper_art_buf,"paper_art",  (size_t)PAPER_ART_RES * PAPER_ART_RES * 2);
+        POOL_APP(s_glyph_art_buf,"glyph_art",  (size_t)GLYPH_ART_RES * GLYPH_ART_RES * 2);
+        #undef POOL_APP
+        ESP_LOGI(TAG, "pools(PSRAM):%s", pools[0] ? pools : " none");
+    }
+
+    ESP_LOGI(TAG,
+        "heap: int_free=%uKB int_min=%uKB int_largest=%uKB psram_free=%uKB psram_largest=%uKB",
+        (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+        (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
+        (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+        (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+        (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+    ESP_LOGI(TAG, "===== STATS END =====");
+}
+
+/* The Settings FPS DISPLAY toggle doubles as the diagnostics gate (see ui.h). */
+bool ui_diagnostics_enabled(void) { return s_fps_enabled; }
 
 static void rebuild_browser_cb(void *unused)
 {

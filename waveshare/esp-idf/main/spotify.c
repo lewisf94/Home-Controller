@@ -815,6 +815,22 @@ static int s_last_cmd_status = 0;
 
 int spotify_last_cmd_status(void) { return s_last_cmd_status; }
 
+/* Seconds until the cached access token is refreshed; -1 if its lifetime is
+ * unknown (token loaded from NVS, expiry primed to "far future"). Diagnostics. */
+int spotify_token_expiry_seconds(void)
+{
+    if (s_token_expiry_us == INT64_MAX) return -1;
+    int64_t d = s_token_expiry_us - esp_timer_get_time();
+    return d <= 0 ? 0 : (int)(d / 1000000);
+}
+
+/* Seconds remaining on a 429 poll backoff (honouring Retry-After); 0 if none. */
+int spotify_poll_holdoff_seconds(void)
+{
+    int64_t d = s_poll_holdoff_until_us - esp_timer_get_time();
+    return d <= 0 ? 0 : (int)(d / 1000000);
+}
+
 static int _do_cmd(esp_http_client_method_t method, const char *url, const char *body)
 {
     s_last_cmd_status = -1;

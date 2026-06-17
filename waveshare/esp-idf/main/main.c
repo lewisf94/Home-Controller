@@ -589,6 +589,25 @@ static void spotify_task(void *arg)
             poll_and_publish(&info);
         }
 
+        /* Diagnostics: while the Settings FPS DISPLAY toggle is on, emit a
+         * compact network/poll/Sonos health line each poll so it sits in the
+         * serial log next to the UI stats block for copy-paste analysis. */
+        if (ui_diagnostics_enabled()) {
+            TickType_t now = xTaskGetTickCount();
+            int32_t hold_ticks = (int32_t)(s_sonos_fetch_hold - now);
+            int sonos_hold_s = (s_sonos_fetch_hold && hold_ticks > 0)
+                             ? (int)(pdTICKS_TO_MS(hold_ticks) / 1000) : 0;
+            ESP_LOGI(TAG,
+                "NETSTAT: poll_interval=%ds token_expiry=%ds poll_holdoff=%ds last_cmd=%d sonos=%s sonos_audio=%d sonos_hold=%ds",
+                info.is_playing ? 5 : 15,
+                spotify_token_expiry_seconds(),
+                spotify_poll_holdoff_seconds(),
+                spotify_last_cmd_status(),
+                s_sonos_active[0] ? s_sonos_active : "-",
+                s_sonos_has_audio ? 1 : 0,
+                sonos_hold_s);
+        }
+
         /* Adaptive poll: 5 s while playing, back off to 15 s when paused or
          * idle (each poll is a TLS round-trip). A queued command still wakes
          * the task early, so control stays responsive. */

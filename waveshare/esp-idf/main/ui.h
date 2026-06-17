@@ -110,3 +110,8 @@ typedef enum {
 
 void            ui_set_transition_style(ui_transition_t style);
 ui_transition_t ui_get_transition_style(void);
+
+/* True while the Settings FPS DISPLAY toggle is on -- used as the "diagnostics
+ * enabled" gate so other modules (e.g. the Spotify task) can emit their own
+ * periodic stats lines alongside the UI stats block. */
+bool            ui_diagnostics_enabled(void);
