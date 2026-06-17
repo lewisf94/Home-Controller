@@ -1093,46 +1093,12 @@ static void build_browser_screen(void)
         }
     }
 
-    /* PAPER theme: pre-dither every thumbnail to ink-on-paper duotone at the
-     * raw thumb resolution. Cover Flow and the pool-failure fallback sample
-     * these; Carousel/Focus get a sharper re-dither at card size below. */
-    if (is_paper_theme() && s_theme_art && s_card_count > 0) {
-        size_t pool_sz = s_card_count * ALBUM_THUMB_BYTES;
-        s_paper_thumbs = heap_caps_malloc(pool_sz, MALLOC_CAP_SPIRAM);
-        if (s_paper_thumbs) {
-            for (size_t i = 0; i < s_card_count; i++) {
-                const uint16_t *src = thumb_src(i);
-                if (src) {
-                    paperize_rgb565(src, ALBUM_THUMB_W, ALBUM_THUMB_H,
-                                    s_paper_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H,
-                                    ALBUM_THUMB_W, ALBUM_THUMB_H);
-                }
-            }
-        } else {
-            ESP_LOGW(TAG, "PAPER: thumb pool alloc failed (%zu B SPIRAM)", pool_sz);
-        }
-    }
-
-    /* GLYPH theme: pre-render every thumbnail to dot-matrix at the raw thumb
-     * resolution. Used as the Cover Flow / card-pool-failure fallback source;
-     * Carousel/Focus normally take the sharper card-size re-render in
-     * fill_card_tile, and Cover Flow dots its canvas in place after projection. */
-    if (is_glyph_theme() && s_theme_art && s_card_count > 0) {
-        size_t pool_sz = s_card_count * ALBUM_THUMB_BYTES;
-        s_glyph_thumbs = heap_caps_malloc(pool_sz, MALLOC_CAP_SPIRAM);
-        if (s_glyph_thumbs) {
-            for (size_t i = 0; i < s_card_count; i++) {
-                const uint16_t *src = thumb_src(i);
-                if (src) {
-                    glyphize_rgb565(src, ALBUM_THUMB_W, ALBUM_THUMB_H,
-                                    s_glyph_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H,
-                                    ALBUM_THUMB_W, ALBUM_THUMB_H);
-                }
-            }
-        } else {
-            ESP_LOGW(TAG, "GLYPH: thumb pool alloc failed (%zu B SPIRAM)", pool_sz);
-        }
-    }
+    /* NOTE: PAPER and GLYPH only need a raw-resolution per-theme thumb pool as a
+     * FALLBACK (the card-dsc path when the card pool fails) -- Carousel/Focus use
+     * the card pool, and Cover Flow dithers the raw thumbs in place. Allocating
+     * them up front cost ~5.3 MB of PSRAM for nothing in the normal case, so they
+     * are now built AFTER the card pool, only if it failed. (PIXEL's pool above
+     * stays unconditional: it is a real Cover Flow source AND a card-pool input.) */
 
     /* Card-native pool: every thumb pre-scaled to CARD_SIZE with this theme's
      * look, so Carousel/Focus card images blit 1:1 (scale == LV_SCALE_NONE)
@@ -1149,6 +1115,36 @@ static void build_browser_screen(void)
                 fill_card_tile(i, s_card_pool + i * (size_t)CARD_SIZE * CARD_SIZE);
         } else {
             ESP_LOGW(TAG, "card pool alloc failed (%zu B SPIRAM)", pool_sz);
+        }
+    }
+
+    /* Per-theme fallback thumb pools (PAPER duotone / GLYPH dot-matrix at raw
+     * thumb resolution) -- ONLY built if the card pool failed, since otherwise
+     * the card-dsc path never reads them. Saves ~5.3 MB PSRAM in the common case
+     * (the card pool succeeds). */
+    if (!s_card_pool && s_theme_art && s_card_count > 0) {
+        if (is_paper_theme()) {
+            size_t pool_sz = s_card_count * ALBUM_THUMB_BYTES;
+            s_paper_thumbs = heap_caps_malloc(pool_sz, MALLOC_CAP_SPIRAM);
+            if (s_paper_thumbs)
+                for (size_t i = 0; i < s_card_count; i++) {
+                    const uint16_t *src = thumb_src(i);
+                    if (src) paperize_rgb565(src, ALBUM_THUMB_W, ALBUM_THUMB_H,
+                                             s_paper_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H,
+                                             ALBUM_THUMB_W, ALBUM_THUMB_H);
+                }
+            else ESP_LOGW(TAG, "PAPER: fallback thumb pool alloc failed (%zu B)", pool_sz);
+        } else if (is_glyph_theme()) {
+            size_t pool_sz = s_card_count * ALBUM_THUMB_BYTES;
+            s_glyph_thumbs = heap_caps_malloc(pool_sz, MALLOC_CAP_SPIRAM);
+            if (s_glyph_thumbs)
+                for (size_t i = 0; i < s_card_count; i++) {
+                    const uint16_t *src = thumb_src(i);
+                    if (src) glyphize_rgb565(src, ALBUM_THUMB_W, ALBUM_THUMB_H,
+                                             s_glyph_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H,
+                                             ALBUM_THUMB_W, ALBUM_THUMB_H);
+                }
+            else ESP_LOGW(TAG, "GLYPH: fallback thumb pool alloc failed (%zu B)", pool_sz);
         }
     }
 
@@ -1954,7 +1950,10 @@ static const uint8_t k_bayer8[8][8] = {
 static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                             uint16_t *dst, uint16_t dw, uint16_t dh)
 {
-    uint32_t ink = s_th->text, pap = s_th->bg;
+    /* Always render album art with the LIGHT PAPER palette (cream paper + dark
+     * ink) regardless of the dark/light face: the dark face inverts the duotone
+     * to light-on-dark, which reads poorly on covers. Chrome still follows s_th. */
+    uint32_t ink = THEME_PAPER.text, pap = THEME_PAPER.bg;
     uint16_t ink_px = rgb888_to_565(ink);
     uint16_t pap_px = rgb888_to_565(pap);
     for (uint16_t dy = 0; dy < dh; dy++) {
@@ -1982,7 +1981,10 @@ static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
 static void glyphize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                             uint16_t *dst, uint16_t dw, uint16_t dh)
 {
-    uint16_t gnd_px = rgb888_to_565(s_th->bg);
+    /* Always dot the art on the DARK GLYPH ground regardless of the face: the
+     * cover-colour dots look washed out on the light-grey ground, but pop on the
+     * near-black one. Chrome still follows the live s_th palette. */
+    uint16_t gnd_px = rgb888_to_565(THEME_GLYPH_DARK.bg);
     int irad = (int)((float)GLYPH_DOT_CELL * 0.42f);   /* dot < cell -> visible grid gap */
     if (irad < 1) irad = 1;
     int ir2 = irad * irad;
@@ -2164,7 +2166,9 @@ static void cf_render_card(int32_t card_cx, float dist_norm,
  * the empty paper stays clean instead of picking up threshold speckle. */
 static void cf_paper_dither(uint16_t bg_px)
 {
-    uint32_t ink = s_th->text, pap = s_th->bg;
+    /* Light PAPER palette always (see paperize_rgb565): covers stay cream+ink on
+     * both faces. Empty canvas pixels (== bg_px clear colour) are still skipped. */
+    uint32_t ink = THEME_PAPER.text, pap = THEME_PAPER.bg;
     uint16_t ink_px = rgb888_to_565(ink);
     uint16_t pap_px = rgb888_to_565(pap);
     for (int dy = 0; dy < CF_PERSP_H; dy++) {
@@ -2190,7 +2194,11 @@ static void cf_paper_dither(uint16_t bg_px)
  * in that centre's colour. Integer distance test keeps the per-scroll cost down. */
 static void cf_glyph_dither(uint16_t bg_px)
 {
-    uint16_t gnd_px = bg_px;                          /* GLYPH ground == canvas clear */
+    /* Cover cells sit the colour dots on the DARK GLYPH ground (see
+     * glyphize_rgb565 -- colours pop, not washed out) regardless of the face;
+     * empty cells keep the active clear colour so the bare canvas still matches
+     * the screen behind the fan. */
+    uint16_t art_gnd = rgb888_to_565(THEME_GLYPH_DARK.bg);
     int irad = (int)((float)GLYPH_DOT_CELL * 0.42f);
     if (irad < 1) irad = 1;
     int ir2 = irad * irad;
@@ -2202,12 +2210,13 @@ static void cf_glyph_dither(uint16_t bg_px)
             int ccy = cy + GLYPH_DOT_CELL / 2; if (ccy >= CF_PERSP_H) ccy = CF_PERSP_H - 1;
             uint16_t col = s_cf_buf[(size_t)ccy * CF_PERSP_W + ccx];
             bool empty = (col == bg_px);
+            uint16_t gap = empty ? bg_px : art_gnd;   /* cover gaps = dark ground */
             for (int yy = cy; yy < y1; yy++) {
                 uint16_t *row = s_cf_buf + (size_t)yy * CF_PERSP_W;
                 int ddy = yy - ccy;
                 for (int xx = cx; xx < x1; xx++) {
                     int ddx = xx - ccx;
-                    row[xx] = (!empty && ddx * ddx + ddy * ddy <= ir2) ? col : gnd_px;
+                    row[xx] = (!empty && ddx * ddx + ddy * ddy <= ir2) ? col : gap;
                 }
             }
         }
