@@ -202,9 +202,34 @@ PPA rotation and adaptive poll backoff are already done (do not re-list as TODOs
 See [`../../docs/P4-TODO.md`](../../docs/P4-TODO.md) for the rolling backlog
 and [`../../docs/PENDING.md`](../../docs/PENDING.md) for the verify-pending list.
 
+## Haptic knob (optional, gated — firmware committed, hardware pending)
+
+This build has a driver for the custom **RP2040 SmartKnob-style daughterboard**
+(FOC gimbal motor, strain-gauge press, 4 MX buttons, LED ring, ambient + battery
+sensors), connected over UART. The RP2040 firmware lives in [`../../rp2040/`](../../rp2040/);
+the P4-side files here are:
+
+- `main/knob.c/.h` — UART link driver (nanopb + CRC32 + COBS framing, ACK/retry).
+- `main/knob_input.c/.h` — context-aware mapper: turns knob position/button events
+  into `ui_request_*()` calls (backend-neutral, so it works in the future HA build
+  too). Four menus: Now Playing (scrub) / Volume / Albums / Lights (future HA).
+- `main/home_controller.pb.c/.h` — generated protocol (copy of `proto/`).
+- `components/nanopb/` — vendored nanopb 0.4.9.1 runtime (not on the registry).
+
+**Gated behind `KNOB_ENABLED` (default 0)** in `main.c` — when off, the UART is
+never configured and no GPIO is touched, so flashing a board *without* the knob is
+completely unaffected. Build with the knob: `idf.py build -DKNOB_ENABLED=1` (or set
+it in `main.c`).
+
+**UART pins (verified against the J3 header):** P4 TX = GPIO32, RX = GPIO46.
+Full pin map, protocol details, SimpleFOC/MT6701 facts, and the hardware-verify
+checklist are in [`../../docs/KNOB-NOTES.md`](../../docs/KNOB-NOTES.md).
+
 ## Already in this folder
 - Copied board-agnostic, unchanged: `spotify.c/.h`, `albums.c/.h`,
   `album_art.cpp/.h`, `littlefs.c/.h`, `album_thumbs.c/.h/.bin`.
 - New: `main.c` (skeleton), `sdkconfig.defaults`, `partitions.csv`, `CMakeLists.txt`,
   `main/CMakeLists.txt`, `main/idf_component.yml`, `include/secrets.h.example`.
+- Knob driver: `main/knob.c/.h`, `main/knob_input.c/.h`, `main/home_controller.pb.c/.h`,
+  `components/nanopb/` (see "Haptic knob" above).
 - **Vendored BSP:** `components/esp32_p4_wifi6_touch_lcd_4_3/` (checked in).

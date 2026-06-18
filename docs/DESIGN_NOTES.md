@@ -5,6 +5,12 @@ from the project brief + chat recommendations. Keep this file up to date as
 decisions firm up so future sessions (mine or otherwise) have a single source
 of truth.
 
+> **Firmware status (2026-06-18):** the RP2040 firmware and the P4-side UART
+> driver are written, committed, and gated behind `KNOB_ENABLED` (default off) —
+> see [`KNOB-NOTES.md`](KNOB-NOTES.md) for pin assignments, the UART protocol,
+> and the SimpleFOC/MT6701 implementation facts. This file remains the **hardware
+> / PCB** source of truth; KNOB-NOTES is the **firmware / pin** source of truth.
+
 ---
 
 ## Architecture summary
@@ -153,10 +159,12 @@ needed on the daughterboard for it.
 
 1. **RP2040 breakout chosen for prototyping** — which exact module? (Pico, Pico W,
    bare-RP2040 breakout?) Affects header pinout during the prototype phase.
-2. **Waveshare GPIO header mapping** — pull from the
-   `waveshare ESP32-P4-WIFI6-Touch-LCD-4-3 user manual.pdf` (in `Datasheets/`).
-   Pick the free pins for: UART-to-RP2040, I2C bus, 5 V, 3V3, GND. Avoid pins
-   already used by the LCD/touch/audio codec/SDIO-to-C6.
+2. **Waveshare GPIO header mapping** — UART-to-RP2040 RESOLVED (2026-06-18):
+   **P4 TX = GPIO32 (J3 pin 31), RX = GPIO46** — both verified broken out on J3
+   and clear of LCD/touch/audio/SDIO-to-C6/strapping/USB-JTAG. GPIO33 is NOT on
+   the header (was an early placeholder). Still to pick from the header: 5 V, 3V3,
+   GND for the daughterboard power. See [`KNOB-NOTES.md`](KNOB-NOTES.md) for the
+   full pin rationale.
 3. **Motor connector** — JST-PH vs screw terminal — depends on the Sparkfun
    gimbal motor's leads when it arrives.
 4. **IMU + Hall** — Lewis has these on hand but parts unconfirmed. Recommended

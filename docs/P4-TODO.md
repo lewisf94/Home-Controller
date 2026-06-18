@@ -188,15 +188,29 @@ Retired since this list was written:
 
 ---
 
-## Open — physical controls (cp6 successor)
+## Physical controls — RP2040 haptic knob (FIRMWARE DONE, hardware pending)
 
 The Settings UI is touch-driven today; there's no MCP23017 on the waveshare. The
-big planned input is the custom **RP2040 smart-knob daughterboard** (FOC gimbal
-motor, strain-gauge buttons, battery gauge, LED ring) — full hardware design in
-[`DESIGN_NOTES.md`](DESIGN_NOTES.md), reference in `docs/smartknob-repo/`. The
-`ui_*` seam self-locks (audit A), so a future input task can call it directly or
-post to `s_cmd_queue`; the `input.c` seam in `cyd_shared/` is the CYD-style
-alternative.
+custom **RP2040 smart-knob daughterboard** (FOC gimbal motor, strain-gauge press,
+4 MX buttons, battery gauge, LED ring, ambient sensor) is the planned physical
+input — full hardware design in [`DESIGN_NOTES.md`](DESIGN_NOTES.md), reference in
+`docs/smartknob-repo/`.
+
+**Firmware is committed and gated** (not yet wired/flashed — no PCB yet):
+- RP2040 firmware in [`../rp2040/`](../rp2040/): `motor_task` (SimpleFOC FOC +
+  detent physics on core 1), `interface_task` (UART/sensors/LEDs on core 0).
+- P4-side driver in `waveshare/esp-idf/main/knob.c` + `knob_input.c`, behind
+  `#if KNOB_ENABLED` (default 0) — knob-less flashes are unaffected.
+- UART protocol (nanopb + CRC32 + COBS), pin map, and SimpleFOC/MT6701 facts all
+  documented in [`KNOB-NOTES.md`](KNOB-NOTES.md). The 2026-06-18 deep-research
+  pass verified all pin assignments and protocol details; one critical bug (UART
+  on the motor's GPIO0/1 PWM pins) was found and fixed.
+- `knob_input.c` calls only the `ui_*` seam (self-locks, audit A), so it's
+  backend-neutral and carries over to `waveshare/esp-idf-ha/` untouched.
+
+**Remaining (needs the PCB in hand):** flash with `KNOB_ENABLED=1`, calibrate the
+HX711 press threshold and motor pole pairs, verify the four-menu interaction model
+on device. Checklist in [`KNOB-NOTES.md`](KNOB-NOTES.md).
 
 ---
 

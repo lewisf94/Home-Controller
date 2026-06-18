@@ -76,6 +76,25 @@ Investigations (read-only; findings folded into CLAUDE.md / P4-TODO.md):
 
 Deep-dive queue (one at a time, Lewis's request): **A concurrency — DONE (clean).** **B failure-mode/resilience — DONE:** mostly solid (WiFi reconnect, token refresh, 429 holdoff, 404 wake, OOM-degrades-with-fallbacks all good). Real gap (now FIXED, `56e1a9b`): an unreachable explicitly-pinned Sonos (`s_sonos_explicit`) stalled the poll on a SOAP timeout every cycle — one timeout (~4 s), not the three the audit first claimed (`sonos_fetch_now_playing` bails after the first query); an auto/restricted Sonos already self-heals (clears `s_sonos_active` + 10 s backoff, main.c:460). Fix: 2 s SOAP timeout + a 10 s `s_sonos_fetch_hold` so a dead pinned speaker is retried every 10 s instead of stalling every poll. Minor: no extra backoff on Spotify 5xx (keeps normal poll cadence — not a hot-spin); non-JPEG art body retried not blacklisted; display-init + WiFi-wait return unchecked (hardware-fault only). Two agent "criticals" were FALSE POSITIVES: queue-create `return`s before `xTaskCreate` (no NULL-queue task), and `_post_cmd` NULL-guards the queue. **C security — DONE (clean):** no secret logged, all 6 HTTPS clients verify certs (`crt_bundle_attach`), secrets gitignored, parsing bounded; plaintext-NVS access token is informational (no flash encryption; the long-lived refresh token is not persisted). **D heap — DONE (clean):** no leaks / double-frees; theme pools freed-before-realloc; only nit is the per-poll malloc/free of the Spotify response buffer (could be a persistent reused buffer, but the IDF allocator coalesces — safe for multi-day). **E multi-build drift — DONE:** `cyd_shared` holds UI/input/MCP/art/FS; `spotify.c` + `main.c` are per-build (~290 L of WiFi/queue/art-loop dup → the `app_core` refactor already in "Deferred architecture work"). Real drift to port when the CYD is back: 429 Retry-After holdoff + `RESP_INITIAL_CAP=16K` are waveshare-only (absent from `cyd/esp-idf/spotify.c`). The internal-SRAM JPEGIMAGE fix is absent from `cyd_shared/album_art.cpp` but MOOT on the current CYD (no `CONFIG_SPIRAM` — `calloc` already lands in internal SRAM); only port it alongside the CYD-PSRAM Phase-2 item. **F Sonos SOAP — DONE:** no crash bugs — divide-by-zero is guarded at every progress site (`ui.c:2300/3817/4064`, verified false positive), the in-place unescape is overflow-safe, buffers are bounded. Minor: an 8 KB DIDL truncation only re-validates the title (duration/artist could silently blank), no range-check on the H:MM:SS/volume parse (garbage-but-no-crash), and the outgoing DIDL isn't XML-escaped (Spotify URIs never contain `&`/`<`). Across all six audits, every agent-flagged "critical" was verified and several were cleared as false positives (art-swap race, NULL-queue task, JPEGIMAGE-on-CYD, Sonos divide-by-zero).
 
+### RP2040 haptic knob — committed/researched 2026-06-18 (Claude Code session)
+
+Firmware committed; **gated behind `KNOB_ENABLED` (default 0)** so it does not
+affect any P4 flash without the knob. Cannot be hardware-verified until the PCB
+exists. Full reference in [`KNOB-NOTES.md`](KNOB-NOTES.md).
+
+| Area | What landed | Commits |
+|---|---|---|
+| RP2040 firmware | `rp2040/` PlatformIO project: `motor_task` (SimpleFOC FOC + per-menu detent physics, `__not_in_flash_func` hot path, dual-core init-order guard), `interface_task` (UART/HX711/MX buttons/SK6812/VEML7700/MAX17048), vendored nanopb | `0c4170c`, `74f061a`, `b8a76cc` |
+| P4-side driver | `waveshare/esp-idf/main/knob.c` (UART link: nanopb + CRC32 + COBS + ACK/retry) + `knob_input.c` (four-menu context mapper via the backend-neutral `ui_*` seam); vendored nanopb component | `0c4170c`, `74f061a` |
+| Protocol schema | `proto/home_controller.proto` + generated `.pb.c/.h` (KnobConfig / KnobState / ToKnob / FromKnob) | `0c4170c` |
+| Licensing | `NOTICE` (Apache 2.0 req 4d: SmartKnob / SimpleFOC / nanopb); per-file change notices on the SmartKnob-derived files | `0c4170c` |
+| Bug — UART/PWM clash | RP2040 UART moved off GPIO0/1 (booked by the motor U-phase PWM) to UART1 GPIO8/9 | `414df9c` |
+| Bug — P4 RX pin | P4 UART RX moved from GPIO33 (not on the J3 header) to GPIO46 | `fa62d4a` |
+| Deep-research verify (2026-06-18) | All pin assignments + the UART protocol fact-checked across 5 web-research angles; findings folded into `CLAUDE.md` + `KNOB-NOTES.md`. Verified: `BLDCDriver6PWM` (no `TMC6300Driver6PWM`), `MagneticSensorMT6701SSI` (SPI_MODE2, 1 MHz), CRC32 agreement (`0xCBF43926`), 921600-baud divider error 0.1 %, ESP32-P4 has no input-only GPIOs. | `f90f12b` |
+
+Remaining before this can clear: PCB in hand, flash with `KNOB_ENABLED=1`,
+calibrate HX711 threshold + motor pole pairs, verify the four-menu feel on device.
+
 ### CYD (board not available 2026-05-30)
 
 A large stack of changes hasn't been hardware-tested because Lewis didn't have

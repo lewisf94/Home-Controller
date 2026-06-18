@@ -40,6 +40,7 @@ The two CYD IDF builds share UI/input/MCP/album-art/LittleFS code via the [`cyd/
 - **Auto-dim / sleep** — backlight ramps to 30 % at 1 min idle, 10 % at 5 min, restores on touch.
 - **Sonos** — direct UPnP/SOAP control of a Sonos speaker on the LAN: transport, volume, and full album-start. Device selector merges Spotify Connect targets with configured Sonos speakers.
 - **Persistent TLS** — poll and command paths each reuse a keep-alive HTTP client to avoid per-call TLS handshakes.
+- **Haptic knob (firmware committed, hardware pending)** — driver for a custom RP2040 SmartKnob-style daughterboard (FOC gimbal motor, strain-gauge press, 4 MX buttons, LED ring, ambient + battery sensors) over UART. Context-aware detent profiles per menu (albums / volume / scrub). Gated behind `KNOB_ENABLED` (default off), so knob-less builds are unaffected. See [`docs/KNOB-NOTES.md`](docs/KNOB-NOTES.md).
 
 **CYD builds — additional features:**
 
@@ -96,11 +97,19 @@ cyd/
   esp-idf-ha/            CYD Home Assistant build (ESP-IDF 6.0)
   platformio/            CYD Arduino build (PlatformIO)
 
+rp2040/                  Firmware for the RP2040 haptic-knob co-MCU (PlatformIO)
+  src/                   motor_task (FOC), interface_task (UART/sensors/LEDs)
+  lib/nanopb/            Vendored nanopb runtime
+
+proto/                   Shared UART protocol schema (home_controller.proto)
+                         + pre-generated nanopb .pb.h/.pb.c
+
 pcb/
   home-controller-daughterboard/   KiCad project — MCP23017 + encoder PCB
 
 docs/
   ROADMAP.md             Per-phase plan + P4 + HA notes
+  KNOB-NOTES.md          RP2040 haptic-knob hardware + protocol reference
   HA-SETUP.md            Full Pi 5 / Home Assistant setup guide
   TESTING.md             Hardware verification checklist (per build)
   PORT-NOTES.md          IDF port gotchas discovered on hardware
@@ -186,7 +195,8 @@ Detail in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 2. **Phase 2 — CYD ESP-IDF port:** ESP-IDF 6.0 + LVGL 9. Feature-complete, hardware-verified.
 3. **Phase 3 — Home Assistant integration:** WebSocket client to HA on a Pi 5. CYD HA build exists (`cyd/esp-idf-ha/`), not yet hardware-tested.
 4. **Waveshare ESP32-P4:** Active lead build. cp1–3 hardware-verified; full UI + Sonos + settings committed, awaiting hardware verify. Next: PPA hardware acceleration, RAM art decode.
-5. **Custom PCB:** MCP23017 daughterboard KiCad project in [`pcb/`](pcb/).
+5. **RP2040 haptic knob:** SmartKnob-style daughterboard for the P4. Firmware (`rp2040/`) + P4-side driver committed and gated behind `KNOB_ENABLED`; awaiting the PCB. See [`docs/KNOB-NOTES.md`](docs/KNOB-NOTES.md) and [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
+6. **Custom PCB:** MCP23017 daughterboard KiCad project in [`pcb/`](pcb/).
 
 ---
 

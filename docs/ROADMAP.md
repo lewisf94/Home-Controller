@@ -455,6 +455,23 @@ Already in, not TODOs: **PPA rotation** (the vendored BSP hardcodes
 paused + 429 Retry-After holdoff), **TLS keep-alive** on both the poll and
 command clients.
 
+### Physical input — RP2040 haptic knob (firmware done, hardware pending)
+
+The planned physical control is a custom **RP2040 SmartKnob-style daughterboard**
+(FOC gimbal motor, strain-gauge press, 4 MX buttons, LED ring, ambient + battery
+sensors) on a dedicated UART. The firmware is committed and **gated behind
+`KNOB_ENABLED` (default off)**, so it does not affect knob-less P4 flashes:
+
+- RP2040 firmware in `rp2040/` (SimpleFOC FOC on core 1, UART/sensors/LEDs on
+  core 0); P4-side driver in `waveshare/esp-idf/main/knob.c` + `knob_input.c`.
+- UART protocol: nanopb + CRC32 + COBS, with ACK/retry. Schema in `proto/`.
+- `knob_input.c` drives only the backend-neutral `ui_*` seam, so it carries over
+  to `waveshare/esp-idf-ha/` untouched.
+- Hardware design: [`DESIGN_NOTES.md`](DESIGN_NOTES.md). Pin map, protocol, and
+  SimpleFOC/MT6701 facts (deep-research-verified 2026-06-18): [`KNOB-NOTES.md`](KNOB-NOTES.md).
+- Remaining: PCB in hand → flash `KNOB_ENABLED=1` → calibrate → verify the
+  four-menu feel on device.
+
 Key facts and adaptations:
 - **Toolchain: ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0). The vendored BSP needs the
   `usb` component (removed in 6.0) and its `esp_lvgl_adapter` needs IDF ≥5.5 —
