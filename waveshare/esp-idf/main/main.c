@@ -814,8 +814,18 @@ void app_main(void)
     /* Bring up the ES8311 speaker + UI-sound task (independent of WiFi/display). */
     audio_init();
 
-    /* Start the RP2040 haptic knob driver (no-op if knob is not connected). */
+    /* Start the RP2040 haptic knob driver. Gated OFF by default so builds
+     * for a board WITHOUT the knob daughterboard are completely unaffected
+     * (the UART is never configured, no GPIO is touched). Set KNOB_ENABLED
+     * to 1 once the daughterboard is wired and KNOB_UART_TX/RX_PIN in knob.h
+     * are confirmed against the Waveshare header (must avoid the LCD/touch/
+     * audio/SDIO-to-C6 pins -- see docs/DESIGN_NOTES.md open decision #2). */
+#ifndef KNOB_ENABLED
+#define KNOB_ENABLED 0
+#endif
+#if KNOB_ENABLED
     knob_input_start();
+#endif
 
     bsp_display_lock(-1);
     lv_obj_t *status_label = lv_label_create(lv_screen_active());
