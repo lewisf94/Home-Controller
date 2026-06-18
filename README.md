@@ -212,4 +212,8 @@ Detail in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Licence
 
-No licence specified — treat as all rights reserved unless you ask.
+Licensed under the **Apache License, Version 2.0** — see [`LICENSE`](LICENSE).
+
+Portions are derived from third-party Apache 2.0 / MIT / zlib software (SmartKnob,
+SimpleFOC + its drivers, nanopb); attributions and the files affected are listed
+in [`NOTICE`](NOTICE).
