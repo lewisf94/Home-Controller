@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+// P4 -> RP2040: configure haptic behaviour + LEDs
+message KnobConfig {
+    int32  position               = 1;  // current logical position
+    float  sub_position_unit      = 2;
+    uint32 position_nonce         = 3;  // increment to force re-apply same position
+    int32  min_position           = 4;  // -1 = unbounded
+    int32  max_position           = 5;  // -1 = unbounded
+    float  position_width_radians = 6;  // angular width per detent (e.g. 10 deg = 0.175 rad)
+    float  detent_strength_unit   = 7;  // [0.0, 1.0]
+    float  endstop_strength_unit  = 8;
+    float  snap_point             = 9;  // hysteresis threshold (e.g. 1.1)
+    bytes  led_ring_rgbw          = 10; // 4 bytes x 12 LEDs = 48 bytes (RGBW)
+    bytes  button_led_rgbw        = 11; // 4 bytes x 4 LEDs = 16 bytes
+}
+
+// RP2040 -> P4: knob state events
+message KnobState {
+    int32  current_position  = 1;
+    float  sub_position_unit = 2;
+    uint32 press_nonce       = 3;  // strain-gauge button: increments on each press
+    uint32 button_mask       = 4;  // bits 0-3: MX buttons (1 = pressed, active-low inverted)
+    int32  battery_percent   = 5;  // from MAX17048 (0-100)
+    int32  ambient_lux       = 6;  // from VEML7700 (for auto-brightness on P4)
+}
+
+// Wrapper messages (same Ack/retry pattern as SmartKnob)
+message ToKnob {
+    uint32 protocol_version = 1;
+    uint32 nonce            = 2;
+    oneof payload {
+        KnobConfig config        = 3;
+        bool       request_state = 4;
+    }
+}
+
+message FromKnob {
+    uint32 protocol_version = 1;
+    oneof payload {
+        uint32    ack   = 2;  // echoes nonce
+        KnobState state = 3;
+        string    log   = 4;
+    }
+}

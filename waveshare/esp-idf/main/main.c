@@ -71,6 +71,7 @@
 #include "album_art.h"
 #include "littlefs.h"
 #include "audio.h"
+#include "knob_input.h"
 
 static const char *TAG = "main";
 
@@ -812,6 +813,9 @@ void app_main(void)
 
     /* Bring up the ES8311 speaker + UI-sound task (independent of WiFi/display). */
     audio_init();
+
+    /* Start the RP2040 haptic knob driver (no-op if knob is not connected). */
+    knob_input_start();
 
     bsp_display_lock(-1);
     lv_obj_t *status_label = lv_label_create(lv_screen_active());

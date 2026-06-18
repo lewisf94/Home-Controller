@@ -1,0 +1,10 @@
+Home-Controller
+Copyright 2026 Lewis
+
+This product includes software from the SmartKnob project by Scott Bezek
+(https://github.com/scottbez1/smartknob), licensed under the Apache License,
+Version 2.0. Adapted files: rp2040/src/motor_task.cpp, waveshare/esp-idf/main/knob.c
+(protocol framing pattern).
+
+This product uses SimpleFOC (https://simplefoc.com), licensed under the MIT License.
+This product uses nanopb (https://jpa.kapsi.fi/nanopb/), licensed under the zlib License.

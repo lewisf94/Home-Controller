@@ -49,6 +49,9 @@ idf_component_register(
         "lv_font_mono_16.c"     # PAPER teletype text font 16px (unscii-8, gen_lvgl_font.py)
         "lv_font_mono_24.c"     # PAPER teletype text font 24px (unscii-8, gen_lvgl_font.py)
         "audio.c"             # synthesised UI sound effects via ES8311 speaker
+        "home_controller.pb.c" # nanopb generated: RP2040 co-MCU protocol messages
+        "knob.c"               # UART driver for haptic RP2040 co-MCU
+        "knob_input.c"         # context-aware input mapper (4-menu model)
         # --- added in later checkpoints (see README.md roadmap) ---
         # "input.c"         # cp6: touch dispatch
     INCLUDE_DIRS "." "../include"
@@ -74,6 +77,7 @@ idf_component_register(
         joltwallet__littlefs  # cp5: album-art JPEG scratch (storage partition)
         bitbank2__jpegdec     # cp5: now-playing art JPEG decode
         esp_codec_dev         # UI sound effects: ES8311 speaker (audio.c)
+        nanopb__nanopb        # lightweight protobuf for RP2040 co-MCU protocol
 )
 
 # Link libm for cosf/sinf used by the WiFi orbit animation in ui.c.
