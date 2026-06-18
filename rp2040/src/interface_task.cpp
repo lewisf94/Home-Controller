@@ -110,7 +110,7 @@ static uint32_t _crc32(const uint8_t *data, size_t len)
     return ~crc;
 }
 
-// ---- COBS encode: src -> dst (returns encoded length, NOT including trailing 0x00) ----
+// ---- COBS encode: src -> dst (returns total encoded length, INCLUDING 0x00 delimiter) ----
 static size_t _cobs_encode(const uint8_t *src, size_t src_len, uint8_t *dst)
 {
     size_t  out   = 0;

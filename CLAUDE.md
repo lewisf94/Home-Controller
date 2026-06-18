@@ -522,6 +522,73 @@ not start until the P4 direct-Spotify build is verified on hardware.
 
 ---
 
+### RP2040 haptic knob co-MCU — `rp2040/` + `waveshare/esp-idf/main/knob*`
+
+The custom RP2040 daughterboard is a SmartKnob-style haptic input device that
+connects to the P4 via UART. All FOC, strain-gauge, and LED logic runs on the
+RP2040; the P4 sends haptic config packets, the RP2040 sends back position and
+button events. See `docs/KNOB-NOTES.md` for the full hardware reference.
+
+**Gated:** `#if KNOB_ENABLED` in `waveshare/esp-idf/main/main.c` (default 0).
+P4 builds without the knob hardware are completely unaffected — no UART
+configured, no GPIO touched.
+
+#### RP2040 pin assignments (FINAL — do not change without reading rationale)
+
+| Function | Pins | Critical note |
+|---|---|---|
+| Motor 6-PWM (BLDCDriver6PWM) | GPIO0/1, 2/3, 4/5 | Each pair on the SAME PWM slice (slice 0/1/2) — required by SimpleFOC for complementary PWM. Cannot be moved arbitrarily. |
+| Motor enable | GPIO6 | Digital out |
+| MT6701QT encoder SPI0 | MISO=16, SCK=18, CS=17 | Sole device on SPI0; MagneticSensorMT6701SSI only — do NOT use generic MagneticSensorSPI |
+| **UART1 TX/RX → P4** | **GPIO8 / GPIO9** | **UART1 (Serial2).** UART0 default pins (GPIO0/1) are taken by motor phase U — was a critical bug fixed 2026-06-18. |
+| HX711 strain gauge | DOUT=10, CLK=11 | Bit-bang |
+| MX buttons SW1–SW4 | GPIO12–15 | INPUT_PULLUP, active-low |
+| SK6812 ring / button LEDs | GPIO20 / GPIO21 | NeoPixel GRBW |
+| I2C1 VEML7700 + MAX17048 | SDA=26, SCL=27 | Wire1 |
+
+#### ESP32-P4 UART pins (verified from schematic, 2026-06-18)
+
+- **TX = GPIO32** — J3 header pin 31 (right side), confirmed broken out
+- **RX = GPIO46** — J3 header bottom-right cluster (46/47/48), confirmed broken out
+- **GPIO33 is NOT on the J3 header** — the original placeholder was wrong
+- ESP32-P4 has **no input-only GPIOs** (unlike classic ESP32's GPIO34–39); all
+  pins are full bidirectional. UART1 routes via GPIO matrix.
+- Avoid: GPIO14–19 (C6 SDIO), GPIO24–25 (USB-JTAG), GPIO34–38 (strapping),
+  BSP pins (I2C 7/8, I2S 9–13, amp 53, LCD 26/27, touch-rst 23, SD 39–44).
+
+#### Protocol summary
+
+UART @ 921600 baud (0.1% error on RP2040's fractional divider at 125 MHz).
+Framing: **nanopb → 4-byte CRC32 → COBS encode → 0x00 delimiter**.
+
+- **CRC32:** both sides produce `0xCBF43926` for "123456789" (standard zlib).
+  P4 uses `esp_rom_crc32_le(0, data, len)` — NO final XOR (the ROM function
+  self-inverts; passing 0 is correct). RP2040 uses standard bit-reversal
+  with poly 0xEDB88320, seed 0xFFFFFFFF, final `~crc`.
+- **nanopb 0.4.9.1** vendored at `rp2040/lib/nanopb/` and
+  `waveshare/esp-idf/components/nanopb/`. The `nanopb/nanopb` package does
+  NOT exist on the ESP component registry — vendored only.
+- **Retry:** P4 retransmits every 250 ms until RP2040 echoes the nonce in a
+  `FromKnob.ack` packet.
+
+#### SimpleFOC / hardware facts (do not re-research)
+
+- `BLDCDriver6PWM` is the correct class. No `TMC6300Driver6PWM` exists.
+- TMC6300 inputs are active-high; SimpleFOC defaults match — no polarity flags.
+- `MagneticSensorMT6701SSI` uses SPI_MODE2 (CPOL=1, CPHA=0), 1 MHz default
+  (max 8 MHz). `init(&SPI)` is the correct API. No init delay needed.
+- MT6701QT (QFN package) is functionally identical to MT6701 for SSI.
+- MT6701 CRC (6-bit, X^6+X+1) is not validated by the library — angle bits
+  extracted directly. Occasional corrupt readings self-correct in the FOC loop.
+- `__not_in_flash_func` on `motor_task_loop` / `_compute_torque` is the correct
+  pico-sdk approach to run code from SRAM, avoiding XIP jitter when core 0 does
+  SPI/I2C. Any core-0 flash write pauses core-1 XIP entirely.
+- 5 kHz FOC loop frequency is achievable on RP2040 core 1 with SSI encoder.
+- `setup()` and `setup1()` run **concurrently**. `motor_shared_init()` (calls
+  `critical_section_init()`) MUST be called first from core-0 `setup()`.
+
+---
+
 ## Phase 1 + 1.5 — original TFT_eSPI Arduino features (historical reference)
 
 These features were written against the original TFT_eSPI direct-draw Arduino
