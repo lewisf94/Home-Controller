@@ -50,10 +50,15 @@ static TimerHandle_t    s_retry_timer = NULL;
 static uint8_t s_ring_rgbw[48];
 static uint8_t s_btn_rgbw[16];
 
-// ---- CRC-32 (via ESP-ROM; identical polynomial to RP2040 software CRC) ----
+// ---- CRC-32 (standard zlib/IEEE, matching the RP2040 software CRC) ----
+// esp_rom_crc32_le() already inverts the seed on entry and the result on exit,
+// so passing seed 0 (NOT 0xFFFFFFFF) and applying NO final XOR yields the
+// standard zlib CRC32. Both sides return 0xCBF43926 for "123456789".
+// (A final ^0xFFFFFFFF here would double-invert and disagree with the RP2040,
+//  silently dropping every packet.)
 static inline uint32_t _crc32(const uint8_t *data, size_t len)
 {
-    return esp_rom_crc32_le(0xFFFFFFFF, data, len) ^ 0xFFFFFFFF;
+    return esp_rom_crc32_le(0, data, len);
 }
 
 // ---- COBS encode: src -> dst; returns total encoded length (incl. delimiter) ----

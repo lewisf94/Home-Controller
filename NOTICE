@@ -6,5 +6,10 @@ This product includes software from the SmartKnob project by Scott Bezek
 Version 2.0. Adapted files: rp2040/src/motor_task.cpp, waveshare/esp-idf/main/knob.c
 (protocol framing pattern).
 
-This product uses SimpleFOC (https://simplefoc.com), licensed under the MIT License.
-This product uses nanopb (https://jpa.kapsi.fi/nanopb/), licensed under the zlib License.
+This product uses SimpleFOC and the SimpleFOC Drivers library
+(https://simplefoc.com), licensed under the MIT License. The MT6701 SSI encoder
+class (MagneticSensorMT6701SSI) is from the SimpleFOC Drivers library.
+
+This product bundles the nanopb runtime (https://jpa.kapsi.fi/nanopb/) under
+waveshare/esp-idf/components/nanopb/ and rp2040/lib/nanopb/, licensed under the
+zlib License (original license headers retained in those files).

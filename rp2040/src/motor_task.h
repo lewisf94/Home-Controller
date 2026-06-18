@@ -38,7 +38,12 @@
 #define MOTOR_DETENT_SCALE   1.5f
 #define MOTOR_ENDSTOP_SCALE  3.0f
 
-// Call once from core 1 setup()
+// Initialise the cross-core critical section. MUST be called from core 0
+// setup() BEFORE either core touches shared state, because setup() and setup1()
+// run concurrently and core 0's loop reads motor position via the lock.
+void motor_shared_init(void);
+
+// Call once from core 1 setup1()
 void motor_task_init(void);
 
 // Call every loop() iteration on core 1; runs the FOC torque loop

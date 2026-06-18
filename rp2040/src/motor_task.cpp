@@ -15,12 +15,24 @@
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
+#include "encoders/mt6701/MagneticSensorMT6701SSI.h"
 #include <math.h>
+#include "pico/platform.h"  // __not_in_flash_func
 
 // ---- SimpleFOC objects ----
-static MagneticSensorSPI s_sensor(ENCODER_CS_PIN, 14, 0x3FFF);
-static BLDCMotor         s_motor(MOTOR_POLE_PAIRS);
-static TMC6300Driver6PWM s_driver(
+// MT6701 reads over SSI (24-bit frame: 14 angle + 4 status + 6 CRC). The generic
+// MagneticSensorSPI class uses the AS5048 register-read convention and mangles
+// the MT6701 frame, so we use the dedicated SSI class (defaults: 1 MHz, SPI_MODE2).
+static MagneticSensorMT6701SSI s_sensor(ENCODER_CS_PIN);
+static BLDCMotor               s_motor(MOTOR_POLE_PAIRS);
+// The TMC6300 is a standalone 3-phase gate driver (6 logic inputs + enable);
+// SimpleFOC has no TMC6300-specific class -- it is driven by the core
+// BLDCDriver6PWM. Argument order is per-phase interleaved (Ah, Al, Bh, Bl,
+// Ch, Cl, enable). On the RP2040 each phase's high/low pair MUST sit on the
+// SAME PWM slice (channels A/B): GPIO0/1 = slice0 A/B, GPIO2/3 = slice1 A/B,
+// GPIO4/5 = slice2 A/B -- the default pins below satisfy this. The driver does
+// NOT validate slice pairing, so verify any pin change against the RP2040 PWM map.
+static BLDCDriver6PWM          s_driver(
     MOTOR_UH_PIN, MOTOR_UL_PIN,
     MOTOR_VH_PIN, MOTOR_VL_PIN,
     MOTOR_WH_PIN, MOTOR_WL_PIN,
@@ -30,6 +42,7 @@ static TMC6300Driver6PWM s_driver(
 // mutex via critical_section (pico-sdk) -- spin-lock friendly on RP2040
 #include "pico/critical_section.h"
 static critical_section_t s_cs;
+static volatile bool      s_cs_ready = false;
 
 static KnobConfig s_config = KnobConfig_init_zero;
 static bool       s_config_dirty = false;
@@ -42,10 +55,14 @@ static float      s_current_sub_pos     = 0.0f;
 static float      s_angle_reference     = 0.0f;
 static uint32_t   s_last_nonce          = 0;
 
-void motor_task_init(void)
+void motor_shared_init(void)
 {
     critical_section_init(&s_cs);
+    s_cs_ready = true;
+}
 
+void motor_task_init(void)
+{
     SPI.setRX(ENCODER_MISO_PIN);
     SPI.setSCK(ENCODER_SCK_PIN);
     SPI.begin();
@@ -69,7 +86,7 @@ void motor_task_init(void)
     s_angle_reference = s_sensor.getAngle();
 }
 
-static float _compute_torque(float current_angle, const KnobConfig *cfg)
+static float __not_in_flash_func(_compute_torque)(float current_angle, const KnobConfig *cfg)
 {
     if (cfg->position_width_radians < 1e-6f) {
         return 0.0f;
@@ -120,25 +137,31 @@ static float _compute_torque(float current_angle, const KnobConfig *cfg)
     }
 
     // Publish position (written on core 1, read on core 0 via critical_section)
-    critical_section_enter_blocking(&s_cs);
-    s_current_position = nearest;
-    s_current_sub_pos  = err / cfg->position_width_radians;
-    critical_section_exit(&s_cs);
+    if (s_cs_ready) {
+        critical_section_enter_blocking(&s_cs);
+        s_current_position = nearest;
+        s_current_sub_pos  = err / cfg->position_width_radians;
+        critical_section_exit(&s_cs);
+    }
 
     return torque;
 }
 
-void motor_task_loop(void)
+void __not_in_flash_func(motor_task_loop)(void)
 {
     s_sensor.update();
     s_motor.loopFOC();
 
     // Pull in a pending config update
-    critical_section_enter_blocking(&s_cs);
-    KnobConfig local_cfg  = s_config;
-    bool       dirty      = s_config_dirty;
-    s_config_dirty        = false;
-    critical_section_exit(&s_cs);
+    KnobConfig local_cfg = s_config;
+    bool       dirty     = false;
+    if (s_cs_ready) {
+        critical_section_enter_blocking(&s_cs);
+        local_cfg      = s_config;
+        dirty          = s_config_dirty;
+        s_config_dirty = false;
+        critical_section_exit(&s_cs);
+    }
 
     // Re-anchor reference angle when position_nonce changes (host moved the knob)
     if (dirty && local_cfg.position_nonce != s_last_nonce) {
@@ -153,6 +176,7 @@ void motor_task_loop(void)
 
 void motor_set_config(const KnobConfig *cfg)
 {
+    if (!s_cs_ready) return;
     critical_section_enter_blocking(&s_cs);
     s_config       = *cfg;
     s_config_dirty = true;
@@ -161,6 +185,7 @@ void motor_set_config(const KnobConfig *cfg)
 
 int32_t motor_get_position(void)
 {
+    if (!s_cs_ready) return 0;
     critical_section_enter_blocking(&s_cs);
     int32_t pos = s_current_position;
     critical_section_exit(&s_cs);
@@ -169,6 +194,7 @@ int32_t motor_get_position(void)
 
 float motor_get_sub_position(void)
 {
+    if (!s_cs_ready) return 0.0f;
     critical_section_enter_blocking(&s_cs);
     float sub = s_current_sub_pos;
     critical_section_exit(&s_cs);

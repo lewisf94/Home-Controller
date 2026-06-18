@@ -77,7 +77,7 @@ idf_component_register(
         joltwallet__littlefs  # cp5: album-art JPEG scratch (storage partition)
         bitbank2__jpegdec     # cp5: now-playing art JPEG decode
         esp_codec_dev         # UI sound effects: ES8311 speaker (audio.c)
-        nanopb__nanopb        # lightweight protobuf for RP2040 co-MCU protocol
+        nanopb                # vendored protobuf runtime (components/nanopb/)
 )
 
 # Link libm for cosf/sinf used by the WiFi orbit animation in ui.c.
