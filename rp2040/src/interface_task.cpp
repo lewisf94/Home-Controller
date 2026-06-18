@@ -25,9 +25,13 @@
 #include <pb_decode.h>
 
 // ---- Pin assignments ----
-// UART to ESP32-P4 (Serial1 = UART0 on RP2040)
-#define KNOB_UART_TX   0
-#define KNOB_UART_RX   1
+// UART to ESP32-P4 -- Serial2 = UART1 on RP2040.
+// MUST be UART1, not UART0/Serial2: UART0's pins (GPIO0/1) are taken by the
+// motor's U-phase PWM (MOTOR_UH_PIN/MOTOR_UL_PIN in motor_task.h), and a GPIO
+// cannot be both PWM and UART. UART1 maps TX to {4,8,20,24} and RX to
+// {5,9,21,25}; GPIO8/9 are the only free pair (4/5 = motor, 20/21 = LEDs).
+#define KNOB_UART_TX   8
+#define KNOB_UART_RX   9
 #define KNOB_UART_BAUD 921600
 
 // HX711 (BF350 full Wheatstone bridge)
@@ -216,7 +220,7 @@ static void _handle_to_knob(const ToKnob *msg)
     memcpy(plain, pb_buf, ostream.bytes_written);
     memcpy(plain + ostream.bytes_written, crc_buf, 4);
     size_t framed_len = _cobs_encode(plain, ostream.bytes_written + 4, framed);
-    Serial1.write(framed, framed_len);
+    Serial2.write(framed, framed_len);
 }
 
 // ---- Process one accumulated COBS frame ----
@@ -293,7 +297,7 @@ static void _send_state(void)
 
     uint8_t framed[COBS_BUF_SIZE];
     size_t  framed_len = _cobs_encode(plain, ostream.bytes_written + 4, framed);
-    Serial1.write(framed, framed_len);
+    Serial2.write(framed, framed_len);
 
     s_last_sent_pos = state.current_position;
 }
@@ -301,9 +305,9 @@ static void _send_state(void)
 void interface_task_init(void)
 {
     // UART to P4
-    Serial1.setTX(KNOB_UART_TX);
-    Serial1.setRX(KNOB_UART_RX);
-    Serial1.begin(KNOB_UART_BAUD);
+    Serial2.setTX(KNOB_UART_TX);
+    Serial2.setRX(KNOB_UART_RX);
+    Serial2.begin(KNOB_UART_BAUD);
 
     // HX711 strain gauge
     s_hx711.begin(HX711_DOUT_PIN, HX711_CLK_PIN);
@@ -336,8 +340,8 @@ void interface_task_loop(void)
     uint32_t now = millis();
 
     // Drain UART RX bytes; accumulate until 0x00 frame delimiter
-    while (Serial1.available()) {
-        uint8_t b = (uint8_t)Serial1.read();
+    while (Serial2.available()) {
+        uint8_t b = (uint8_t)Serial2.read();
         if (b == 0x00) {
             if (s_rx_len > 0) {
                 _process_frame(s_rx_buf, s_rx_len);
