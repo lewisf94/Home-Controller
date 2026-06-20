@@ -278,6 +278,10 @@ static void _send_state(void)
     state.battery_percent   = s_battery_pct;
     state.ambient_lux       = s_ambient_lux;
 
+    // KnobState_size (from pb.h) must fit in pb_buf[64] with 4 bytes of CRC headroom.
+    // If new fields push KnobState_size past 64, increase pb_buf and plain below.
+    static_assert(KnobState_size + 4 <= 68, "KnobState too large for send buffers");
+
     uint8_t pb_buf[64];
     FromKnob msg = FromKnob_init_zero;
     msg.protocol_version  = PROTOCOL_VERSION;

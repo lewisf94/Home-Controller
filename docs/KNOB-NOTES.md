@@ -128,11 +128,12 @@ schematic region (bottom-right of J3). GPIO47 or 48 are equivalent drop-ins if
 - **Use `MagneticSensorMT6701SSI`** from the SimpleFOC Drivers library
   (`Arduino-FOC-drivers` git dependency). Do NOT use the generic
   `MagneticSensorSPI(cs, 14, 0x3FFF)` — that uses the AS5048 register-read
-  convention and mangles the MT6701's 24-bit SSI streaming frame.
+  convention and mangles the MT6701's 25-bit SSI frame (1 bit ignored +
+  14 angle + 4 status + 6 CRC).
 - **SPI mode:** SPI_MODE2 (CPOL=1, CPHA=0): clock idles high, data sampled on
   falling edge. The library sets this automatically.
 - **Clock:** Default 1 MHz; maximum 8 MHz. 1 MHz is sufficient for a 5 kHz FOC
-  loop (a single 24-bit read at 1 MHz takes ≈ 24 µs; well under the 200 µs
+  loop (a single 25-bit read at 1 MHz takes ≈ 25 µs; well under the 200 µs
   FOC period).
 - **Init API:** `s_sensor.init(&SPI)` — pass the SPIClass pointer. Call after
   `SPI.setRX/setSCK/begin()`. No delay needed after `SPI.begin()`.
