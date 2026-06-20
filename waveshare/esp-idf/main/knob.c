@@ -197,6 +197,14 @@ static void _rx_task(void *arg)
             pb_istream_t is = pb_istream_from_buffer(decoded, dec_len - 4);
             if (!pb_decode(&is, FromKnob_fields, &fk)) continue;
 
+            // Drop packets from an incompatible firmware revision rather than
+            // misinterpreting their fields.
+            if (fk.protocol_version != PROTOCOL_VERSION) {
+                ESP_LOGW(TAG, "proto mismatch: got %u want %d",
+                         (unsigned)fk.protocol_version, PROTOCOL_VERSION);
+                continue;
+            }
+
             if (fk.which_payload == FromKnob_ack_tag) {
                 // Stop retrying once the knob acknowledges the config
                 taskENTER_CRITICAL(&s_pending_mux);

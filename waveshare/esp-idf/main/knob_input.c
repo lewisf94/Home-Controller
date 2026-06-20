@@ -18,6 +18,7 @@
 #include "knob_input.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -47,6 +48,7 @@ static menu_t    s_active_menu   = MENU_NOW_PLAYING;
 static int32_t   s_last_position = 0;
 static uint32_t  s_last_press_nonce = 0;
 static uint32_t  s_last_btn_mask    = 0;
+static int       s_last_brightness  = -1;   // last lux-derived panel brightness
 static TimerHandle_t s_poll_timer = NULL;
 
 // ---- KnobConfig builders ----
@@ -81,8 +83,10 @@ static void _send_volume_config(int32_t volume_pct)
 
 static void _send_now_playing_config(int32_t scrub_pos)
 {
-    // Soft scrub feel; endstops at track start/end
-    uint32_t duration_ms = ui_get_progress_ms();  // approximate via current progress
+    // Soft scrub feel; endstops at track start/end. Use the TRACK DURATION for
+    // the upper endstop -- ui_get_progress_ms() is the current playhead, which
+    // would cap the scrub at "now" and make forward scrubbing impossible.
+    uint32_t duration_ms = ui_get_duration_ms();
     int32_t max_pos = (duration_ms > 0)
                     ? (int32_t)(duration_ms / SCRUB_STEP_MS)
                     : 240;  // sensible default before first poll
@@ -102,15 +106,24 @@ static void _send_now_playing_config(int32_t scrub_pos)
 static void _activate_menu(menu_t menu)
 {
     s_active_menu = menu;
-    s_last_position = 0;
+
+    // Anchor s_last_position to the SAME position we send in the config, so the
+    // motor's first re-anchored report produces a zero delta instead of a
+    // spurious jump (the knob reports back the position it was anchored to).
+    int32_t anchor = 0;
 
     switch (menu) {
     case MENU_NOW_PLAYING:
         _send_now_playing_config(0);
         break;
-    case MENU_VOLUME:
-        _send_volume_config(50);
+    case MENU_VOLUME: {
+        // Anchor to the live device volume so the first detent doesn't snap
+        // playback to 50%. -1 (unknown, pre-first-poll) falls back to 50.
+        int vol = ui_get_volume();
+        anchor = (vol >= 0) ? vol : 50;
+        _send_volume_config(anchor);
         break;
+    }
     case MENU_ALBUMS:
         _send_albums_config(0);
         break;
@@ -118,6 +131,8 @@ static void _activate_menu(menu_t menu)
         // Future HA -- no-op for now
         break;
     }
+
+    s_last_position = anchor;
     ESP_LOGI(TAG, "active menu -> %d", (int)menu);
 }
 
@@ -176,12 +191,20 @@ static void _on_state(const KnobState *state)
     if (pressed & (1 << 2)) _activate_menu(MENU_ALBUMS);
     if (pressed & (1 << 3)) _activate_menu(MENU_LIGHTS);
 
-    // Ambient light -> display brightness
+    // Ambient light -> display brightness.
+    // State arrives every ~5 ms during a scroll, but ambient_lux only refreshes
+    // every 2 s on the RP2040, so write the panel only when the mapped value
+    // actually moves (>= 3%) -- otherwise this fires hundreds of redundant PWM
+    // writes that also fight the idle auto-dim. (TODO at hardware bring-up:
+    // make auto-dim scale this lux-derived base rather than both owning duty.)
     if (state->ambient_lux >= 0) {
         // Simple mapping: 0 lux -> 10%, 1000 lux -> 100%; clamped
         int brightness = (int)(10 + (state->ambient_lux * 90) / 1000);
         if (brightness > 100) brightness = 100;
-        bsp_display_brightness_set(brightness);
+        if (s_last_brightness < 0 || abs(brightness - s_last_brightness) >= 3) {
+            s_last_brightness = brightness;
+            bsp_display_brightness_set(brightness);
+        }
     }
 
     // Battery percent -> serial log (surface to UI in a follow-on task)

@@ -20,7 +20,7 @@
 #include "pico/platform.h"  // __not_in_flash_func
 
 // ---- SimpleFOC objects ----
-// MT6701 reads over SSI (24-bit frame: 14 angle + 4 status + 6 CRC). The generic
+// MT6701 reads over SSI (25-bit frame: 1 ignored + 14 angle + 4 status + 6 CRC). The generic
 // MagneticSensorSPI class uses the AS5048 register-read convention and mangles
 // the MT6701 frame, so we use the dedicated SSI class (defaults: 1 MHz, SPI_MODE2).
 static MagneticSensorMT6701SSI s_sensor(ENCODER_CS_PIN);

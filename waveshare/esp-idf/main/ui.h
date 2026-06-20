@@ -88,6 +88,8 @@ void     ui_toggle_view(void);
 void     ui_play_centered_album(void);
 void     ui_scroll_browser(int32_t delta);
 uint32_t ui_get_progress_ms(void);
+uint32_t ui_get_duration_ms(void);
+int      ui_get_volume(void);          /* device volume 0..100, or -1 if unknown */
 void     ui_show_volume_hud(int pct, bool muted);
 
 /* Brief auto-hiding notification on the now-playing screen. Safe to call from

@@ -253,3 +253,20 @@ completely unaffected.
 - [ ] Turn knob → album carousel scrolls, knob re-anchors to new position
 - [ ] Strain-gauge press → play/pause toggles
 - [ ] Battery % and ambient lux appear in serial log
+
+### Input conditioning to tune on hardware (needs real sensor/switch noise)
+
+These two are deliberately left raw until the board exists, because the right
+thresholds depend on the actual strain bridge gain and switch bounce profile:
+
+- **HX711 press hysteresis.** `interface_task.cpp` currently fires a press on a
+  single `raw > HX711_PRESS_THRESHOLD` crossing. Strain readings are noisy near
+  the threshold, so add a Schmitt trigger (separate press/release thresholds,
+  e.g. release at ~70% of press) once you can scope the resting vs. pressed raw
+  values. Without it, hovering at the threshold emits repeated `press_nonce`
+  increments → phantom play/pause spam.
+- **MX button debounce.** `_send_state()` reads raw `digitalRead()` at the 5 ms
+  TX cadence; mechanical bounce on an edge can toggle `button_mask` several
+  times → multiple menu activations from one press. Add a few-ms stable-state
+  debounce per button (the CYD's `mcp_input` consume-on-read latch is the
+  reference pattern). Tune the window to the actual switches.

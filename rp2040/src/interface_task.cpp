@@ -247,6 +247,9 @@ static void _process_frame(const uint8_t *frame, size_t len)
     pb_istream_t istream = pb_istream_from_buffer(decoded, dec_len - 4);
     if (!pb_decode(&istream, ToKnob_fields, &msg)) return;
 
+    // Ignore packets from an incompatible firmware revision.
+    if (msg.protocol_version != PROTOCOL_VERSION) return;
+
     _handle_to_knob(&msg);
 }
 

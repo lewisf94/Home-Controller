@@ -4831,6 +4831,29 @@ uint32_t ui_get_progress_ms(void)
     return ms;
 }
 
+uint32_t ui_get_duration_ms(void)
+{
+    /* Same atomic-32-bit fallback rationale as ui_get_progress_ms. */
+    if (bsp_display_lock(1000) != ESP_OK) {
+        return s_track.duration_ms;
+    }
+    uint32_t ms = s_track.duration_ms;
+    bsp_display_unlock();
+    return ms;
+}
+
+int ui_get_volume(void)
+{
+    /* volume_pct is a plain int written by the poll; an atomic read is fine and
+     * lets the knob anchor to the live device volume instead of assuming 50. */
+    if (bsp_display_lock(1000) != ESP_OK) {
+        return s_track.volume_pct;
+    }
+    int v = s_track.volume_pct;
+    bsp_display_unlock();
+    return v;
+}
+
 static void vol_hud_hide_cb(lv_timer_t *t)
 {
     (void)t;
