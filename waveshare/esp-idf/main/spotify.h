@@ -19,20 +19,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct {
-    bool      is_playing;
-    char      title[64];
-    char      artist[64];
-    char      album[64];
-    uint32_t  progress_ms;
-    uint32_t  duration_ms;
-    char      album_art_url[256];
-    bool      device_restricted;  /* active device won't accept Spotify Web API control (e.g. Sonos) */
-    char      device_name[64];    /* active device name, for routing/UX */
-    int       volume_pct;         /* active device volume 0..100, or -1 if unknown */
-    bool      shuffle_state;      /* true when shuffle is active */
-    char      album_uri[64];      /* "spotify:album:..." -- empty if unknown; used to auto-snap the carousel */
-} spotify_track_t;
+/* spotify_track_t is defined in player.h (the backend-neutral contract shared
+ * between this build and the HA build). Re-exported here so existing call
+ * sites that say #include "spotify.h" keep working unchanged. */
+#include "player.h"
 
 void spotify_init(const char *client_id,
                   const char *client_secret,

@@ -56,15 +56,18 @@
 
 /* Devices-selector icon. The compiled Montserrat fonts carry these LVGL
  * symbols -- swap in whichever reads best to you:
- *   LV_SYMBOL_LIST        three stacked rows (a device list)
+ *   LV_SYMBOL_VOLUME_MID  small speaker (current -- works in ALL themes incl PIXEL)
+ *   LV_SYMBOL_LIST        three stacked rows (U+F03C, NOT in the pixel font)
  *   LV_SYMBOL_WIFI        wireless fan
  *   LV_SYMBOL_BLUETOOTH   BT rune
  *   LV_SYMBOL_USB         USB trident
  *   LV_SYMBOL_GPS         location arrow
- *   LV_SYMBOL_VOLUME_MID  small speaker
- *   LV_SYMBOL_AUDIO       music note (the original)
+ *   LV_SYMBOL_AUDIO       music note
+ * NOTE: the PIXEL font bakes a limited FA5 subset. Stick to symbols whose
+ * codepoints are in: 0xF001, 0xF00C, 0xF011, 0xF013, 0xF021, 0xF026-0xF028,
+ * 0xF048, 0xF04B, 0xF04C, 0xF051, 0xF053, 0xF054, 0xF077-0xF079.
  */
-#define TUNE_DEVICES_ICON      LV_SYMBOL_LIST
+#define TUNE_DEVICES_ICON      LV_SYMBOL_VOLUME_MID
 
 /* =========================================================================
  * NOW PLAYING                                       { BASIC, GLYPH, PIXEL, PAPER }

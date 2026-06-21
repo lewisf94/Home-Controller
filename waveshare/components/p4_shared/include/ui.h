@@ -20,7 +20,7 @@
 #include <stdint.h>
 
 #include "lvgl.h"
-#include "spotify.h"
+#include "player.h"
 
 /* Builds both screens, registers gesture/click handlers, and loads
  * the browser. Must be called once after the BSP display is up.

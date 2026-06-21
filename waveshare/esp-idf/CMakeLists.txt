@@ -1,5 +1,11 @@
 # ESP32-P4 (Waveshare 4.3") -- Music Controller, direct Spotify (no HA).
 cmake_minimum_required(VERSION 3.16)
+
+# Pull in the shared P4 component (ui, audio, albums, fonts, knob protocol)
+# that lives one level up so both this build and waveshare/esp-idf-ha link
+# the same code. Per-build files (main.c, spotify.c, sonos.c) stay in main/.
+list(APPEND EXTRA_COMPONENT_DIRS ../components)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(music_controller_p4)
 

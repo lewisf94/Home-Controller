@@ -55,10 +55,10 @@
 #include "albums.h"
 #include "album_thumbs.h"
 #include "audio.h"
+#include "player.h"    /* backend-neutral track-info contract (spotify.h re-exports this) */
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "bsp/esp-bsp.h"
-#include "spotify.h"
 #include "nvs.h"
 #include "esp_random.h"
 
@@ -393,9 +393,9 @@ static lv_obj_t *s_vol_page_dots[VOL_PAGE_DOTS] = {0};
 static lv_obj_t *s_vol_page_label  = NULL;   /* "XX%" readout */
 static lv_timer_t *s_vol_release_timer = NULL;
 
-/* 3. WiFi dot strength meter: 4 dots of rising size in the browser top-left
- *    corner; the first `s_wifi_dot_count` are lit in the accent, the rest dim.
- *    Static (no timer) -- replaces the rising bar indicators when Glyph active. */
+/* 3. WiFi dot strength meter: 4 uniform round dots in a row in the browser
+ *    top-left corner; the first `s_wifi_dot_count` are lit in ink, the rest
+ *    hairline grey. Static (no timer) -- replaces bars in GLYPH mode. */
 static lv_obj_t   *s_wifi_dots[4]   = {0};
 static int         s_wifi_dot_count = 0;
 
@@ -2652,13 +2652,14 @@ static void build_volume_screen(void)
 
 /* =====================================================================
  * Feature 3: WiFi dot strength meter (Glyph theme only)
- * Four round dots of rising size in the browser top-left corner. The first
- * `bars` dots light in the accent colour; the rest stay dim. Static -- no
- * timer -- updated only when the signal level changes.
+ * Four uniform round dots in a row in the browser top-left corner. The first
+ * `bars` dots light in ink (s_th->text); the rest stay hairline grey. Static
+ * -- no timer -- updated only when the signal level changes.
  * ===================================================================== */
-#define WIFI_DOT_BASE_Y  20   /* baseline the dots sit on (bottom-aligned) */
-#define WIFI_DOT_X       8    /* left edge of the meter */
-#define WIFI_DOT_PITCH   11   /* centre-to-centre horizontal spacing */
+#define WIFI_DOT_SIZE    8    /* uniform diameter for all 4 dots */
+#define WIFI_DOT_Y       6    /* top Y of the dot row */
+#define WIFI_DOT_X       8    /* left edge of the leftmost dot */
+#define WIFI_DOT_PITCH   13   /* centre-to-centre horizontal spacing */
 
 static void wifi_dots_stop(void)
 {
@@ -2685,17 +2686,14 @@ static void wifi_dots_start(lv_obj_t *screen)
     if (!screen) return;
     wifi_dots_stop();
     for (int i = 0; i < 4; i++) {
-        int sz = 4 + i * 2;   /* 4, 6, 8, 10 -- a rising "signal" ramp */
         lv_obj_t *dot = lv_obj_create(screen);
-        lv_obj_set_size(dot, sz, sz);
+        lv_obj_set_size(dot, WIFI_DOT_SIZE, WIFI_DOT_SIZE);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_width(dot, 0, 0);
         lv_obj_set_style_bg_color(dot, lv_color_hex(s_th->track), 0);
         lv_obj_set_style_bg_opa(dot, (lv_opa_t)90, 0);
         lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        /* Bottom-aligned so the dots grow upward like signal bars. */
-        lv_obj_set_pos(dot, WIFI_DOT_X + i * WIFI_DOT_PITCH,
-                       WIFI_DOT_BASE_Y - sz);
+        lv_obj_set_pos(dot, WIFI_DOT_X + i * WIFI_DOT_PITCH, WIFI_DOT_Y);
         s_wifi_dots[i] = dot;
     }
     wifi_dots_update_count(s_wifi_dot_count);
@@ -2853,6 +2851,31 @@ static void build_settings_screen(void)
     lv_obj_set_style_bg_color(s_screen_settings, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_settings, LV_OPA_COVER, 0);
     lv_obj_set_scrollbar_mode(s_screen_settings, LV_SCROLLBAR_MODE_OFF);
+
+    /* Navigation header band: surface-coloured background behind the title +
+     * DISPLAY/SOUND tab row so the top strip reads as navigation, not content.
+     * Must be created FIRST (drawn behind all other children). A hairline
+     * divider at y=108 separates it from the scrolling settings below.
+     * PAPER already handles this via paper_frame() + paper_rule(). */
+    if (!is_paper_theme()) {
+        lv_obj_t *hdr = lv_obj_create(s_screen_settings);
+        lv_obj_set_size(hdr, SCREEN_W, 108);
+        lv_obj_set_pos(hdr, 0, 0);
+        lv_obj_set_style_bg_color(hdr, lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(hdr, 0, 0);
+        lv_obj_set_style_pad_all(hdr, 0, 0);
+        lv_obj_set_style_radius(hdr, 0, 0);
+        lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_t *div = lv_obj_create(s_screen_settings);
+        lv_obj_set_size(div, SCREEN_W, 1);
+        lv_obj_set_pos(div, 0, 108);
+        lv_obj_set_style_bg_color(div, lv_color_hex(s_th->track), 0);
+        lv_obj_set_style_bg_opa(div, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(div, 0, 0);
+        lv_obj_set_style_radius(div, 0, 0);
+        lv_obj_remove_flag(div, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    }
 
     lv_obj_t *back = lv_button_create(s_screen_settings);
     lv_obj_set_size(back, 120, 44);

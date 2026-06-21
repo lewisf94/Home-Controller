@@ -69,6 +69,16 @@ waveshare/esp-idf/sdkconfig
 waveshare/esp-idf/sdkconfig.old
 waveshare/esp-idf/dependencies.lock
 
+# Waveshare ESP32-P4 (HA) build artefacts. Same rule: vendored components/
+# are committed (shared via esp-idf/components/), only managed ones are not.
+waveshare/esp-idf-ha/build/
+waveshare/esp-idf-ha/managed_components/
+waveshare/esp-idf-ha/sdkconfig
+waveshare/esp-idf-ha/sdkconfig.old
+waveshare/esp-idf-ha/dependencies.lock
+# HA credentials (same pattern as non-HA and CYD builds).
+waveshare/esp-idf-ha/include/secrets.h
+
 # EIM (ESP-IDF Installation Manager) machine-local config
 eim_config.toml
 
