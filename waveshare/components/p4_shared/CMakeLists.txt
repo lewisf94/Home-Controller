@@ -75,7 +75,7 @@ idf_component_register(
         bitbank2__jpegdec
         esp_codec_dev
         nanopb
-        esp_random
+        esp_hw_support
         esp_system
         freertos
 )
