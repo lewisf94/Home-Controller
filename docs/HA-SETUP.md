@@ -1,9 +1,11 @@
-# Home Assistant Setup Guide — Music Controller (CYD)
+# Home Assistant Setup Guide — Music Controller
 
 This guide covers everything needed to run the Home Assistant backend
-(`cyd/esp-idf-ha/`) end-to-end: installing HA OS on a Pi 5, wiring in
-Music Assistant (recommended) or the native Spotify integration, creating
-the credentials the firmware needs, and flashing the device.
+end-to-end on either the **CYD** (`cyd/esp-idf-ha/`) or the **Waveshare
+ESP32-P4** (`waveshare/esp-idf-ha/`) board: installing HA OS on a Pi 5,
+wiring in Music Assistant, creating the credentials the firmware needs, and
+flashing the device. Parts 1–6 are identical for both boards. Parts 7–8
+note any board-specific differences.
 
 ---
 
@@ -61,35 +63,45 @@ the address/gateway/DNS. Requires HA restart.
 
 ---
 
-## Part 3 — Install Music Assistant (recommended)
+## Part 3 — Install Music Assistant
 
 Music Assistant is a separate add-on that gives the firmware proper album
-playback via `play_media`. Without it the album browser still builds
-correctly, but tapping an album to play it will not work (play/pause, next,
-prev, and volume all still function via the native Spotify integration).
+playback. The firmware calls `music_assistant.play_media` when you tap an
+album — without MA installed, album selection does nothing (play/pause, next,
+prev, and volume still work via the entity state).
+
+Music Assistant is not in the default add-on store, so you need to add its
+repository first.
 
 1. In HA: **Settings → Add-ons → ADD-ON STORE** (bottom right).
 
-2. Search for **Music Assistant**. If it doesn't appear, first install HACS
-   (Home Assistant Community Store) by following the HACS documentation, then
-   find Music Assistant through HACS.
+2. Click the **three-dot menu** (top right of the store page) → **Repositories**.
 
-3. Install the add-on, enable **Start on boot**, click **Start**.
+3. Paste this URL and click **Add**:
+   ```
+   https://music-assistant.io/hassio-repository/
+   ```
 
-4. Open the Music Assistant UI (sidebar or via the add-on page).
+4. Close the dialog. The store reloads — search for **Music Assistant** and
+   install it.
 
-5. In MA Settings → Music providers → **+ Add** → **Spotify**:
-   - Enter your Spotify `client_id` and `client_secret` (from
-     developer.spotify.com → your app → Settings).
-   - Authenticate via the OAuth popup.
+5. Once installed: enable **Start on boot** and **Watchdog**, then click **Start**.
 
-6. In MA Settings → Player providers → **+ Add** → pick your playback
-   target (e.g. Spotify Connect player, Snapcast, etc.).
+6. Click **Open Web UI** (or go to `http://<your-ha-ip>:8095`).
 
-7. Music Assistant creates `media_player` entities in HA automatically.
-   Find them at **Developer Tools → States**, filter by `media_player`.
-   Note the entity ID (e.g. `media_player.music_assistant_lewis`). This
-   goes into `HA_ENTITY` in `secrets.h`.
+7. Complete the setup wizard:
+   - Add **Spotify** as a Music Provider and log in with your Spotify account.
+   - Your Sonos (or other) speakers should auto-discover as Player Providers —
+     select whichever you want to use.
+
+8. After setup, go to **Settings → Devices & Services → Add Integration** in HA
+   and add the **Music Assistant** integration. This is a separate step from the
+   add-on and is what creates the `media_player` entities in HA.
+
+9. Go to **Developer Tools → States**, filter by `media_player`. New entities
+   managed by Music Assistant will appear — named after your speakers
+   (e.g. `media_player.living_room`). Note the entity ID; it goes into
+   `HA_ENTITY` in `secrets.h`.
 
 ---
 
@@ -167,12 +179,14 @@ If you get a JPEG, art download will work on the device.
 
 ## Part 7 — Configure and flash the firmware
 
-1. **Copy the secrets template:**
-   ```bash
-   cp cyd/esp-idf-ha/include/secrets.h.example cyd/esp-idf-ha/include/secrets.h
+### 7a — CYD board (`cyd/esp-idf-ha/`)
+
+1. **Copy the secrets template** (in the private build folder):
+   ```
+   cyd/esp-idf-ha/include/secrets.h.example  →  cyd/esp-idf-ha/include/secrets.h
    ```
 
-2. **Fill in your values** (`cyd/esp-idf-ha/include/secrets.h`):
+2. **Fill in your values:**
    ```c
    #define WIFI_SSID     "YourNetworkName"
    #define WIFI_PASSWORD "YourPassword"
@@ -180,47 +194,86 @@ If you get a JPEG, art download will work on the device.
    #define HA_HOST    "192.168.1.50"   // Pi 5 static IP (not hostname)
    #define HA_PORT    8123
    #define HA_TOKEN   "eyJhbGci..."    // Long-lived token from Part 5
-   #define HA_ENTITY  "media_player.music_assistant_lewis"  // from Part 3/4
+   #define HA_ENTITY  "media_player.living_room"  // entity ID from Part 3
    ```
-   Use the IP address rather than `homeassistant.local` — mDNS resolution
-   is not reliable on all networks and the firmware uses a plain IP string.
 
-3. **Set the ESP-IDF target** (first time only):
-   ```bash
-   cd cyd/esp-idf-ha
+3. **Open the ESP-IDF terminal** in VS Code (not plain PowerShell).
+
+4. **Set the target** (first time only):
+   ```
    idf.py set-target esp32
    ```
 
-4. **Build, flash, and monitor:**
-   ```bash
-   idf.py build
-   idf.py -p COM5 flash monitor    # replace COM5 with your port
+5. **Build and flash:**
    ```
-   On Linux: `/dev/ttyUSB0` or `/dev/ttyACM0`. On macOS: `/dev/cu.usbserial-*`.
+   idf.py build flash monitor
+   ```
 
-5. **Expected serial output on a successful first boot:**
+### 7b — Waveshare ESP32-P4 board (`waveshare/esp-idf-ha/`)
+
+1. **Copy the secrets template** (in the private build folder):
    ```
-   I (main): wifi connecting to "YourNetwork"...
-   I (main): wifi connected, IP: 192.168.1.xxx
-   I (ha): ws started -> ws://192.168.1.50:8123/api/websocket
-   I (ha): authenticated
-   I (ha): state: Artist -- Title [playing]
+   waveshare/esp-idf-ha/include/secrets.h.example  →  waveshare/esp-idf-ha/include/secrets.h
    ```
+   Never edit the `include/` folder in the public repo — credentials live only
+   in the private build copy.
+
+2. **Fill in your values:**
+   ```c
+   #define WIFI_SSID     "YourNetworkName"
+   #define WIFI_PASSWORD "YourPassword"
+
+   #define HA_HOST    "192.168.1.50"   // Pi 5 static IP (not hostname)
+   #define HA_PORT    8123
+   #define HA_TOKEN   "eyJhbGci..."    // Long-lived token from Part 5
+   #define HA_ENTITY  "media_player.living_room"  // entity ID from Part 3
+   ```
+   Use the IP address, not `homeassistant.local` — mDNS is not reliable on
+   all networks and the firmware uses a plain IP string.
+
+3. **Open the ESP-IDF terminal** in VS Code. The Waveshare build requires
+   **ESP-IDF 5.5.x** — use the IDF 5.5.4 terminal profile, not IDF 6.x.
+
+4. **Navigate to your private build folder:**
+   ```
+   cd "C:\Users\User\Documents\home-controller - Private\waveshare\esp-idf-ha"
+   ```
+
+5. **Set the target** (first time only):
+   ```
+   idf.py set-target esp32p4
+   ```
+
+6. **Build and flash:**
+   ```
+   idf.py build flash monitor
+   ```
+   The board enumerates as a CH343 USB-serial adapter (COM3 or COM4 on Windows).
+
+### Expected serial output on a successful boot
+
+```
+I (main): display up
+I (main): WiFi connected
+I (ha): ws started -> ws://192.168.1.50:8123/api/websocket
+I (ha): authenticated
+I (ha): state: Artist Name - Track Title [playing]
+```
 
 ---
 
 ## Part 8 — VS Code / ESP-IDF extension
 
-If you prefer the IDE workflow:
+If you prefer the IDE workflow instead of the terminal:
 
-1. Open the **`cyd/esp-idf-ha/`** folder directly as the VS Code workspace
-   (File → Open Folder → select `cyd/esp-idf-ha`). The extension needs the
-   IDF project at the workspace root.
+1. Open the build folder directly as the VS Code workspace
+   (File → Open Folder → select `cyd/esp-idf-ha` or `waveshare/esp-idf-ha`).
+   The extension needs the IDF project at the workspace root.
 
 2. Set the ESP-IDF path in the extension settings if prompted.
 
-3. Use the status-bar buttons: **Set target** (esp32) → **Build** → **Flash** →
-   **Monitor**.
+3. Use the status-bar buttons: **Set target** (esp32 for CYD, esp32p4 for
+   Waveshare) → **Build** → **Flash** → **Monitor**.
 
 ---
 
@@ -284,11 +337,14 @@ This is expected with the **native** Spotify integration — Spotify's API
 does not relay volume changes to mobile clients. Music Assistant routes volume
 through the player provider instead and does not have this restriction.
 
-### Controls unresponsive but display works
+### Controls unresponsive but display works (CYD only)
 The MCP23017 IO expander may not have been found at boot. Check the serial log
 for `mcp_input: MCP23017 not found`. The driver re-probes every 5 s — wait a
 few seconds. If it never appears, check the I2C wiring (SDA=GPIO27, SCL=GPIO22)
 and the 4.7 kΩ pull-ups to 3.3 V.
+
+The Waveshare build is touch-only (no MCP23017); unresponsive touch is usually
+a misconfigured BSP touch-flag or a dead digitiser cable.
 
 ### `OFFLINE` banner appears despite WiFi being connected
 The WiFi RSSI dropped to 0 (the WiFi-bars indicator drives this). The device
@@ -325,8 +381,10 @@ The album browser thumbnails are baked in at compile time. To add albums:
 ```bash
 # From repo root
 python scripts/add_albums.py spotify:album:<ID>
-# Then rebuild and reflash cyd/esp-idf-ha
-cd cyd/esp-idf-ha && idf.py build flash
+
+# Then rebuild and reflash — pick your build:
+cd cyd/esp-idf-ha && idf.py build flash         # CYD
+cd waveshare/esp-idf-ha && idf.py build flash   # Waveshare P4
 ```
 
 See `scripts/` and `CLAUDE.md` (Coding conventions) for the full pipeline.

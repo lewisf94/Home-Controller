@@ -788,6 +788,7 @@ git log --oneline -10          # recent history
 
 - **New to the codebase (plain-language tour):** `docs/CODE-TOUR.md`
 - **Plans for next phases:** `docs/ROADMAP.md`
+- **HA end-to-end setup guide (Music Assistant, tokens, flash):** `docs/HA-SETUP.md`
 - **What still needs to be tested on hardware:** `docs/TESTING.md`
 - **IDF port gotchas discovered on hardware:** `docs/PORT-NOTES.md`
 - **Lead build (direct Spotify, verified):** `cyd/esp-idf/`
