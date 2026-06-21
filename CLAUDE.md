@@ -714,8 +714,10 @@ rotation is already enabled by the vendored BSP). A future
   then force-push.
 - **Do NOT include the `https://claude.ai/code/session_…` footer** in commit
   messages
-- Push to `main` directly is fine for solo work; create a branch only if the
-  user asks
+- **Always push directly to `main`** — never create a branch. The default is
+  always `git push -u origin main`. Do not create a branch even if asked
+  indirectly; require an explicit "create a branch" instruction in that specific
+  message before ever deviating from this.
 - Never `--no-verify` and never force-push without explicit instruction
 
 ---
