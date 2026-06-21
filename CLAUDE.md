@@ -324,7 +324,7 @@ What's in `ui.c` as committed:
   hue in that row on load. Drives selection highlights and progress bar, separate
   from the MODE palette. Default is deep orange (`s_accent = 8`). The selected
   swatch shows a contrast-aware check (ink on light swatches, white on dark).
-- **`main/ui_tune.h` — user-tweakable layout/colour knobs.** Central header of
+- **`components/p4_shared/include/ui_tune.h` — user-tweakable layout/colour knobs.** Central header of
   per-MODE arrays (`{ BASIC, GLYPH, PIXEL, PAPER }` order) for the values that
   were repeatedly tuned by eye: accent palette, browser/now-playing text Y,
   title letter-spacing, selection-line gap, FPS + top-button positions, PAPER
@@ -514,11 +514,47 @@ Key differences from the CYD IDF build:
   sources/deps are staged per checkpoint (`main/CMakeLists.txt` comments).
   See `waveshare/esp-idf/README.md` for the checkpoint roadmap.
 
-### Future: ESP32-P4 HA variant — not started — `waveshare/esp-idf-ha/`
+### Shared component — `waveshare/components/p4_shared/`
 
-A copy of `waveshare/esp-idf/` with the backend swapped to the Phase 3
-`ha_client.c`. The HA client carries over untouched from the CYD HA build; do
-not start until the P4 direct-Spotify build is verified on hardware.
+All UI, audio, album, font, and knob-protocol code that both P4 builds share
+lives here. Mirrors the `cyd/components/cyd_shared/` pattern. Both
+`waveshare/esp-idf/` and `waveshare/esp-idf-ha/` add this via
+`list(APPEND EXTRA_COMPONENT_DIRS ../components)` in their top-level
+`CMakeLists.txt`.
+
+Files in `p4_shared/`: `ui.c`, `audio.c`, `albums.c`, `album_thumbs.c`,
+`album_art.cpp`, `littlefs.c`, `knob.c`, `knob_input.c`,
+`home_controller.pb.c`, all eight font `.c` files, three TTF embed files.
+
+Headers in `p4_shared/include/`: `ui.h`, `audio.h`, `albums.h`,
+`album_thumbs.h`, `album_art.h`, `littlefs.h`, `knob.h`, `knob_input.h`,
+`home_controller.pb.h`, `player.h`, `ui_tune.h`.
+
+**`player.h`** — backend-neutral `spotify_track_t` definition (same pattern as
+`cyd/components/cyd_shared/include/player.h`). `ui.c`/`ui.h` include `player.h`
+directly; `spotify.h` re-exports it so existing call sites stay unchanged.
+
+**`ui_tune.h`** — user-tweakable layout/colour knobs (previously in
+`waveshare/esp-idf/main/`). **Edit it here; both builds pick it up.**
+
+**`album_thumbs.bin`** — the gitignored binary is now at
+`waveshare/components/p4_shared/album_thumbs.bin` (private build folder).
+
+### ESP32-P4 HA variant — stub exists, NOT hardware-tested — `waveshare/esp-idf-ha/`
+
+Backend swapped to `ha_client.c` (Home Assistant WebSocket). The shared
+`p4_shared` component carries all UI/audio/album code; only `main.c` and
+`ha_client.c/h` are per-build. Vendored BSP shared from
+`waveshare/esp-idf/components/` via `EXTRA_COMPONENT_DIRS`.
+
+To build: copy `include/secrets.h` from the non-HA private build and replace
+`SPOTIFY_*`/`SONOS_*` with `HA_HOST`/`HA_PORT`/`HA_TOKEN`/`HA_ENTITY` (see
+`include/secrets.h.example`). Copy `album_thumbs.bin` to
+`waveshare/components/p4_shared/`. Then `idf.py set-target esp32p4 && idf.py build`.
+
+The `ha_client.c` is adapted from `cyd/esp-idf-ha/`; the only change is
+`#include "player.h"` instead of `"spotify.h"`. The WebSocket dep is
+`esp_websocket_client` (listed in `main/idf_component.yml`).
 
 ---
 
@@ -790,7 +826,7 @@ git log --oneline -10          # recent history
   DARK/LIGHT face (BASIC/GLYPH/PIXEL/PAPER + an APPEARANCE dark/light toggle) and
   a THEME ALBUM ART on/off toggle, charcoal palette, flat buttons, an 8-hue ×
   3-variant (24-swatch) colour accent grid, all layout/colour values exposed in
-  `main/ui_tune.h`, tiny_ttf kerning crash fix, PIXEL retro theme
+  `components/p4_shared/include/ui_tune.h`, tiny_ttf kerning crash fix, PIXEL retro theme
   (1bpp Press Start 2P font, Bayer-dithered pixelated art/thumbnails, dark-CRT
   palette), the **GLYPH Nothing-OS-light theme** (light grey + ink, dot-matrix
   headings over clean small type, hairline outline pills with solid-ink selection,
