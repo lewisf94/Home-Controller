@@ -49,22 +49,7 @@ static char  *s_rx     = NULL;
 static size_t s_rx_cap = 0;
 #define RX_MAX_CAP (64 * 1024)
 
-/* ── JSON scanner (copied from spotify.c) ────────────────────────────────── */
-static const char *json_find_key(const char *json, const char *key)
-{
-    char needle[64];
-    int n = snprintf(needle, sizeof(needle), "\"%s\"", key);
-    if (n <= 0 || n >= (int)sizeof(needle)) return NULL;
-    const char *p = strstr(json, needle);
-    if (!p) return NULL;
-    p += n;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p != ':') return NULL;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    return p;
-}
-
+/* ── JSON scanner ────────────────────────────────────────────────────────── */
 static const char *json_skip_string(const char *p)
 {
     if (*p != '"') return p;
@@ -323,7 +308,7 @@ static void apply_state_object(const char *st)
         } else if (strncmp(content_id, "spotify://album/", 16) == 0) {
             /* Music Assistant format: spotify://album/<id> -> spotify:album:<id> */
             snprintf(s_track.album_uri, sizeof(s_track.album_uri),
-                     "spotify:album:%s", content_id + 16);
+                     "spotify:album:%.49s", content_id + 16);
         } else {
             s_track.album_uri[0] = '\0';
         }

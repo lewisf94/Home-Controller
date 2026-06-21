@@ -169,11 +169,12 @@ static void decode_art(const char *path)
 {
     uint16_t *rgb = (uint16_t *)s_art_buf;
     if (!rgb) return;
-    if (!album_art_decode_file(path, ART_DECODE_W, ART_DECODE_H, rgb)) {
+    uint16_t w = 0, h = 0;
+    if (!album_art_decode_file(path, rgb, ART_DECODE_W * ART_DECODE_H, &w, &h)) {
         ESP_LOGE(TAG, "art decode failed");
         return;
     }
-    ui_art_refresh((const uint8_t *)rgb, ART_DECODE_W, ART_DECODE_H);
+    ui_art_refresh((const uint8_t *)rgb, w, h);
 }
 
 /* ── HA task ────────────────────────────────────────────────────────────────── */
@@ -223,12 +224,15 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    /* Initialise the Waveshare BSP (display + touch + LVGL adapter). */
+    /* Initialise the Waveshare BSP (display + touch + LVGL adapter).
+     * Matches the non-HA build: ROTATE_90, TRIPLE_FULL buffering, and
+     * hardware-confirmed touch flags (swap_xy=1, mirror_x=1, mirror_y=0). */
     bsp_display_cfg_t disp_cfg = {
-        .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
+        .lv_adapter_cfg  = ESP_LV_ADAPTER_DEFAULT_CONFIG(),
+        .rotation        = ESP_LV_ADAPTER_ROTATE_90,
+        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_FULL,
+        .touch_flags     = { .swap_xy = 1, .mirror_x = 1, .mirror_y = 0 },
     };
-    disp_cfg.lvgl_port_cfg.task_stack = 20 * 1024;
-    disp_cfg.lvgl_port_cfg.task_affinity = 1;
     bsp_display_start_with_config(&disp_cfg);
     bsp_display_backlight_on();
     ESP_LOGI(TAG, "display up");
