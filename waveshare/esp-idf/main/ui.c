@@ -2253,11 +2253,16 @@ static void cf_render(void)
 
     int64_t t_prof0 = s_fps_enabled ? esp_timer_get_time() : 0;
 
-    /* Clear canvas to theme background (convert 0xRRGGBB → RGB565). */
+    /* Clear canvas to theme background (convert 0xRRGGBB → RGB565).
+     * Use 32-bit writes (two pixels at once) -- halves the number of stores
+     * into the 462 KB PSRAM canvas compared to 16-bit writes. Canvas pixel
+     * count is always even (both W and H are multiples of 2). */
     uint32_t bg    = s_th->bg;
     uint16_t bg_px = rgb888_to_565(bg);
-    uint16_t *p = s_cf_buf, *end = p + (size_t)CF_PERSP_W * CF_PERSP_H;
-    while (p < end) *p++ = bg_px;
+    uint32_t bg_px32 = ((uint32_t)bg_px << 16) | bg_px;
+    uint32_t *p32 = (uint32_t *)s_cf_buf;
+    uint32_t *end32 = p32 + (size_t)CF_PERSP_W * CF_PERSP_H / 2;
+    while (p32 < end32) *p32++ = bg_px32;
 
     int64_t t_prof1 = s_fps_enabled ? esp_timer_get_time() : 0;
 
