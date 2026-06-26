@@ -37,6 +37,14 @@ bool ha_seek_position(uint32_t position_ms);
 bool ha_set_volume(int pct);
 bool ha_play_album(const char *spotify_uri);   /* "spotify:album:ID" */
 
+/* Device list / switching (HA build only).
+ * ha_request_devices() asks HA for all media_player entities and pushes them to
+ * the UI via ui_set_devices(). ha_set_active_entity() re-points the controller
+ * at a different media_player at runtime (unsubscribe old trigger, subscribe the
+ * new one, refresh now-playing). */
+void ha_request_devices(void);
+void ha_set_active_entity(const char *entity_id);
+
 /* Album art: when a track change brings a new entity_picture, the event
  * handler stashes its relative URL. The ha task polls this (consume-once),
  * builds the absolute URL, downloads + decodes it off the WebSocket task.

@@ -38,6 +38,28 @@ else()
     message(STATUS "p4_shared: spotify-albums-list.txt not found; using committed albums.c")
 endif()
 
+# --- Guard: albums.c and album_thumbs.bin must stay 1:1 ----------------------
+# The browser indexes thumbnails positionally against albums.c, so a count
+# mismatch shows wrong / blank covers. This fails the build loudly if they drift
+# apart -- exactly what the p4_shared refactor caused when gen_albums.py /
+# embed_albums_idf.py kept writing to the old waveshare/esp-idf/main/ path while
+# the build compiled the stale committed albums.c here. If you MOVE these
+# generated files, update BOTH scripts' target lists (TARGETS / OUT_TARGETS).
+set(_albums_c   "${CMAKE_CURRENT_LIST_DIR}/albums.c")
+set(_thumbs_bin "${CMAKE_CURRENT_LIST_DIR}/album_thumbs.bin")
+if(EXISTS "${_albums_c}" AND EXISTS "${_thumbs_bin}")
+    file(STRINGS "${_albums_c}" _album_lines REGEX "spotify:album:")
+    list(LENGTH _album_lines _n_albums)
+    file(SIZE "${_thumbs_bin}" _bin_size)
+    math(EXPR _n_thumbs "${_bin_size} / (220 * 220 * 2)")   # 220x220 RGB565
+    if(NOT _n_albums EQUAL _n_thumbs)
+        message(FATAL_ERROR
+            "p4_shared: album desync -- albums.c has ${_n_albums} albums but "
+            "album_thumbs.bin has ${_n_thumbs} thumbnails. Rebake the blob:\n"
+            "  python scripts/embed_albums_idf.py")
+    endif()
+endif()
+
 idf_component_register(
     SRCS
         "ui.c"

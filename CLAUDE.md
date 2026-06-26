@@ -714,7 +714,9 @@ rotation is already enabled by the vendored BSP). A future
 - **Album list is generated — never hand-edit `albums.c`/`albums.cpp`.** The
   single source of truth is `spotify-albums-list.txt` (repo root, gitignored —
   personal choices). `python scripts/gen_albums.py` regenerates all four album
-  source files (3× `albums.c`, 1× `albums.cpp`), sorted by artist then title
+  source files — `cyd/esp-idf/main/albums.c`, `cyd/esp-idf-ha/main/albums.c`,
+  `waveshare/components/p4_shared/albums.c` and `cyd/platformio/src/albums.cpp` —
+  sorted by artist then title
   (leading "The"/"A"/"An" ignored). Each file carries a "GENERATED — do not edit"
   header. To change the list, edit the txt and rerun the script. To add an
   album with minimal typing, paste its Spotify share link / URI into the txt and
@@ -736,11 +738,29 @@ rotation is already enabled by the vendored BSP). A future
   placeholder tile so the blob never desyncs (the UI shows a coloured letter
   card). The `.bin` is gitignored (copyright art) — regenerate it locally after
   changing the list or adding a cover.
+- **Generated-file paths are coupled to the build layout — keep them in sync.**
+  Both `gen_albums.py` (`TARGETS`) and `embed_albums_idf.py` (`OUT_TARGETS`)
+  hard-code where they write per build; the Waveshare target is the shared
+  `waveshare/components/p4_shared/` (NOT `waveshare/esp-idf/main/`). **If a refactor
+  moves a generated file, update both script target lists** — otherwise the script
+  writes to an orphan path while the build compiles a stale committed file,
+  silently desyncing the browser. This was the p4_shared-refactor bug: `albums.c`
+  stayed frozen at 17 albums while the thumb blob had 56, so every browser card
+  showed the wrong cover. A build-time guard in
+  `waveshare/components/p4_shared/CMakeLists.txt` now FAILS the build when
+  `albums.c` and `album_thumbs.bin` counts diverge, so it can't ship again. Fonts
+  are the same shape: `gen_lvgl_font.py` writes wherever you point it — use the
+  p4_shared paths.
 
 ---
 
 ## Commit / push policy
 
+- **Commit and push from the working (non-private) repo** (`home-controller`) —
+  it has the GitHub remote. The private folder (`home-controller - Private`) is for
+  building/flashing only (it carries the real `secrets.h`); never push from there.
+  Before pushing, make sure the working repo has every change — edits made for
+  flashing (copied into private) must also be applied in the working repo.
 - Commit author must be **Lewis**, not "Claude". In cloud/web sessions the git
   config defaults to `Claude <noreply@anthropic.com>` — always fix it before
   the first commit by running:

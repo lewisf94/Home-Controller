@@ -114,8 +114,8 @@ typedef enum {
     HCMD_VOLUME,
     HCMD_SHUFFLE,
     HCMD_PLAY_ALBUM,
-    HCMD_GET_DEVICES,  /* not used in HA build -- HA owns device routing */
-    HCMD_TRANSFER,     /* not used in HA build */
+    HCMD_GET_DEVICES,  /* enumerate HA media_player entities */
+    HCMD_TRANSFER,     /* switch the active media_player entity */
 } hcmd_type_t;
 
 typedef struct {
@@ -151,11 +151,15 @@ void ui_request_volume(int pct)
 void ui_request_shuffle(void)
     { hcmd_t c = {.type=HCMD_SHUFFLE}; xQueueSend(s_cmd_queue,&c,0); }
 void ui_request_get_devices(void)
-    { /* HA owns device routing; not implemented */ }
+    { hcmd_t c = {.type=HCMD_GET_DEVICES}; xQueueSend(s_cmd_queue,&c,0); }
 void ui_request_transfer(const char *device_id)
-    { (void)device_id; /* HA owns device routing; not implemented */ }
+{
+    hcmd_t c = { .type = HCMD_TRANSFER };
+    snprintf(c.device_id, sizeof c.device_id, "%s", device_id ? device_id : "");
+    xQueueSend(s_cmd_queue, &c, 0);
+}
 void ui_request_select_sonos(const char *host)
-    { (void)host; /* Sonos routed through HA; not needed here */ }
+    { (void)host; /* all HA media_players switch via ui_request_transfer */ }
 
 /* ── Art decode ─────────────────────────────────────────────────────────────── */
 static uint8_t        *s_art_buf = NULL;
@@ -207,7 +211,9 @@ static void ha_task(void *arg)
             case HCMD_SHUFFLE:      ha_toggle_shuffle();    break;
             case HCMD_SEEK:         ha_seek_position(cmd.seek_ms);    break;
             case HCMD_VOLUME:       ha_set_volume(cmd.volume_pct);    break;
-            case HCMD_PLAY_ALBUM:   ha_play_album(cmd.album_uri);     break;
+            case HCMD_PLAY_ALBUM:   ha_play_album(cmd.album_uri);        break;
+            case HCMD_GET_DEVICES:  ha_request_devices();                break;
+            case HCMD_TRANSFER:     ha_set_active_entity(cmd.device_id); break;
             default: break;
             }
         }

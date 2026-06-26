@@ -48,7 +48,7 @@ def force_utf8_stdout() -> None:
 TARGETS = [
     (REPO_ROOT / "cyd" / "esp-idf" / "main" / "albums.c", "c"),
     (REPO_ROOT / "cyd" / "esp-idf-ha" / "main" / "albums.c", "c"),
-    (REPO_ROOT / "waveshare" / "esp-idf" / "main" / "albums.c", "c"),
+    (REPO_ROOT / "waveshare" / "components" / "p4_shared" / "albums.c", "c"),
     (REPO_ROOT / "cyd" / "platformio" / "src" / "albums.cpp", "cpp"),
 ]
 

@@ -84,9 +84,14 @@ Full pin tables, I2C addresses, and architecture details: [`CLAUDE.md`](CLAUDE.m
 
 ```
 waveshare/
+  components/
+    p4_shared/           Shared P4 component: ui.c, audio.c, albums.c,
+                         album_thumbs, fonts, knob protocol + headers
   esp-idf/               Lead build — ESP32-P4, direct Spotify + Sonos
     components/          Vendored Waveshare BSP
-    main/                app source (ui.c, spotify.c, sonos.c, albums.c, ...)
+    main/                main.c, spotify.c, sonos.c (UI/albums come from p4_shared)
+    include/             secrets.h.example
+  esp-idf-ha/            ESP32-P4 Home Assistant build (main.c, ha_client.c)
     include/             secrets.h.example
 
 cyd/

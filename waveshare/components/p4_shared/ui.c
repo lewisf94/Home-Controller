@@ -2515,20 +2515,40 @@ static void prog_particle_tick_cb(lv_timer_t *t)
 #define VOL_GRID_X    ((SCREEN_W - (VOL_PAGE_COLS * VOL_DOT_STEP - (VOL_DOT_STEP - VOL_DOT_SZ))) / 2)
 #define VOL_GRID_Y    60    /* top of the dot grid */
 
-static void vol_page_dots_update(int pct)
+/* Volume taper: the fader / dot-page POSITION (0-100, linear finger travel)
+ * maps to the actual volume percent through a power curve, so the low end gets
+ * more travel = finer control when listening quietly. VOL_TAPER > 1 gives the
+ * low end more resolution; 1.0 restores the old linear behaviour. */
+#define VOL_TAPER 2.0f
+static int vol_pos_to_pct(int pos)
 {
-    if (pct < 0)   pct = 0;
-    if (pct > 100) pct = 100;
+    if (pos <= 0)   return 0;
+    if (pos >= 100) return 100;
+    return (int)(powf(pos / 100.0f, VOL_TAPER) * 100.0f + 0.5f);
+}
+static int vol_pct_to_pos(int pct)
+{
+    if (pct <= 0)   return 0;
+    if (pct >= 100) return 100;
+    return (int)(powf(pct / 100.0f, 1.0f / VOL_TAPER) * 100.0f + 0.5f);
+}
+
+/* `pos` is the fader position (0-100, linear travel). The label shows the real
+ * (tapered) volume; the dots fill by travel so the low end has more resolution. */
+static void vol_page_dots_update(int pos)
+{
+    if (pos < 0)   pos = 0;
+    if (pos > 100) pos = 100;
     if (s_vol_page_label) {
         char b[8];
-        snprintf(b, sizeof b, "%d%%", pct);
+        snprintf(b, sizeof b, "%d%%", vol_pos_to_pct(pos));
         lv_label_set_text(s_vol_page_label, b);
     }
     for (int r = 0; r < VOL_PAGE_ROWS; r++) {
         /* r=0 is the bottom row (low volume); r=9 is the top row (high volume).
-         * Dot is "active" when pct is above the midpoint of its band. */
+         * Dot is "active" when the travel is above the midpoint of its band. */
         int threshold = r * 10 + 5;   /* 5, 15, 25 ... 95 */
-        bool active   = (pct >= threshold);
+        bool active   = (pos >= threshold);
         for (int c = 0; c < VOL_PAGE_COLS; c++) {
             int idx = r * VOL_PAGE_COLS + c;
             lv_obj_t *dot = s_vol_page_dots[idx];
@@ -2549,7 +2569,7 @@ static void vol_release_timer_cb(lv_timer_t *t)
 {
     (void)t;
     s_vol_release_timer = NULL;
-    if (s_np_volume) ui_request_volume(lv_slider_get_value(s_np_volume));
+    if (s_np_volume) ui_request_volume(vol_pos_to_pct(lv_slider_get_value(s_np_volume)));
 }
 
 static void on_vol_page_drag(lv_event_t *e)
@@ -2559,11 +2579,11 @@ static void on_vol_page_drag(lv_event_t *e)
     /* Map touch y to volume: top of grid = 100 %, bottom = 0 %. */
     int grid_top    = VOL_GRID_Y;
     int grid_bottom = VOL_GRID_Y + VOL_PAGE_ROWS * VOL_DOT_STEP;
-    int pct = 100 - (int)((p.y - grid_top) * 100 / (grid_bottom - grid_top));
-    if (pct < 0)   pct = 0;
-    if (pct > 100) pct = 100;
-    vol_page_dots_update(pct);
-    if (s_np_volume) lv_slider_set_value(s_np_volume, pct, LV_ANIM_OFF);
+    int pos = 100 - (int)((p.y - grid_top) * 100 / (grid_bottom - grid_top));
+    if (pos < 0)   pos = 0;
+    if (pos > 100) pos = 100;
+    vol_page_dots_update(pos);
+    if (s_np_volume) lv_slider_set_value(s_np_volume, pos, LV_ANIM_OFF);
     /* Debounce: send command 400 ms after the last move. */
     if (s_vol_release_timer) {
         lv_timer_reset(s_vol_release_timer);
@@ -3400,9 +3420,9 @@ static void apply_theme_cb(void *unused)
     if (s_track.artist[0] && s_np_artist) lv_label_set_text(s_np_artist, s_track.artist);
     if (s_np_device) lv_label_set_text(s_np_device, s_track.device_name[0] ? s_track.device_name : "");
     if (s_track.volume_pct >= 0 && s_np_volume) {
-        lv_slider_set_value(s_np_volume, s_track.volume_pct, LV_ANIM_OFF);
+        lv_slider_set_value(s_np_volume, vol_pct_to_pos(s_track.volume_pct), LV_ANIM_OFF);
         if (is_glyph_theme() && s_screen_volume)
-            vol_page_dots_update(s_track.volume_pct);
+            vol_page_dots_update(vol_pct_to_pos(s_track.volume_pct));
     }
     update_progress_bar();
 
@@ -3741,8 +3761,8 @@ void ui_set_track_info(const spotify_track_t *info)
      * fader (the hold window) -- programmatic set doesn't fire VALUE_CHANGED. */
     if (info && info->volume_pct >= 0 && s_np_volume &&
         (int32_t)(lv_tick_get() - s_vol_hold_until) >= 0) {
-        lv_slider_set_value(s_np_volume, info->volume_pct, LV_ANIM_OFF);
-        if (is_glyph_theme()) vol_page_dots_update(info->volume_pct);
+        lv_slider_set_value(s_np_volume, vol_pct_to_pos(info->volume_pct), LV_ANIM_OFF);
+        if (is_glyph_theme()) vol_page_dots_update(vol_pct_to_pos(info->volume_pct));
     }
     bsp_display_unlock();
 }
@@ -4066,7 +4086,7 @@ static void on_vol_changed(lv_event_t *e)
     (void)e;
     if (!s_np_volume) return;
     s_vol_dragging = true;  /* ensure flag stays set during dragging */
-    vol_hud_show(lv_slider_get_value(s_np_volume), false);  /* live feedback */
+    vol_hud_show(vol_pos_to_pct(lv_slider_get_value(s_np_volume)), false);  /* live feedback (true volume) */
     s_vol_hold_until = lv_tick_get() + 4000;   /* keep polls from snapping it back */
 }
 
@@ -4075,7 +4095,7 @@ static void on_vol_released(lv_event_t *e)
     (void)e;
     s_vol_dragging = false;
     if (!s_np_volume) return;
-    ui_request_volume(lv_slider_get_value(s_np_volume));          /* apply once, on release */
+    ui_request_volume(vol_pos_to_pct(lv_slider_get_value(s_np_volume)));  /* apply once, on release */
     s_vol_hold_until = lv_tick_get() + 4000;
 }
 

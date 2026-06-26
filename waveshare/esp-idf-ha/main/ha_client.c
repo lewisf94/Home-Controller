@@ -30,11 +30,14 @@ static const char *TAG = "ha";
 static const char *s_host   = NULL;
 static int         s_port   = 8123;
 static const char *s_token  = NULL;
-static const char *s_entity = NULL;
+static char        s_entity_buf[96] = {0};
+static const char *s_entity = s_entity_buf;   /* points at the buffer; runtime-switchable */
 
 static esp_websocket_client_handle_t s_ws = NULL;
 static int s_msg_id = 1;                 /* incrementing WS command id */
-static int s_states_req_id = 0;          /* id of our get_states request */
+static int s_states_req_id = 0;          /* id of our now-playing get_states request */
+static int s_devices_req_id = 0;         /* id of a device-list get_states request */
+static int s_sub_id = 0;                 /* id of the active subscribe_trigger (for unsubscribe) */
 
 static spotify_track_t s_track = {0};
 
@@ -174,12 +177,13 @@ static void send_subscribe(void)
     snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_states_req_id);
     ws_send(buf);
 
-    /* Push only this entity's future state changes. */
-    int sub_id = s_msg_id++;
+    /* Push only this entity's future state changes. Remember the id so a later
+     * entity switch can unsubscribe this trigger. */
+    s_sub_id = s_msg_id++;
     snprintf(buf, sizeof(buf),
              "{\"id\":%d,\"type\":\"subscribe_trigger\","
              "\"trigger\":{\"platform\":\"state\",\"entity_id\":\"%s\"}}",
-             sub_id, s_entity ? s_entity : "");
+             s_sub_id, s_entity ? s_entity : "");
     ws_send(buf);
 }
 
@@ -337,6 +341,53 @@ static const char *find_entity_in_array(const char *arr)
     return NULL;
 }
 
+/* Full entity_ids for the current device list. ui_device_t.id (64 B) is too
+ * small for long HA entity_ids, so the UI rows carry the list index instead and
+ * ha_set_active_entity() resolves it back here. Written on the WS task (build),
+ * read on the ha task (switch); the list is always built before it can be tapped. */
+static char s_dev_ids[MAX_DEVICES][96];
+static int  s_dev_count = 0;
+
+/* Build the device list from a get_states result array: every media_player
+ * entity becomes one row (name = friendly_name, detail = entity_id tail so
+ * duplicate friendly names stay distinguishable). Pushed straight to the UI. */
+static void build_device_list(const char *arr)
+{
+    static ui_device_t devs[MAX_DEVICES];   /* static: only ever touched on the WS task */
+    int n = 0;
+    if (arr && *arr == '[') {
+        const char *p = arr + 1;
+        while (*p && n < MAX_DEVICES) {
+            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+            if (*p != '{') break;
+            const char *obj = p;
+            char eid[96];
+            if (json_obj_get_str(obj, "entity_id", eid, sizeof(eid)) &&
+                strncmp(eid, "media_player.", 13) == 0) {
+                ui_device_t *d = &devs[n];
+                memset(d, 0, sizeof(*d));
+
+                snprintf(s_dev_ids[n], sizeof(s_dev_ids[n]), "%s", eid);
+                snprintf(d->id, sizeof(d->id), "%d", n);   /* UI carries the list index */
+
+                const char *attrs = json_obj_get(obj, "attributes");
+                char fname[64] = {0};
+                if (attrs) json_obj_get_str(attrs, "friendly_name", fname, sizeof(fname));
+                snprintf(d->name, sizeof(d->name), "%.39s", fname[0] ? fname : eid + 13);
+                snprintf(d->detail, sizeof(d->detail), "%.23s", eid + 13);  /* tail disambiguates */
+
+                d->is_active = (strcmp(eid, s_entity) == 0);
+                d->is_sonos  = false;   /* all HA entities switch via ui_request_transfer */
+                n++;
+            }
+            p = json_skip_value(p);
+        }
+    }
+    s_dev_count = n;
+    ESP_LOGI(TAG, "devices: %d media_player entities", n);
+    ui_set_devices(devs, n);
+}
+
 static void handle_message(const char *msg)
 {
     char type[24] = {0};
@@ -365,6 +416,9 @@ static void handle_message(const char *msg)
             const char *st  = find_entity_in_array(arr);
             if (st) apply_state_object(st);
             else ESP_LOGW(TAG, "entity %s not found in get_states", s_entity);
+        } else if (s_devices_req_id && id == s_devices_req_id) {
+            build_device_list(json_obj_get(msg, "result"));
+            s_devices_req_id = 0;
         }
     }
 }
@@ -413,7 +467,9 @@ void ha_client_init(const char *host, int port, const char *token, const char *e
     s_host   = host;
     s_port   = port;
     s_token  = token;
-    s_entity = entity;
+    /* Copy into a writable buffer so the active entity can be switched at runtime
+     * (s_entity already points at s_entity_buf). */
+    snprintf(s_entity_buf, sizeof(s_entity_buf), "%s", entity ? entity : "");
 }
 
 void ha_client_start(void)
@@ -438,6 +494,47 @@ void ha_client_start(void)
     ESP_LOGI(TAG, "ws started -> %s", uri);
 }
 
+void ha_request_devices(void)
+{
+    /* Re-pull every entity's state; the result handler filters media_player.* */
+    char buf[64];
+    s_devices_req_id = s_msg_id++;
+    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_devices_req_id);
+    if (!ws_send(buf)) s_devices_req_id = 0;
+}
+
+void ha_set_active_entity(const char *sel)
+{
+    if (!sel || !sel[0]) return;
+
+    /* The UI rows carry the device-list index (entity_ids are too long for
+     * ui_device_t.id); resolve it back to the full entity_id. */
+    const char *entity = sel;
+    char *end = NULL;
+    long idx = strtol(sel, &end, 10);
+    if (end && *end == '\0' && idx >= 0 && idx < s_dev_count && s_dev_ids[idx][0])
+        entity = s_dev_ids[idx];
+
+    if (strcmp(entity, s_entity) == 0) return;   /* already the active entity */
+
+    /* Stop the previous entity's trigger so its events stop overwriting state. */
+    if (s_sub_id) {
+        char buf[96];
+        snprintf(buf, sizeof(buf),
+                 "{\"id\":%d,\"type\":\"unsubscribe_events\",\"subscription\":%d}",
+                 s_msg_id++, s_sub_id);
+        ws_send(buf);
+        s_sub_id = 0;
+    }
+
+    snprintf(s_entity_buf, sizeof(s_entity_buf), "%s", entity);
+    s_art_loaded[0]          = '\0';   /* force the new entity's art to reload */
+    s_track.album_art_url[0] = '\0';
+    ESP_LOGI(TAG, "active entity -> %s", s_entity);
+
+    send_subscribe();   /* fresh get_states (refreshes now-playing) + new trigger */
+}
+
 bool ha_take_pending_art(char *rel_out, size_t out_len)
 {
     bool got = false;
@@ -458,8 +555,15 @@ bool ha_take_pending_art(char *rel_out, size_t out_len)
 
 void ha_art_full_url(const char *rel, char *out, size_t out_len)
 {
-    /* entity_picture is an absolute-path URL on the HA host. */
-    snprintf(out, out_len, "http://%s:%d%s", s_host, s_port, rel ? rel : "");
+    if (!rel) { if (out_len) out[0] = '\0'; return; }
+    /* Music Assistant returns an already-absolute entity_picture
+     * (e.g. http://<ma-host>:8095/imageproxy?...). The native HA media proxy
+     * instead gives an absolute PATH (/api/media_player_proxy/...). Use a full
+     * URL as-is; only prefix the HA host:port when it's a bare path. */
+    if (strncmp(rel, "http://", 7) == 0 || strncmp(rel, "https://", 8) == 0)
+        snprintf(out, out_len, "%s", rel);
+    else
+        snprintf(out, out_len, "http://%s:%d%s", s_host, s_port, rel);
 }
 
 /* ── Album-art HTTP download to file (no TLS; local network) ─────────────── */

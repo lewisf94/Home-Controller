@@ -8,9 +8,10 @@ at bpp=4 (16-level anti-aliasing), using Pillow's FreeType backend to rasterise.
 
     python scripts/gen_lvgl_font.py FONT.ttf SIZE OUT.c VAR_NAME [--fallback NAME]
 
-e.g.  python scripts/gen_lvgl_font.py waveshare/esp-idf/main/Arvo-Bold.ttf 28 \
-          waveshare/esp-idf/main/lv_font_arvo_28.c lv_font_arvo_28 \
+e.g.  python scripts/gen_lvgl_font.py waveshare/components/p4_shared/Arvo-Bold.ttf 28 \
+          waveshare/components/p4_shared/lv_font_arvo_28.c lv_font_arvo_28 \
           --fallback lv_font_montserrat_28
+      (fonts + TTFs live in the shared p4_shared component, not waveshare/esp-idf/main/)
 
 Covers ASCII 0x20-0x7E; anything outside that range falls back to --fallback
 (a compiled LVGL font, e.g. Montserrat) so accented album titles still render.

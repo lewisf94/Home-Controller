@@ -40,7 +40,7 @@ SRC_DIR = REPO_ROOT / "scripts" / "input_albums"
 OUT_TARGETS = [
     (REPO_ROOT / "cyd" / "esp-idf" / "main", 120),
     (REPO_ROOT / "cyd" / "esp-idf-ha" / "main", 120),
-    (REPO_ROOT / "waveshare" / "esp-idf" / "main", 220),
+    (REPO_ROOT / "waveshare" / "components" / "p4_shared", 220),
 ]
 
 # Spotify album id -> cover filename in input_albums/. Optional: an id with
