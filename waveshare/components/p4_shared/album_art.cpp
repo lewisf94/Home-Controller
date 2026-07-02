@@ -102,17 +102,26 @@ bool decode_opened(JPEGIMAGE *pJPEG,
 {
     const int src_w = JPEG_getWidth(pJPEG);
     const int src_h = JPEG_getHeight(pJPEG);
-    int scale_flag  = 0;
-    int divisor     = 1;
-    if (src_w > 1280 || src_h > 1280) {
-        scale_flag = JPEG_SCALE_EIGHTH;
-        divisor    = 8;
-    } else if (src_w > 680 || src_h > 680) {
-        scale_flag = JPEG_SCALE_QUARTER;
-        divisor    = 4;
-    } else if (src_w > 360 || src_h > 360) {
-        scale_flag = JPEG_SCALE_HALF;
-        divisor    = 2;
+    /* Pick the smallest (best-quality) divisor whose decoded size actually
+     * fits out_max_pixels, instead of fixed absolute-size thresholds. Fixed
+     * thresholds left gaps: e.g. a 350px source (>360? no -> divisor 1 ->
+     * 122500px) or a 660px source (>680? no -> divisor 1 -> 435600px) could
+     * exceed out_max_pixels=102400 and fail the check below even though /2
+     * would easily fit. Trying divisors in order and taking the first that
+     * fits covers every source size up to 8x sqrt(out_max_pixels) per side. */
+    static const int k_divisor[4]     = { 1, 2, 4, 8 };
+    static const int k_scale_flag[4]  = { 0, JPEG_SCALE_HALF, JPEG_SCALE_QUARTER, JPEG_SCALE_EIGHTH };
+    int scale_flag = k_scale_flag[3];
+    int divisor    = k_divisor[3];
+    for (int i = 0; i < 4; i++) {
+        int dw = src_w / k_divisor[i];
+        int dh = src_h / k_divisor[i];
+        if (dw > 0 && dh > 0 &&
+            static_cast<size_t>(dw) * static_cast<size_t>(dh) <= out_max_pixels) {
+            scale_flag = k_scale_flag[i];
+            divisor    = k_divisor[i];
+            break;
+        }
     }
     const int dest_w = src_w / divisor;
     const int dest_h = src_h / divisor;

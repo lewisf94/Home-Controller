@@ -162,23 +162,33 @@ void ui_request_select_sonos(const char *host)
     { (void)host; /* all HA media_players switch via ui_request_transfer */ }
 
 /* ── Art decode ─────────────────────────────────────────────────────────────── */
-static uint8_t        *s_art_buf = NULL;
+/* Double-buffered in PSRAM: ha_task decodes into the idle buffer, then
+ * ui_art_refresh republishes it to LVGL under the LVGL lock -- so a decode
+ * never overwrites the pixels the render task is currently reading. Mirrors
+ * waveshare/esp-idf/main.c's s_art_rgb pattern (a single shared buffer here
+ * previously let JPEGDEC overwrite the live art mid-render, tearing the
+ * on-screen cover). */
+static uint8_t        *s_art_rgb[2]  = { NULL, NULL };
+static int             s_art_buf_idx = 0;
 static lv_image_dsc_t  s_art_dsc = {0};
 
-#define ART_DECODE_W 256
-#define ART_DECODE_H 256
+#define ART_DECODE_W 320
+#define ART_DECODE_H 320
+#define ART_RGB_BYTES ((size_t)ART_DECODE_W * ART_DECODE_H * 2)
 #define ART_FILE_PATH "/littlefs/art.jpg"
 
 static void decode_art(const char *path)
 {
-    uint16_t *rgb = (uint16_t *)s_art_buf;
-    if (!rgb) return;
+    int      next = s_art_buf_idx ^ 1;
+    uint8_t *buf  = s_art_rgb[next];
+    if (!buf) return;
     uint16_t w = 0, h = 0;
-    if (!album_art_decode_file(path, rgb, ART_DECODE_W * ART_DECODE_H, &w, &h)) {
+    if (!album_art_decode_file(path, (uint16_t *)buf, ART_DECODE_W * ART_DECODE_H, &w, &h)) {
         ESP_LOGE(TAG, "art decode failed");
         return;
     }
-    ui_art_refresh((const uint8_t *)rgb, w, h);
+    ui_art_refresh(buf, w, h);
+    s_art_buf_idx = next;
 }
 
 /* ── HA task ────────────────────────────────────────────────────────────────── */
@@ -245,10 +255,10 @@ void app_main(void)
 
     wifi_init();
 
-    /* Art decode buffer in PSRAM. */
-    s_art_buf = heap_caps_malloc(
-        (size_t)ART_DECODE_W * ART_DECODE_H * 2, MALLOC_CAP_SPIRAM);
-    if (!s_art_buf) ESP_LOGE(TAG, "art buf alloc failed");
+    /* Art decode buffers in PSRAM (double-buffered, see decode_art above). */
+    s_art_rgb[0] = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
+    s_art_rgb[1] = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
+    if (!s_art_rgb[0] || !s_art_rgb[1]) ESP_LOGE(TAG, "art buf alloc failed");
 
     littlefs_mount();
 

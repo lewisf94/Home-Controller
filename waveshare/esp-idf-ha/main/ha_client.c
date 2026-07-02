@@ -270,6 +270,7 @@ static void apply_state_object(const char *st)
         json_obj_get_str(attrs, "media_title",      s_track.title,  sizeof(s_track.title));
         json_obj_get_str(attrs, "media_artist",     s_track.artist, sizeof(s_track.artist));
         json_obj_get_str(attrs, "media_album_name", s_track.album,  sizeof(s_track.album));
+        json_obj_get_str(attrs, "friendly_name",    s_track.device_name, sizeof(s_track.device_name));
 
         double pos = 0, dur = 0;
         if (json_obj_get_double(attrs, "media_position", &pos))
@@ -406,7 +407,14 @@ static void handle_message(const char *msg)
         const char *vars = ev   ? json_obj_get(ev,   "variables") : NULL;
         const char *trig = vars ? json_obj_get(vars, "trigger")   : NULL;
         const char *to   = trig ? json_obj_get(trig, "to_state")  : NULL;
-        if (to) apply_state_object(to);
+        /* Guard against a stale event from a not-yet-unsubscribed old
+         * trigger (ha_set_active_entity's unsubscribe is fire-and-forget)
+         * landing after the active entity has already switched. */
+        char eid[96];
+        if (to && json_obj_get_str(to, "entity_id", eid, sizeof(eid)) &&
+            strcmp(eid, s_entity) == 0) {
+            apply_state_object(to);
+        }
     } else if (strcmp(type, "result") == 0) {
         int id = 0;
         const char *idp = json_obj_get(msg, "id");
@@ -517,14 +525,22 @@ void ha_set_active_entity(const char *sel)
 
     if (strcmp(entity, s_entity) == 0) return;   /* already the active entity */
 
-    /* Stop the previous entity's trigger so its events stop overwriting state. */
+    /* Stop the previous entity's trigger so its events stop overwriting state
+     * (the entity_id check in handle_message's "event" branch is the backstop
+     * if this send fails or a stale event is already in flight -- but only
+     * forget s_sub_id once HA has actually been asked to drop it, so a failed
+     * send can still be retried by a later switch instead of leaking the
+     * subscription for the rest of the session). */
     if (s_sub_id) {
         char buf[96];
         snprintf(buf, sizeof(buf),
                  "{\"id\":%d,\"type\":\"unsubscribe_events\",\"subscription\":%d}",
                  s_msg_id++, s_sub_id);
-        ws_send(buf);
-        s_sub_id = 0;
+        if (ws_send(buf)) {
+            s_sub_id = 0;
+        } else {
+            ESP_LOGW(TAG, "unsubscribe send failed, subscription %d left active", s_sub_id);
+        }
     }
 
     snprintf(s_entity_buf, sizeof(s_entity_buf), "%s", entity);
