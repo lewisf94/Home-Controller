@@ -66,6 +66,43 @@ items, see [`PENDING.md`](PENDING.md).
 
 ---
 
+## Active queue (2026-07-02, Lewis-ranked — work top to bottom)
+
+1. **Cover Flow rasteriser rewrite** — DONE 2026-07-02, HARDWARE-VERIFIED
+   over three profiled iterations (HA build, cf_prof serial):
+   - Row-major single pass (`cf_prep_card` tables + `cf_compose`; clear
+     eliminated, divide -> fixed-point multiply): BASIC comp 29 ms.
+   - Occlusion clip (nearest-first, covered-span per row; occluded pixels
+     never computed): BASIC 19 ms, PAPER 42 ms.
+   - RGB565->luma LUT for the PAPER duotone + frame/no-frame span variants:
+     **BASIC 17.5 ms (23 FPS), PAPER 31-33 ms (16-18 FPS)** — from 29 ms /
+     19 FPS and 52-55 ms / 12 FPS at the start. prep stays ~0.35 ms.
+   Geometry math unchanged (canonical-geometry note above `cf_prep_card`).
+   **Parked follow-ups (open the next time CF perf matters):**
+   - The downstream ~24-27 ms/frame (LVGL canvas blit + PPA rotate + DSI
+     flush) now dominates over comp in BASIC — that's esp_lvgl_adapter/BSP
+     territory (mind the DIRECT-mode/rotation CRITICAL notes).
+   - Frame times quantise to `CONFIG_LV_DEF_REFR_PERIOD=15` ms buckets
+     (observed FPS = 1000/(n*15)); dropping to 10 is a one-line experiment.
+   - GLYPH's dot pass is still a whole-canvas post-pass (+4-8 ms in GLYPH);
+     candidate: per-row-band dotting inside cf_compose.
+2. **`app_core` shared component** — extract the ~290 duplicated lines of
+   WiFi state machine / `scmd_t` queue / art pipeline from the per-build
+   `main.c`s (details in PENDING.md "Deferred architecture work").
+3. **Split the big screen-builders** — `build_browser_screen` (~427 L),
+   `build_np_screen`, `build_settings_screen` into helpers; watch draw-order
+   and cross-rebuild dangling pointers (the GLYPH WiFi-dot crash class).
+4. **RP2040 knob firmware pre-flight review** — FOC detent physics, dual-core
+   init ordering, UART framing/ack edge cases — before the PCB arrives.
+5. **CYD resurrection** — compile-verify both CYD-IDF builds (untested since
+   the `cyd_shared` extraction) and port back the waveshare-only fixes
+   (429 Retry-After holdoff, `RESP_INITIAL_CAP=16K`).
+6. **HA build: lights menu** — new screen on `waveshare/esp-idf-ha` to view
+   and control Home Assistant `light` entities (toggle + brightness at
+   minimum) over the existing WebSocket client, behind the `ui_*` seam.
+
+---
+
 ## Open — perf (after hardware verify)
 
 Deferred until the board confirms the UI is stable. Isolated; re-flash between.
@@ -80,16 +117,22 @@ Deferred until the board confirms the UI is stable. Isolated; re-flash between.
    cover decodes cleanly, THEN remove LittleFS. Do not remove it blind. (commit
    `9bdd80a`)
 
-2. **Cover Flow scroll — memory-bandwidth bound (profile first).** `cf_render`'s
-   unconditional per-frame full-canvas clear (473 KB) plus the column-major
-   `cf_draw_col` writes (1600-byte stride vs a 128-byte L2 line, ~185 MB/s PSRAM)
-   dominate — the per-pixel divide is secondary. `cf_render` now logs a
-   clear-vs-rasterise breakdown when FPS display is on (`cf_profile_tick`, commit
-   `99605ed`). Read those numbers before touching anything; the real levers are a
-   cache-friendly rasterise (scratch-tile / row-major) and trimming the clear.
-   CPU (360 MHz = P4 IDF ceiling), build flags (-O2, PSRAM 200 MHz, 256 KB L2)
-   and PSRAM headroom (~70 %) are already maxed. Panel caps at 60 Hz, so the goal
-   is holding 60 during a flick, not a higher number.
+2. **Cover Flow scroll — REWRITTEN 2026-07-02 (row-major single pass; needs
+   on-device verify).** The old path was memory-bandwidth bound: a 467 KB
+   full-canvas clear + column-major `cf_draw_col` writes (1600-byte stride vs
+   a 128-byte L2 line, ~185 MB/s PSRAM) + PSRAM overdraw at card overlaps +
+   a whole-canvas re-read for the PAPER duotone. Now `cf_prep_card` fills
+   per-column tables (internal SRAM) and `cf_compose` builds each row in
+   cache — bg fill, card sampling, ink frame and PAPER duotone in one pass —
+   so each canvas pixel hits PSRAM once per frame, and the per-pixel src_y
+   divide became a fixed-point multiply. `cf_profile_tick` now logs
+   `prep`/`comp` (was `clear`/`rast`); flick Cover Flow with FPS ON and
+   compare `frame=` against the pre-rewrite numbers. CPU (360 MHz = P4 IDF
+   ceiling), build flags (-O2, PSRAM 200 MHz, 256 KB L2) and PSRAM headroom
+   (~70 %) are already maxed. Panel caps at 60 Hz, so the goal is holding 60
+   during a flick, not a higher number. Remaining follow-up if GLYPH still
+   lags: fold `cf_glyph_dither` (still a post-pass) into a per-band scratch
+   tile.
 
 Done, not TODOs (verify on hardware, see PENDING.md): **PPA rotation** is
 already enabled — the vendored BSP hardcodes `.enable_ppa_accel = true`

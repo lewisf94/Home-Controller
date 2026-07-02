@@ -79,8 +79,14 @@ static const char *TAG = "ui";
  * 220px thumb x CF_CARD_SCALE 1.30). The flex scroller is sized to fit it. */
 #define CARD_SIZE     286
 #define CARD_GAP       28
-#define SCROLLER_Y     30
-#define SCROLLER_H    296
+/* Strip top Y is per-mode (ui_tune.h): PAPER alone needs to clear its header
+ * rule (TUNE_PAPER_RULE_Y), so only its slot moved from the shared y30 the
+ * other three themes still use. H=292 (flat, every theme) keeps 6px slack
+ * over the 286px card. BR_TITLE_Y tracks each mode's own strip bottom so it
+ * stays clear of the covers + selection line without dragging BASIC/GLYPH/
+ * PIXEL's already-verified layout down with it. */
+#define SCROLLER_Y    (k_tune_scroller_y[s_mode])
+#define SCROLLER_H    292
 
 /* Now-playing layout, 8px grid. Art is centred up top; below it the title,
  * artist, a thin progress bar flanked by elapsed/remaining timestamps, then a
@@ -112,10 +118,18 @@ static const char *TAG = "ui";
 #define TS_W          (k_tune_ts_w[s_mode])
 #define TS_Y          (PROG_Y - 14)
 
-/* Transport keys: three 56px squares, gap 28, centred (group centre = 400). */
-#define TKEY_SZ        56
+/* Transport keys: three squares (size per-mode -- PAPER alone was shrunk to
+ * keep clear of the art's lower rule), gap 28, centred (group centre = 400). */
+#define TKEY_SZ       (k_tune_tkey_sz[s_mode])
 #define TKEY_GAP       28
 #define TKEY_Y        (k_tune_tkey_y[s_mode])
+
+/* Volume fader track width, every mode (only its X/Y/H vary -- ui_tune.h). */
+#define FADER_W        44
+/* Top-nav gear/devices icon box height. 34, not 28: montserrat_24's actual
+ * line height (~31px) already clipped in a 28px box in every theme; PAPER's
+ * font_icon() fallback (~26px) needs the same clearance. */
+#define TOPBTN_H       34
 
 /* Draggable seek thumb -- shown only while scrubbing. */
 #define THUMB_W        14
@@ -125,9 +139,10 @@ static const char *TAG = "ui";
 #define NP_ARTIST_Y   (k_tune_np_artist_y[s_mode])
 #define NP_DEVICE_Y   374   /* small device-name text below artist */
 
-/* All browser styles share one strip geometry (286px cover ends ~y321), so
- * title/artist sit at one per-mode position below it -- see ui_tune.h. CF_*
- * kept equal for the per-style call sites. */
+/* All browser styles share one strip geometry (SCROLLER_Y/H, per-mode -- the
+ * 286px cover sits centred in it, 3px inset each side), so title/artist sit
+ * at one per-mode position below it -- see ui_tune.h. CF_* kept equal for
+ * the per-style call sites. */
 #define BR_TITLE_Y    (k_tune_br_title_y[s_mode])
 #define BR_ARTIST_Y   (k_tune_br_artist_y[s_mode])
 #define CF_TITLE_Y    BR_TITLE_Y
@@ -315,12 +330,16 @@ static void apply_palette(void) { s_th = k_mode_palettes[s_mode][s_dark ? 0 : 1]
 static bool s_theme_art = true;
 
 /* ---- Layout knobs, indexed by s_mode (values live in ui_tune.h) ---------- */
+static const int16_t k_tune_scroller_y[MODE_COUNT]  = TUNE_SCROLLER_Y;
+static const int16_t k_tune_tkey_sz[MODE_COUNT]     = TUNE_TKEY_SZ;
 static const int16_t k_tune_br_title_y[MODE_COUNT]  = TUNE_BR_TITLE_Y;
 static const int16_t k_tune_br_artist_y[MODE_COUNT] = TUNE_BR_ARTIST_Y;
 static const int16_t k_tune_title_lsp[MODE_COUNT]   = TUNE_TITLE_LETTER_SP;
 static const int16_t k_tune_sel_dy[MODE_COUNT]      = TUNE_SEL_LINE_DY;
 static const int16_t k_tune_fps_x[MODE_COUNT]       = TUNE_FPS_X;
 static const int16_t k_tune_fps_y[MODE_COUNT]       = TUNE_FPS_Y;
+static const int16_t k_tune_wifi_x0[MODE_COUNT]     = TUNE_WIFI_X0;
+static const int16_t k_tune_wifi_bot[MODE_COUNT]    = TUNE_WIFI_BOT;
 static const int16_t k_tune_topbtn_y[MODE_COUNT]    = TUNE_TOPBTN_Y;
 static const int16_t k_tune_np_title_y[MODE_COUNT]  = TUNE_NP_TITLE_Y;
 static const int16_t k_tune_np_artist_y[MODE_COUNT] = TUNE_NP_ARTIST_Y;
@@ -348,7 +367,7 @@ static uint32_t accent_color(void) { return k_accents[s_accent]; }
  *  - FOCUS:     centre card full size, side cards scale down + dim gently.
  *  - COVERFLOW: true 3D perspective tilt via a PSRAM column rasteriser.
  *               Each card is rendered as a trapezoid (left edge full height,
- *               right edge foreshortened) into a 800×296 pixel buffer that
+ *               right edge foreshortened) into a 800×292 pixel buffer that
  *               sits on top of the transparent LVGL scroller.  Centre card
  *               drawn last so it always appears in front of turned side covers.
  *               LVGL card objects are hidden; scroll physics use the flex layout
@@ -543,19 +562,22 @@ static uint32_t   s_fps_acc_intervals  = 0;   /* closed-burst frame intervals th
 static uint32_t   s_fps_acc_span_us    = 0;   /* closed-burst elapsed time this window */
 static uint32_t   s_fps_last_rate      = 0;   /* last computed FPS (held on idle) */
 /* Last Cover Flow profile averages (us), retained from cf_profile_tick for the
- * periodic stats dump. Zero until a CF scroll has been measured. */
-static uint32_t   s_cf_clear_us = 0;
-static uint32_t   s_cf_rast_us  = 0;
+ * periodic stats dump. Zero until a CF scroll has been measured.
+ * prep = per-card column-table maths; comp = the row-major composite pass
+ * (background fill + card sampling + inline PAPER duotone + GLYPH dots). */
+static uint32_t   s_cf_prep_us  = 0;
+static uint32_t   s_cf_comp_us  = 0;
 static uint32_t   s_cf_frame_us = 0;
 
 /* CF perspective canvas: SCREEN_W × CF_PERSP_H PSRAM RGB565 buffer rasterized
  * on each scroll event.  Only allocated when BROWSER_COVERFLOW is active.
- * Pinned just below the top strip (CF_PERSP_Y) and grown downward so the
- * enlarged centre cover (CF_CARD_SCALE × the 220px thumb) fills the space down
- * to CF_TITLE_Y -- bottom (CF_PERSP_Y + CF_PERSP_H = 326) stays clear of it. */
+ * Pinned just below the top strip (CF_PERSP_Y = SCROLLER_Y -- Carousel/Focus
+ * and Cover Flow share one strip geometry, per-mode) and grown downward so
+ * the enlarged centre cover (CF_CARD_SCALE × the 220px thumb) fills the
+ * space down to CF_TITLE_Y, which tracks the same per-mode strip bottom. */
 #define CF_PERSP_W   SCREEN_W    /* 800 */
-#define CF_PERSP_H   296
-#define CF_PERSP_Y   30
+#define CF_PERSP_H   292
+#define CF_PERSP_Y   SCROLLER_Y
 static uint16_t       *s_cf_buf = NULL;
 static lv_image_dsc_t  s_cf_dsc = {0};
 static lv_obj_t       *s_cf_img = NULL;
@@ -676,6 +698,7 @@ static bool is_paper_theme(void);
 static const lv_font_t *font_lg(void);
 static const lv_font_t *font_md(void);
 static const lv_font_t *font_sm(void);
+static const lv_font_t *font_icon(void);
 /* GLYPH heading font: round-dot matrix (Nothing-style), used by font_lg only.
  * Its fallback chain (dot_24 -> dot_sym_24 -> montserrat) keeps symbols and
  * accented glyphs rendering inside dotted headings. */
@@ -738,7 +761,12 @@ static void style_label(lv_obj_t *label, const lv_font_t *font,
                         lv_color_t color, int16_t y)
 {
     lv_label_set_text(label, "");
-    lv_obj_set_width(label, SCREEN_W);
+    /* Inset a few px from the screen edges: a scrolling marquee (titles use
+     * LONG_SCROLL_CIRCULAR) clips to this box's own bounds, and at full
+     * SCREEN_W (x=0..800) that box reaches the screen edges -- just past
+     * PAPER's paper_frame ink border, which insets 4px with a 2px stroke.
+     * The inset keeps scrolled text inside the frame in every theme. */
+    lv_obj_set_width(label, SCREEN_W - 12);
     /* Pin to a single line's height so LONG_DOT ellipsises overflow instead of
      * wrapping to a second line (which would grow down over the label below). */
     lv_obj_set_height(label, lv_font_get_line_height(font));
@@ -746,7 +774,7 @@ static void style_label(lv_obj_t *label, const lv_font_t *font,
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(label, font, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, y);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 6, y);
 }
 
 /* Pressed-state feedback: flash the fill to the accent while the button is
@@ -1318,15 +1346,18 @@ static void build_browser_screen(void)
     s_br_index_lbl = NULL;
     if (is_paper_theme()) {
         paper_frame(s_screen_browser);
-        /* Header band is a full-height strip (frame top -> y40) so the cog /
-         * devices icons fit whole inside it; the rule prints below them, over
-         * the empty band above the covers (cards start ~y68). */
+        /* Header band is a full-height strip (frame top -> the rule) so the
+         * cog / devices icons fit whole inside it; the rule prints below
+         * them, over the empty band above the covers. */
         paper_rule(s_screen_browser, 8, TUNE_PAPER_RULE_Y, SCREEN_W - 16, 1);
         s_br_index_lbl = lv_label_create(s_screen_browser);
         lv_obj_set_style_text_color(s_br_index_lbl, lv_color_hex(accent_color()), 0);
         lv_obj_set_style_text_font(s_br_index_lbl, font_sm(), 0);
         lv_obj_set_style_text_letter_space(s_br_index_lbl, 2, 0);
-        lv_obj_align(s_br_index_lbl, LV_ALIGN_TOP_MID, 0, 8);  /* clear of the y4 frame border */
+        /* TUNE_BR_INDEX_Y: mono_16 (16px) centres on ~y25, the shared
+         * header-row centre of the top buttons (y8, TOPBTN_H tall), FPS and
+         * WiFi cluster. */
+        lv_obj_align(s_br_index_lbl, LV_ALIGN_TOP_MID, 0, TUNE_BR_INDEX_Y);
         char ib[20];
         snprintf(ib, sizeof ib, "%02d / %02d", s_card_count ? 1 : 0, (int)s_card_count);
         lv_label_set_text(s_br_index_lbl, ib);
@@ -1342,9 +1373,9 @@ static void build_browser_screen(void)
     lv_obj_set_style_bg_color(s_sel_line, lv_color_hex(accent_color()), 0);
     lv_obj_set_style_bg_opa(s_sel_line, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_sel_line, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    /* The 286px covers reach ~y321 in the 296px strip (CF and carousel alike),
-     * so the line sits below the strip: clear of the art above and the
-     * (pushed-down) title below. */
+    /* The covers sit centred in the 292px-tall strip (CF and carousel alike,
+     * per-mode SCROLLER_Y), so the line sits below the strip: clear of the
+     * art above and the title below (both also per-mode -- see ui_tune.h). */
     lv_obj_align(s_sel_line, LV_ALIGN_TOP_MID, 0,
                  SCROLLER_Y + SCROLLER_H + k_tune_sel_dy[s_mode]);
     if (!s_show_sel_line) lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
@@ -1352,11 +1383,18 @@ static void build_browser_screen(void)
     /* WiFi-strength indicator: rising bars normally; orbiting dot cluster for Glyph. */
     memset(s_wifi_bars, 0, sizeof s_wifi_bars);
     if (!is_glyph_theme()) {
+        /* Cluster position is per-mode (ui_tune.h): PAPER's header row was
+         * pulled down to clear the rule (TUNE_TOPBTN_Y / TUNE_PAPER_RULE_Y),
+         * so its bars follow to share the same ~y25 vertical centre as the
+         * buttons/FPS/counter, inset further from the left frame border.
+         * BASIC/PIXEL are untouched (their header row never moved). */
+        int wifi_x0  = k_tune_wifi_x0[s_mode];
+        int wifi_bot = k_tune_wifi_bot[s_mode];
         for (int i = 0; i < 4; i++) {
             int h = 6 + i * 4;   /* 6, 10, 14, 18 px tall */
             lv_obj_t *bar = lv_obj_create(s_screen_browser);
             lv_obj_set_size(bar, 5, h);
-            lv_obj_set_pos(bar, 6 + i * 8, 22 - h);
+            lv_obj_set_pos(bar, wifi_x0 + i * 8, wifi_bot - h);
             lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_set_style_border_width(bar, 0, 0);
             lv_obj_set_style_radius(bar, 0, 0);
@@ -1399,15 +1437,20 @@ static void build_browser_screen(void)
 
     /* Gear button (top-right) -> settings. Sits in the empty strip above the
      * carousel so it never overlaps a card. A cog glyph (LV_SYMBOL_SETTINGS,
-     * 0xF013) -- the universal settings affordance; font_md carries the symbol
-     * range in every theme (GLYPH included, where icons are clean strokes).
+     * 0xF013) -- the universal settings affordance, rendered via font_icon()
+     * (not font_md()): PAPER's font_md is lv_font_mono_16, which does NOT
+     * carry the symbol range, so the glyph fell back to a taller font whose
+     * metrics didn't match the label's box and clipped at the bottom --
+     * font_icon() picks a font that natively carries it in every theme.
      * No surface box; transparent at rest, faint accent flash on press.
      * PAPER: the buttons are transparent, so the printed frame border (y4)
      * would strike through them at y0 -- start them at y8, inside the taller
-     * header band (the rule prints at y40, below the icons). */
+     * header band (the rule prints at TUNE_PAPER_RULE_Y=46, below the icons). */
     int tb_y = k_tune_topbtn_y[s_mode];
     lv_obj_t *gear = lv_button_create(s_screen_browser);
-    lv_obj_set_size(gear, 44, 28);
+    /* TOPBTN_H=34, not 28: the montserrat_24 icon (line_height 31) clipped
+     * in a 28px box even in the non-PAPER themes; 34 clears it everywhere. */
+    lv_obj_set_size(gear, 44, TOPBTN_H);
     lv_obj_align(gear, LV_ALIGN_TOP_RIGHT, TUNE_GEAR_X, tb_y);
     lv_obj_set_style_pad_all(gear, 0, 0);
     lv_obj_set_style_bg_opa(gear, LV_OPA_TRANSP, 0);
@@ -1420,13 +1463,13 @@ static void build_browser_screen(void)
     lv_obj_t *gearlbl = lv_label_create(gear);
     lv_label_set_text(gearlbl, LV_SYMBOL_SETTINGS);
     lv_obj_set_style_text_color(gearlbl, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(gearlbl, font_md(), 0);
+    lv_obj_set_style_text_font(gearlbl, font_icon(), 0);
     lv_obj_center(gearlbl);
 
     /* Devices button (left of the gear) -> the device selector. Same flat,
      * transparent-at-rest treatment as the gear. */
     lv_obj_t *devbtn = lv_button_create(s_screen_browser);
-    lv_obj_set_size(devbtn, 44, 28);
+    lv_obj_set_size(devbtn, 44, TOPBTN_H);
     lv_obj_align(devbtn, LV_ALIGN_TOP_RIGHT, TUNE_DEVBTN_X, tb_y);
     lv_obj_set_style_pad_all(devbtn, 0, 0);
     lv_obj_set_style_bg_opa(devbtn, LV_OPA_TRANSP, 0);
@@ -1441,7 +1484,7 @@ static void build_browser_screen(void)
      * candidate glyphs and swap freely. */
     lv_label_set_text(devlbl, TUNE_DEVICES_ICON);
     lv_obj_set_style_text_color(devlbl, lv_color_hex(s_th->text2), 0);
-    lv_obj_set_style_text_font(devlbl, font_md(), 0);
+    lv_obj_set_style_text_font(devlbl, font_icon(), 0);
     lv_obj_center(devlbl);
 }
 
@@ -1459,7 +1502,10 @@ static void build_np_screen(void)
     if (is_paper_theme()) {
         paper_frame(s_screen_np);
         paper_rule(s_screen_np, 8, 42,  SCREEN_W - 16, 1);
-        paper_rule(s_screen_np, 8, 298, SCREEN_W - 16, 1);
+        /* +4 past the art's bottom edge (not flush with it): the art's 2px
+         * ink border straddles its box edge, so a rule flush with ART_Y +
+         * ART_H ran through the border stroke instead of clearing it. */
+        paper_rule(s_screen_np, 8, ART_Y + ART_H + 4, SCREEN_W - 16, 1);
     }
 
     /* Tappable "albums" hint pill at the top (matches the "now playing" pill on
@@ -1659,17 +1705,19 @@ static void build_np_screen(void)
     }
     refresh_play_icon();
 
-    /* Faint edge chevrons hinting swipe left/right = next/prev. */
+    /* Faint edge chevrons hinting swipe left/right = next/prev. Pure symbol
+     * content (like the gear/devices icons), so font_icon() -- not font_sm()
+     * -- keeps PAPER off lv_font_mono_16's fallback-metrics mismatch. */
     lv_obj_t *ch_l = lv_label_create(s_screen_np);
     lv_label_set_text(ch_l, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(ch_l, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_text_font(ch_l, font_sm(), 0);
+    lv_obj_set_style_text_font(ch_l, font_icon(), 0);
     lv_obj_align(ch_l, LV_ALIGN_LEFT_MID, 6, -20);
 
     lv_obj_t *ch_r = lv_label_create(s_screen_np);
     lv_label_set_text(ch_r, LV_SYMBOL_RIGHT);
     lv_obj_set_style_text_color(ch_r, lv_color_hex(s_th->dim), 0);
-    lv_obj_set_style_text_font(ch_r, font_sm(), 0);
+    lv_obj_set_style_text_font(ch_r, font_icon(), 0);
     lv_obj_align(ch_r, LV_ALIGN_RIGHT_MID, -6, -20);
 
     s_vol_hud = lv_label_create(s_screen_np);
@@ -1713,17 +1761,31 @@ static void build_np_screen(void)
         lv_obj_add_event_cb(vol_ico, on_open_volume, LV_EVENT_CLICKED, NULL);
     }
     /* PAPER: the fader is a labelled data field like OUTPUT -- swap the icon
-     * for a tracked-out accent "LEVEL" corner label. */
+     * for a tracked-out accent "LEVEL" corner label, centred on the fader's
+     * mid-x (a fixed x ran the label close to the frame border and off-centre
+     * from the slider). Y/width are TUNE_LEVEL_Y/W (ui_tune.h); TUNE_FADER_Y
+     * was raised to keep the knob's ~26px overhang clear of the label at
+     * 100% volume -- see the TUNE_FADER_Y comment for the exact numbers. */
     if (is_paper_theme()) {
         lv_obj_add_flag(vol_ico, LV_OBJ_FLAG_HIDDEN);
-        paper_field_label(s_screen_np, "LEVEL", 700, 40);
+        lv_obj_t *lvl = paper_field_label(s_screen_np, "LEVEL", 0, TUNE_LEVEL_Y);
+        /* Pin to one line as a guard against a future width/font change
+         * wrapping it (mono_16 needs ~88px for "LEVEL" + letter-spacing;
+         * TUNE_LEVEL_W leaves headroom). */
+        lv_obj_set_width(lvl, TUNE_LEVEL_W);
+        lv_obj_set_height(lvl, lv_font_get_line_height(font_sm()));
+        lv_label_set_long_mode(lvl, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_align(lvl, LV_TEXT_ALIGN_CENTER, 0);
+        int fader_cx = k_tune_fader_x[s_mode] + FADER_W / 2;
+        lv_obj_set_pos(lvl, fader_cx - TUNE_LEVEL_W / 2, TUNE_LEVEL_Y);
     }
 
     s_np_volume = lv_slider_create(s_screen_np);
     /* Position + height are per-mode (ui_tune.h). The square PIXEL/PAPER knob
-     * overhangs the track ends by ~26px, so PAPER uses a shorter track to clear
-     * the LEVEL label above and the printed rule below. */
-    lv_obj_set_size(s_np_volume, 44, k_tune_fader_h[s_mode]);
+     * overhangs the track ends by ~26px, so PAPER uses a shorter, lower-
+     * started track to clear the LEVEL label above and the printed rule
+     * below (see the TUNE_FADER_Y comment in ui_tune.h). */
+    lv_obj_set_size(s_np_volume, FADER_W, k_tune_fader_h[s_mode]);
     lv_obj_set_pos(s_np_volume, k_tune_fader_x[s_mode], k_tune_fader_y[s_mode]);
     lv_slider_set_range(s_np_volume, 0, 100);
     lv_slider_set_value(s_np_volume, 50, LV_ANIM_OFF);
@@ -1885,6 +1947,19 @@ static const lv_font_t *font_md(void)
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_24;
     return &lv_font_montserrat_24;
 }
+/* Font for the top-nav icon labels (gear / devices). These render LVGL symbol
+ * glyphs, so the font MUST natively carry the symbol range -- otherwise the
+ * glyph comes from a fallback whose line height differs from the primary
+ * font's, the label box is sized to the (smaller) primary and the taller
+ * fallback glyph overflows + clips at the bottom. PAPER's font_md is
+ * lv_font_mono_16 (line_height 16, no symbols) -> the cog fell back to
+ * montserrat_20 (~26px) and clipped. Use montserrat_20 directly there; the
+ * other themes' font_md already carries the symbols (box == glyph). */
+static const lv_font_t *font_icon(void)
+{
+    if (is_paper_theme()) return &lv_font_montserrat_20;
+    return font_md();
+}
 static const lv_font_t *font_sm(void)
 {
     if (is_pixel_theme()) return &lv_font_pixel_16;
@@ -2012,21 +2087,36 @@ static void glyphize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
 /* =====================================================================
  * Cover Flow perspective rasteriser
  *
- * A PSRAM-backed CF_PERSP_W×CF_PERSP_H (800×296) RGB565 canvas covers the
- * browser scroller strip.  On every scroll event cf_render() clears the canvas
- * to the theme background, then rasterises each visible album as a trapezoid
- * (base = 220px thumb × CF_CARD_SCALE) using per-column perspective math:
+ * A PSRAM-backed CF_PERSP_W×CF_PERSP_H (800×292) RGB565 canvas covers the
+ * browser scroller strip.  On every scroll event cf_render() rasterises each
+ * visible album as a trapezoid (base = 220px thumb × CF_CARD_SCALE) using
+ * per-column perspective math:
  *
- *   left edge:    full base height
- *   right edge:   base_h × (1 − tilt × HEIGHT_SHRINK)
+ *   outer edge:    full base height
+ *   inner edge:    base_h × (1 − tilt × HEIGHT_SHRINK)
  *   display width: base_w × (1 − tilt × WIDTH_SHRINK)
  *
  * where tilt = min(|dist_norm|, 1.0), dist_norm = signed distance from
  * the scroll centre in units of one card step.  Source art is never mirrored.
  *
- * Drawing order: far cards first, near-centre card last, so the centre
- * cover renders on top of turned side covers at their overlap edges —
- * exactly the iPod Cover Flow z-order.
+ * MEMORY-ACCESS SHAPE (the 2026-07-02 perf rewrite — scroll was PSRAM-
+ * bandwidth bound, not compute bound): the frame is built in ONE row-major
+ * pass.  cf_prep_card() first evaluates the per-column maths for every
+ * visible card into small internal-SRAM tables (src column, column height,
+ * top Y, fixed-point vertical step); cf_compose() then walks the canvas top
+ * to bottom, filling each 1600-byte row with background and sampling every
+ * card's columns while that row sits in cache.  Each canvas pixel is written
+ * to PSRAM exactly once per frame — the old path paid a separate 467 KB
+ * clear, drew columns at a 1600-byte write stride (a fresh 128-byte cache
+ * line per pixel), overdrew card overlaps in PSRAM, and re-read the whole
+ * canvas for the PAPER duotone pass (now folded into the same row loop).
+ * The per-pixel src_y divide became a per-column-prepped fixed-point
+ * multiply.  Verify with the cf_prof serial line (FPS display ON).
+ *
+ * Z-order: cards are prepped sorted far-to-near; cf_compose consumes them
+ * NEAREST-first per row, clipping each card to the span no nearer card has
+ * covered — occluded pixels are never computed, and the result is exactly
+ * the iPod Cover Flow z-order (centre on top, covers stacking outward).
  *
  * LVGL card images are hidden; scroll snapping/momentum continue via the
  * flex layout (step = cs() + cg() = 110 px).
@@ -2035,10 +2125,10 @@ static void glyphize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
 /* Tilt geometry constants. CF_CARD_SCALE upsizes the 220px thumb before the
  * perspective taper so the centre cover dominates the strip; CF_PERSP_H is sized
  * to fit base_h = 220*CF_CARD_SCALE without clipping. */
-#define CF_CARD_SCALE    1.30f   /* drawn base = 220*1.30 = ~286 px (fits 296 canvas) */
+#define CF_CARD_SCALE    1.30f   /* drawn base = 220*1.30 = ~286 px (fits 292 canvas) */
 /* Side-cover tilt for Cover Flow -- fixed at the value chosen on hardware (was
  * step 7/9 of the temporary CF ANGLE test slider): a gentle turn. Width
- * foreshorten + height taper, both scaled by tilt in cf_render_card. */
+ * foreshorten + height taper, both scaled by tilt in cf_prep_card. */
 #define CF_WIDTH_SHRINK  0.272f   /* w_disp  = base_w*(1-tilt*0.272) */
 #define CF_HEIGHT_SHRINK 0.404f   /* h_far(inner) = base_h*(1-tilt*0.404) */
 /* Perspective fan: side covers are placed on a converging curve, not a linear
@@ -2054,20 +2144,32 @@ static void glyphize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                                   * Set 1 if the rotated panel mirrors the fan so they face
                                   * outward. One-line orientation flip. */
 
-static void cf_draw_col(int dx, int h_col, int cy_mid,
-                        const uint16_t *src, int src_w, int src_h, int src_x)
-{
-    if ((unsigned)dx >= CF_PERSP_W || h_col <= 0) return;
-    if (src_x < 0) src_x = 0;
-    if (src_x >= src_w) src_x = src_w - 1;
-    int y_top = cy_mid - h_col / 2;
-    for (int dy = y_top; dy < y_top + h_col; dy++) {
-        if ((unsigned)dy >= CF_PERSP_H) continue;
-        int src_y = (dy - y_top) * src_h / h_col;
-        s_cf_buf[(size_t)dy * CF_PERSP_W + (size_t)dx] =
-            src[(size_t)src_y * (size_t)src_w + (size_t)src_x];
-    }
-}
+/* Per-frame scratch for the row-major compositor: one entry per visible card,
+ * holding the per-column trapezoid tables cf_prep_card evaluates once per
+ * frame and cf_compose then reads once per row. Kept in internal SRAM (~23 KB
+ * for 8 cards) because the tables are hit for every composited pixel. */
+#define CF_COL_MAX   288                     /* >= base_w = 220*1.30 = 286 */
+#define CF_CARDS_MAX (2 * CF_MAX_SIDE + 2)   /* +/-CF_MAX_SIDE, centre, scroll-fraction slack */
+typedef struct {
+    const uint16_t *src;                 /* source cover (raw or PIXEL pool) */
+    int             src_w;
+    int             x_start;             /* left canvas X of the trapezoid */
+    int             w_disp;              /* trapezoid width in canvas columns */
+    int16_t         y_lo, y_hi;          /* vertical extent over all columns:
+                                          * rows outside [y_lo,y_hi) skip the
+                                          * card without touching its tables */
+    int16_t         ytop[CF_COL_MAX];    /* column top Y on the canvas */
+    int16_t         hcol[CF_COL_MAX];    /* column height (>=1) */
+    int16_t         srcx[CF_COL_MAX];    /* source column (perspective-remapped) */
+    int32_t         vstep[CF_COL_MAX];   /* (src_h<<16)/hcol, floored -- so
+                                          * sy = (rel*vstep)>>16 never exceeds
+                                          * the old rel*src_h/hcol divide */
+} cf_card_t;
+static cf_card_t *s_cf_cards = NULL;
+/* RGB565 -> Rec.601 luma LUT for the PAPER Cover Flow duotone (64 KB PSRAM,
+ * lazily built on first use, freed with the canvas). One cached load replaces
+ * the per-pixel unpack + three multiplies + divide -- same integer result. */
+static uint8_t   *s_cf_lum   = NULL;
 
 /* =====================================================================
  * Cover Flow CANONICAL GEOMETRY -- do not regress (mirrored in CLAUDE.md,
@@ -2084,11 +2186,12 @@ static void cf_draw_col(int dx, int h_col, int cy_mid,
  *     Source art is never mirrored (reads left->right) -- the height taper +
  *     horizontal compression convey the 3-D turn.
  *
- * Renders one album into s_cf_buf at its current (already fan-remapped) x. The
- * drawn size is a fixed target (220px reference x CF_CARD_SCALE), NOT the source
- * resolution, so low-res PIXEL thumbs fill the same card as full covers. */
-static void cf_render_card(int32_t card_cx, float dist_norm,
-                           const uint16_t *src, int src_w, int src_h)
+ * Evaluates one album's per-column trapezoid tables (at its already
+ * fan-remapped x) for cf_compose to sample row by row. The drawn size is a
+ * fixed target (220px reference x CF_CARD_SCALE), NOT the source resolution,
+ * so low-res PIXEL thumbs fill the same card as full covers. */
+static void cf_prep_card(cf_card_t *c, int32_t card_cx, float dist_norm,
+                         const uint16_t *src, int src_w, int src_h)
 {
     float adist = dist_norm < 0.0f ? -dist_norm : dist_norm;
     float tilt  = adist > 1.0f ? 1.0f : adist;
@@ -2098,14 +2201,13 @@ static void cf_render_card(int32_t card_cx, float dist_norm,
 
     int   w_disp = (int)((float)base_w * (1.0f - tilt * CF_WIDTH_SHRINK));
     if (w_disp < 4) w_disp = 4;
+    if (w_disp > CF_COL_MAX) w_disp = CF_COL_MAX;
     float h_near = (float)base_h;                                  /* outer edge: full height */
     float h_far  = h_near * (1.0f - tilt * CF_HEIGHT_SHRINK);      /* inner edge: foreshortened */
     if (h_far < 6.0f) h_far = 6.0f;
     float f = h_far / h_near;                                  /* depth ratio (<1) */
 
-    int x_start = (int)card_cx - w_disp / 2;
-    int x_end   = x_start + w_disp;
-    int cy_mid  = CF_PERSP_H / 2;
+    int cy_mid = CF_PERSP_H / 2;
 
     /* left album: outer (near) edge on the LEFT (t=0); right album: outer edge on
      * the RIGHT (t=1). CF_LEAN_FLIP swaps if the panel mirrors the fan. */
@@ -2114,76 +2216,186 @@ static void cf_render_card(int32_t card_cx, float dist_norm,
     left = !left;
 #endif
 
-    /* PAPER prints an ink frame around every cover, drawn INTO the canvas so it
-     * turns/foreshortens with the trapezoid (an LVGL border can't follow this).
-     * When the canvas is dithered afterwards (themed art) the frame is laid
-     * down black -- minimum luminance dithers to solid ink in BOTH palette
-     * faces; with themed art off it's the ink colour directly. */
-    bool     frame    = is_paper_theme();
-    uint32_t inkc     = s_th->text;
-    uint16_t frame_px = s_theme_art ? 0x0000 : rgb888_to_565(inkc);
+    c->src     = src;
+    c->src_w   = src_w;
+    c->x_start = (int)card_cx - w_disp / 2;
+    c->w_disp  = w_disp;
 
-    for (int dx = x_start; dx < x_end; dx++) {
-        float t = (w_disp > 1)
-                ? (float)(dx - x_start) / (float)(w_disp - 1)
-                : 0.0f;
+    int y_lo = CF_PERSP_H, y_hi = 0;
+    for (int i = 0; i < w_disp; i++) {
+        float t = (w_disp > 1) ? (float)i / (float)(w_disp - 1) : 0.0f;
 
         float e   = left ? t : (1.0f - t);          /* 0 at NEAR(outer), 1 at FAR(inner) */
         float u   = (e * f) / (e * f + (1.0f - e)); /* perspective: compress toward FAR */
         float art = left ? u : (1.0f - u);          /* near(outer) shows the outer art side */
         int   src_x = (int)(art * (float)(src_w - 1));
+        if (src_x < 0) src_x = 0;
+        if (src_x >= src_w) src_x = src_w - 1;
         int   h_col = (int)(h_near + (h_far - h_near) * e); /* tall at outer, short at inner */
         if (h_col < 1) h_col = 1;
 
-        cf_draw_col(dx, h_col, cy_mid, src, src_w, src_h, src_x);
+        c->srcx[i]  = (int16_t)src_x;
+        c->hcol[i]  = (int16_t)h_col;
+        c->ytop[i]  = (int16_t)(cy_mid - h_col / 2);
+        c->vstep[i] = ((int32_t)src_h << 16) / h_col;
 
-        if (frame && (unsigned)dx < CF_PERSP_W) {
-            int y_top = cy_mid - h_col / 2;
-            int y_bot = y_top + h_col;
-            if ((dx - x_start) < 2 || (x_end - 1 - dx) < 2) {
-                /* near/far vertical edges: full-height ink column */
-                for (int dy = y_top; dy < y_bot; dy++)
-                    if ((unsigned)dy < CF_PERSP_H)
-                        s_cf_buf[(size_t)dy * CF_PERSP_W + dx] = frame_px;
-            } else {
-                for (int k = 0; k < 2; k++) {
-                    int dyt = y_top + k, dyb = y_bot - 1 - k;
-                    if ((unsigned)dyt < CF_PERSP_H)
-                        s_cf_buf[(size_t)dyt * CF_PERSP_W + dx] = frame_px;
-                    if ((unsigned)dyb < CF_PERSP_H)
-                        s_cf_buf[(size_t)dyb * CF_PERSP_W + dx] = frame_px;
-                }
-            }
+        if (c->ytop[i] < y_lo)         y_lo = c->ytop[i];
+        if (c->ytop[i] + h_col > y_hi) y_hi = c->ytop[i] + h_col;
+    }
+    c->y_lo = (int16_t)(y_lo < 0 ? 0 : y_lo);
+    c->y_hi = (int16_t)(y_hi > CF_PERSP_H ? CF_PERSP_H : y_hi);
+}
+
+/* Draw one card's columns [from,to) into a row. Per pixel: trapezoid bounds
+ * test + perspective sample. Two variants so the ink-frame test (PAPER only)
+ * never costs the other themes anything in the hot loop. */
+static inline void cf_draw_span(uint16_t *row, const cf_card_t *c, int dy,
+                                int from, int to)
+{
+    for (int dx = from; dx < to; dx++) {
+        int col = dx - c->x_start;
+        int rel = dy - c->ytop[col];
+        int h   = c->hcol[col];
+        if ((unsigned)rel >= (unsigned)h) continue;
+        int sy = (rel * c->vstep[col]) >> 16;
+        row[dx] = c->src[(size_t)sy * (size_t)c->src_w + (size_t)c->srcx[col]];
+    }
+}
+
+/* PAPER variant: adds the 2px ink frame (verticals + top/bottom). */
+static inline void cf_draw_span_frame(uint16_t *row, const cf_card_t *c, int dy,
+                                      int from, int to, uint16_t frame_px)
+{
+    for (int dx = from; dx < to; dx++) {
+        int col = dx - c->x_start;
+        int rel = dy - c->ytop[col];
+        int h   = c->hcol[col];
+        if ((unsigned)rel >= (unsigned)h) continue;
+
+        if (col < 2 || c->w_disp - 1 - col < 2 || rel < 2 || h - 1 - rel < 2) {
+            row[dx] = frame_px;
+        } else {
+            int sy = (rel * c->vstep[col]) >> 16;
+            row[dx] = c->src[(size_t)sy * (size_t)c->src_w + (size_t)c->srcx[col]];
         }
     }
 }
 
-/* PAPER Cover Flow duotone: dither the finished canvas IN PLACE, after all the
- * trapezoids have been drawn from RAW covers. Dithering post-projection puts
- * the halftone grain exactly 1px on screen -- sampling the pre-dithered thumb
- * pool through the perspective remap smeared the pattern into grey mush (the
- * old "not stylised" look). Background pixels (the clear colour) are skipped so
- * the empty paper stays clean instead of picking up threshold speckle. */
-static void cf_paper_dither(uint16_t bg_px)
+/* Row-major compositor: builds the whole frame in one top-to-bottom pass.
+ * Each 1600-byte canvas row is background-filled, then cards are sampled
+ * into it NEAREST-FIRST, each clipped to the span not already covered by a
+ * nearer card -- so occluded card pixels are never computed at all (the
+ * far->near painter version spent ~half its per-pixel work on pixels the
+ * centre covers immediately overdrew; hardware cf_prof showed comp tracking
+ * FPS nearly 1:1). The row stays in cache throughout and flushes to PSRAM
+ * exactly once per frame.
+ *
+ * The covered region per row is a single interval: the converging fan makes
+ * neighbouring cards always overlap horizontally (step 110 px < card width),
+ * and the canonical geometry guarantees a nearer card fully occludes the
+ * strip it overlaps -- its tall OUTER edge overlaps the farther card's short
+ * INNER edge, so the farther card never peeks above/below within the overlap.
+ * (With CF_LEAN_FLIP=1 that guarantee inverts and a farther card's tall edge
+ * could theoretically peek; the emergency flip trades that sliver of overlap
+ * accuracy for speed.)  A card's full clipped x-span is marked covered even
+ * where its own bounds test leaves background showing: those pixels are
+ * either under a still-nearer card (already covered) or above/below every
+ * card's reach (background either way).
+ *
+ * Folded-in per-pixel work, identical to the old separate passes:
+ *  - PAPER ink frame (cf_draw_span): drawn INTO the canvas so it
+ *    turns/foreshortens with the trapezoid (an LVGL border can't follow
+ *    this). With themed art the frame is laid down black -- minimum
+ *    luminance dithers to solid ink in BOTH palette faces; with themed art
+ *    off it's the ink colour directly.
+ *  - PAPER duotone (themed art): dithering post-projection puts the halftone
+ *    grain exactly 1px on screen -- sampling the pre-dithered thumb pool
+ *    through the perspective remap smeared the pattern into grey mush. Runs
+ *    as a second in-row pass over the covered interval after the cards, so
+ *    only FINAL visible pixels are dithered, once. Background pixels
+ *    (== bg_px) are skipped -- light PAPER palette on both faces, see
+ *    paperize_rgb565 -- exactly the old whole-canvas post-pass semantics. */
+static void cf_compose(int n_cards, uint16_t bg_px)
 {
-    /* Light PAPER palette always (see paperize_rgb565): covers stay cream+ink on
-     * both faces. Empty canvas pixels (== bg_px clear colour) are still skipped. */
-    uint32_t ink = THEME_PAPER.text, pap = THEME_PAPER.bg;
-    uint16_t ink_px = rgb888_to_565(ink);
-    uint16_t pap_px = rgb888_to_565(pap);
-    for (int dy = 0; dy < CF_PERSP_H; dy++) {
-        uint16_t *row = s_cf_buf + (size_t)dy * CF_PERSP_W;
-        for (int dx = 0; dx < CF_PERSP_W; dx++) {
-            uint16_t pix = row[dx];
-            if (pix == bg_px) continue;
-            int r = ((pix >> 11) & 0x1F) << 3;
-            int g = ((pix >>  5) & 0x3F) << 2;
-            int b = ( pix        & 0x1F) << 3;
-            int lum = (r * 299 + g * 587 + b * 114) / 1000;
-            int thr = k_bayer8[dy & 7][dx & 7] * 4 + 2;
-            row[dx] = (lum > thr) ? pap_px : ink_px;
+    bool     frame    = is_paper_theme();
+    uint16_t frame_px = s_theme_art ? 0x0000 : rgb888_to_565(s_th->text);
+    bool     duo      = is_paper_theme() && s_theme_art;
+    uint16_t ink_px   = rgb888_to_565(THEME_PAPER.text);
+    uint16_t pap_px   = rgb888_to_565(THEME_PAPER.bg);
+    uint32_t bg_px32  = ((uint32_t)bg_px << 16) | bg_px;
+
+    /* Lazy-build the duotone luma LUT (exact same integer maths per entry as
+     * the inline fallback below -- identical output, ~3x fewer cycles/px). */
+    if (duo && !s_cf_lum) {
+        s_cf_lum = heap_caps_malloc(65536, MALLOC_CAP_SPIRAM);
+        if (s_cf_lum) {
+            for (uint32_t px = 0; px < 65536; px++) {
+                int r = ((px >> 11) & 0x1F) << 3;
+                int g = ((px >>  5) & 0x3F) << 2;
+                int b = ( px        & 0x1F) << 3;
+                s_cf_lum[px] = (uint8_t)((r * 299 + g * 587 + b * 114) / 1000);
+            }
         }
     }
+
+#define CF_SPAN(f, t) do {                                              \
+        if (frame) cf_draw_span_frame(row, c, dy, (f), (t), frame_px);  \
+        else       cf_draw_span(row, c, dy, (f), (t));                  \
+    } while (0)
+
+    for (int dy = 0; dy < CF_PERSP_H; dy++) {
+        uint16_t *row = s_cf_buf + (size_t)dy * CF_PERSP_W;
+
+        /* Background fill: 32-bit stores, row width is even. The row stays in
+         * cache through the card sampling below and flushes to PSRAM once. */
+        uint32_t *r32 = (uint32_t *)row;
+        for (int k = 0; k < CF_PERSP_W / 2; k++) r32[k] = bg_px32;
+
+        /* Cards nearest-first (s_cf_cards is prepped far->near, so walk it
+         * backwards), clipping each to the not-yet-covered span. */
+        int cov0 = CF_PERSP_W, cov1 = 0;   /* covered interval, empty */
+        for (int n = n_cards - 1; n >= 0; n--) {
+            const cf_card_t *c = &s_cf_cards[n];
+            if (dy < c->y_lo || dy >= c->y_hi) continue;
+            int x0 = c->x_start, x1 = c->x_start + c->w_disp;
+            if (x0 < 0) x0 = 0;
+            if (x1 > CF_PERSP_W) x1 = CF_PERSP_W;
+            if (x0 >= x1) continue;
+
+            if (cov1 <= cov0) {
+                CF_SPAN(x0, x1);
+                cov0 = x0; cov1 = x1;
+            } else {
+                if (x0 < cov0) CF_SPAN(x0, (x1 < cov0 ? x1 : cov0));
+                if (x1 > cov1) CF_SPAN((x0 > cov1 ? x0 : cov1), x1);
+                if (x0 < cov0) cov0 = x0;
+                if (x1 > cov1) cov1 = x1;
+            }
+            if (cov0 <= 0 && cov1 >= CF_PERSP_W) break;   /* row fully covered */
+        }
+
+        if (duo && cov1 > cov0) {
+            const uint8_t *bay = k_bayer8[dy & 7];
+            if (s_cf_lum) {
+                for (int dx = cov0; dx < cov1; dx++) {
+                    uint16_t px = row[dx];
+                    if (px == bg_px) continue;
+                    row[dx] = (s_cf_lum[px] > bay[dx & 7] * 4 + 2) ? pap_px : ink_px;
+                }
+            } else {   /* LUT alloc failed: inline maths, same result */
+                for (int dx = cov0; dx < cov1; dx++) {
+                    uint16_t px = row[dx];
+                    if (px == bg_px) continue;
+                    int r = ((px >> 11) & 0x1F) << 3;
+                    int g = ((px >>  5) & 0x3F) << 2;
+                    int b = ( px        & 0x1F) << 3;
+                    int lum = (r * 299 + g * 587 + b * 114) / 1000;
+                    row[dx] = (lum > bay[dx & 7] * 4 + 2) ? pap_px : ink_px;
+                }
+            }
+        }
+    }
+#undef CF_SPAN
 }
 
 /* GLYPH Cover Flow dot-matrix: convert the finished canvas to colour dots IN
@@ -2224,58 +2436,50 @@ static void cf_glyph_dither(uint16_t bg_px)
 }
 
 /* When the FPS readout is on, log a periodic breakdown of where each Cover Flow
- * scroll frame spends its time -- the full-canvas clear vs. the per-card
- * perspective rasterise -- so the render path can be profiled on hardware
- * without a debugger. Zero cost unless FPS display is enabled. */
+ * scroll frame spends its time -- the per-card column-table prep vs. the
+ * row-major composite (bg fill + card sampling + inline dithers) -- so the
+ * render path can be profiled on hardware without a debugger. Zero cost unless
+ * FPS display is enabled. Compare against the pre-rewrite clear/rast numbers
+ * to validate the 2026-07-02 row-major rewrite. */
 static void cf_profile_tick(int64_t t0, int64_t t1, int64_t t2)
 {
-    static uint64_t acc_clear, acc_rast;
+    static uint64_t acc_prep, acc_comp;
     static uint32_t acc_n;
-    acc_clear += (uint64_t)(t1 - t0);
-    acc_rast  += (uint64_t)(t2 - t1);
+    acc_prep += (uint64_t)(t1 - t0);
+    acc_comp += (uint64_t)(t2 - t1);
     if (++acc_n >= 30) {
-        s_cf_clear_us = (uint32_t)(acc_clear / acc_n);
-        s_cf_rast_us  = (uint32_t)(acc_rast / acc_n);
-        s_cf_frame_us = (uint32_t)((acc_clear + acc_rast) / acc_n);
-        ESP_LOGI(TAG, "cf_prof: clear=%lu us  rast=%lu us  frame=%lu us  (avg/%lu)",
-                 (unsigned long)s_cf_clear_us,
-                 (unsigned long)s_cf_rast_us,
+        s_cf_prep_us  = (uint32_t)(acc_prep / acc_n);
+        s_cf_comp_us  = (uint32_t)(acc_comp / acc_n);
+        s_cf_frame_us = (uint32_t)((acc_prep + acc_comp) / acc_n);
+        ESP_LOGI(TAG, "cf_prof: prep=%lu us  comp=%lu us  frame=%lu us  (avg/%lu)",
+                 (unsigned long)s_cf_prep_us,
+                 (unsigned long)s_cf_comp_us,
                  (unsigned long)s_cf_frame_us,
                  (unsigned long)acc_n);
-        acc_clear = acc_rast = 0;
+        acc_prep = acc_comp = 0;
         acc_n = 0;
     }
 }
 
 static void cf_render(void)
 {
-    if (!s_cf_buf || !s_cf_img || !s_browser_scroller) return;
+    if (!s_cf_buf || !s_cf_img || !s_browser_scroller || !s_cf_cards) return;
 
     int64_t t_prof0 = s_fps_enabled ? esp_timer_get_time() : 0;
 
-    /* Clear canvas to theme background (convert 0xRRGGBB → RGB565).
-     * Use 32-bit writes (two pixels at once) -- halves the number of stores
-     * into the 462 KB PSRAM canvas compared to 16-bit writes. Canvas pixel
-     * count is always even (both W and H are multiples of 2). */
-    uint32_t bg    = s_th->bg;
-    uint16_t bg_px = rgb888_to_565(bg);
-    uint32_t bg_px32 = ((uint32_t)bg_px << 16) | bg_px;
-    uint32_t *p32 = (uint32_t *)s_cf_buf;
-    uint32_t *end32 = p32 + (size_t)CF_PERSP_W * CF_PERSP_H / 2;
-    while (p32 < end32) *p32++ = bg_px32;
-
-    int64_t t_prof1 = s_fps_enabled ? esp_timer_get_time() : 0;
+    uint16_t bg_px   = rgb888_to_565(s_th->bg);
+    int      n_cards = 0;
 
     int32_t scroll_x = lv_obj_get_scroll_left(s_browser_scroller);
     int32_t pad_left = (SCREEN_W - cs()) / 2;
     int32_t step     = cs() + cg();
     int32_t scr_cx   = SCREEN_W / 2;
 
-    /* Draw farthest cards first and the centre card last, so each nearer cover
-     * paints over the turned cover behind it -- correct iPod z-order on BOTH
-     * sides (the old index-order passes drew right-side covers back-to-front).
-     * Two pointers walk inward from the extremes, always drawing the one with
-     * the larger distance-from-centre next. */
+    /* Collect cards sorted by distance from centre, farthest first: two
+     * pointers walk inward from the extremes, always taking the one with the
+     * larger distance next. cf_compose consumes the list BACKWARDS (nearest
+     * first) and clips each card to the uncovered span, which yields the
+     * correct iPod z-order on BOTH sides without drawing occluded pixels. */
     int lo = 0, hi = (int)s_card_count - 1;
     while (lo <= hi) {
         int32_t cx_lo = pad_left + (int32_t)lo * step + cs() / 2 - scroll_x;
@@ -2313,23 +2517,27 @@ static void cf_render(void)
             src_w = PIX_THUMB_RES;
             src_h = PIX_THUMB_RES;
         } else {
-            /* RAW covers (PSRAM copy when available -- the per-column sampling
-             * below is exactly the read pattern that hurts through the flash
-             * cache). PAPER also renders RAW here: the duotone happens in one
-             * whole-canvas pass below, AFTER projection, so the grain stays
-             * 1px (sampling the pre-dithered pool through the perspective
-             * remap smeared it grey). */
+            /* RAW covers (PSRAM copy when available -- the perspective
+             * sampling in cf_compose is exactly the read pattern that hurts
+             * through the flash cache). PAPER also renders RAW here: the
+             * duotone is applied per pixel inside cf_compose, AFTER
+             * projection, so the grain stays 1px (sampling the pre-dithered
+             * pool through the perspective remap smeared it grey). */
             src   = thumb_src(i);
             src_w = ALBUM_THUMB_W;
             src_h = ALBUM_THUMB_H;
         }
         if (!src) continue;
 
-        cf_render_card(card_cx, dist_norm, src, src_w, src_h);
+        if (n_cards < CF_CARDS_MAX)
+            cf_prep_card(&s_cf_cards[n_cards++], card_cx, dist_norm,
+                         src, src_w, src_h);
     }
 
-    if (is_paper_theme() && s_theme_art)      cf_paper_dither(bg_px);
-    else if (is_glyph_theme() && s_theme_art) cf_glyph_dither(bg_px);
+    int64_t t_prof1 = s_fps_enabled ? esp_timer_get_time() : 0;
+
+    cf_compose(n_cards, bg_px);
+    if (is_glyph_theme() && s_theme_art) cf_glyph_dither(bg_px);
 
     if (s_fps_enabled) cf_profile_tick(t_prof0, t_prof1, esp_timer_get_time());
 
@@ -2341,6 +2549,20 @@ static void cf_init(lv_obj_t *screen)
     s_cf_buf = heap_caps_malloc((size_t)CF_PERSP_W * CF_PERSP_H * 2, MALLOC_CAP_SPIRAM);
     if (!s_cf_buf) { ESP_LOGW(TAG, "cf_init: PSRAM alloc failed"); return; }
     memset(s_cf_buf, 0, (size_t)CF_PERSP_W * CF_PERSP_H * 2);
+
+    /* Card scratch: internal SRAM preferred (the tables are read per composited
+     * pixel); PSRAM fallback keeps Cover Flow working if internal is tight. */
+    s_cf_cards = heap_caps_malloc(sizeof(cf_card_t) * CF_CARDS_MAX,
+                                  MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_cf_cards)
+        s_cf_cards = heap_caps_malloc(sizeof(cf_card_t) * CF_CARDS_MAX,
+                                      MALLOC_CAP_SPIRAM);
+    if (!s_cf_cards) {
+        ESP_LOGW(TAG, "cf_init: card scratch alloc failed");
+        free(s_cf_buf);
+        s_cf_buf = NULL;
+        return;
+    }
 
     s_cf_dsc.header.cf   = LV_COLOR_FORMAT_RGB565;
     s_cf_dsc.header.w    = CF_PERSP_W;
@@ -2354,15 +2576,19 @@ static void cf_init(lv_obj_t *screen)
     lv_obj_remove_flag(s_cf_img, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_image_set_antialias(s_cf_img, false);
 
-    ESP_LOGI(TAG, "cf_init: %u B PSRAM", (unsigned)((size_t)CF_PERSP_W * CF_PERSP_H * 2));
+    ESP_LOGI(TAG, "cf_init: %u B PSRAM canvas + %u B card scratch",
+             (unsigned)((size_t)CF_PERSP_W * CF_PERSP_H * 2),
+             (unsigned)(sizeof(cf_card_t) * CF_CARDS_MAX));
 }
 
 static void cf_deinit(void)
 {
     /* s_cf_img is a child of s_screen_browser which is deleted by the caller;
-     * just null our reference.  Free the PSRAM backing buffer explicitly. */
+     * just null our reference.  Free the backing buffers explicitly. */
     s_cf_img = NULL;
-    if (s_cf_buf) { free(s_cf_buf); s_cf_buf = NULL; }
+    if (s_cf_buf)   { free(s_cf_buf);   s_cf_buf   = NULL; }
+    if (s_cf_cards) { free(s_cf_cards); s_cf_cards = NULL; }
+    if (s_cf_lum)   { free(s_cf_lum);   s_cf_lum   = NULL; }
     memset(&s_cf_dsc, 0, sizeof s_cf_dsc);
 }
 
@@ -4675,8 +4901,8 @@ static void ui_log_stats(void)
     ESP_LOGI(TAG, "fps=%lu (frames/s while animating; idle is low by design)",
              (unsigned long)s_fps_last_rate);
     if (s_cf_frame_us)
-        ESP_LOGI(TAG, "cf_prof: clear=%lu us rast=%lu us frame=%lu us",
-                 (unsigned long)s_cf_clear_us, (unsigned long)s_cf_rast_us,
+        ESP_LOGI(TAG, "cf_prof: prep=%lu us comp=%lu us frame=%lu us",
+                 (unsigned long)s_cf_prep_us, (unsigned long)s_cf_comp_us,
                  (unsigned long)s_cf_frame_us);
     else
         ESP_LOGI(TAG, "cf_prof: n/a (set browser to Cover Flow and flick-scroll to measure)");

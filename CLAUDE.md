@@ -450,17 +450,24 @@ Deferred work (do after hardware is confirmed stable):
   that swaps to the RAM path with LittleFS still mounted, for a clean on-device
   A/B test; at =1, if every cover decodes cleanly, the LittleFS + vfs dependency
   (and the 4 MB `storage` partition) can then be removed for real.
-- **Cover Flow scroll cost is memory-bandwidth bound, not compute bound**
-  (2026-06-14 perf review). `cf_draw_col` writes `s_cf_buf` column-major (1600-byte
-  stride per pixel) against a 128-byte L2 line and ~185 MB/s PSRAM, so the
-  per-pixel divide is secondary to the access pattern, and the unconditional
-  per-frame full-canvas clear (473 KB) is pure overhead. PROFILE before
-  restructuring: `cf_render` logs a clear-vs-rasterise breakdown when FPS display
-  is on (`cf_profile_tick`, gated on `s_fps_enabled`, zero cost otherwise). The
-  real levers are a cache-friendly rasterise (scratch-tile / row-major) and
-  trimming the clear — both profile-gated. NOT levers: CPU is already maxed
-  (360 MHz is the P4's IDF ceiling and the unset default), build config is optimal
-  (PSRAM 200 MHz, -O2, 256 KB L2), panel caps at 60 Hz, PSRAM is ~70 % free.
+- **Cover Flow scroll — row-major rewrite LANDED + HARDWARE-VERIFIED
+  2026-07-02** (three profiled iterations on device). The scroll was
+  PSRAM-bandwidth bound; the rewrite builds each frame in ONE row-major pass:
+  `cf_prep_card` fills per-column trapezoid tables (internal-SRAM scratch,
+  ~23 KB) once per frame; `cf_compose` background-fills each row and samples
+  cards NEAREST-FIRST with a covered-span clip (occluded pixels never
+  computed), all while the row is cache-hot, so each canvas pixel hits PSRAM
+  once. Per-pixel divide -> fixed-point multiply; PAPER ink frame + duotone
+  folded in-row (duotone via a lazy 64 KB RGB565->luma LUT; frame test split
+  out of the non-PAPER hot loop). Geometry math verbatim from the old
+  renderer. Measured comp: BASIC 29->17.5 ms (19->23 FPS), PAPER
+  52-55->31-33 ms (12->16-18 FPS); prep ~0.35 ms. `cf_profile_tick` logs
+  `prep`/`comp`. Remaining levers (parked in P4-TODO): the downstream
+  ~24-27 ms LVGL blit + PPA rotate + DSI flush now dominates; frame times
+  quantise to LV_DEF_REFR_PERIOD=15 ms buckets; GLYPH's dot pass is still a
+  whole-canvas post-pass. NOT levers: CPU is already maxed (360 MHz is the
+  P4's IDF ceiling and the unset default), build config is optimal (PSRAM
+  200 MHz, -O2, 256 KB L2), panel caps at 60 Hz, PSRAM is ~70 % free.
 
 PPA rotation — ALREADY ENABLED (do not re-list as a TODO): the vendored BSP
 hardcodes `.enable_ppa_accel = true` in `bsp_display_lcd_init`
