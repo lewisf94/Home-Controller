@@ -1020,7 +1020,16 @@ static void rebake_card_tile(size_t i)
     lv_obj_invalidate(s_card_imgs[i]);
 }
 
-static void build_browser_screen(void)
+/* build_browser_screen helpers -- extracted 2026-07-05 for readability (pure
+ * mechanical split, no behaviour change). Each does exactly what its block
+ * used to do inline; all state is the same file-scope statics as before, so
+ * calling them in the ORIGINAL TEXTUAL ORDER from build_browser_screen below
+ * reproduces the original object-creation / z-order exactly. Do not reorder
+ * the calls in build_browser_screen without re-checking the z-order notes
+ * inline below (PAPER furniture vs scroller, selection line vs WiFi bars,
+ * gear/devices button pair sharing tb_y). */
+
+static void browser_reset_transform_cache(void)
 {
     /* Cards are recreated below: invalidate the FOCUS transform cache so the
      * first apply_card_transforms pass writes every card once. */
@@ -1028,33 +1037,10 @@ static void build_browser_screen(void)
         s_card_scale_last[i] = -1;
         s_card_dim_last[i]   = -1;
     }
+}
 
-    s_screen_browser = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_screen_browser, lv_color_hex(s_th->bg), 0);
-    lv_obj_set_style_bg_opa(s_screen_browser, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(s_screen_browser, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_screen_browser, on_gesture, LV_EVENT_GESTURE, NULL);
-
-    s_browser_scroller = lv_obj_create(s_screen_browser);
-    lv_obj_set_size(s_browser_scroller, SCREEN_W, SCROLLER_H);
-    lv_obj_set_pos(s_browser_scroller, 0, SCROLLER_Y);
-    lv_obj_set_style_bg_color(s_browser_scroller, lv_color_hex(s_th->bg), 0);
-    lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_browser_scroller, 0, 0);
-    lv_obj_set_style_pad_top(s_browser_scroller, 0, 0);
-    lv_obj_set_style_pad_bottom(s_browser_scroller, 0, 0);
-    /* Pad left/right so the first and last cards can fully snap to centre. */
-    lv_obj_set_style_pad_left (s_browser_scroller, (SCREEN_W - cs()) / 2, 0);
-    lv_obj_set_style_pad_right(s_browser_scroller, (SCREEN_W - cs()) / 2, 0);
-    lv_obj_set_style_pad_column(s_browser_scroller, cg(), 0);
-    lv_obj_set_flex_flow(s_browser_scroller, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(s_browser_scroller, LV_FLEX_ALIGN_START,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_scroll_dir(s_browser_scroller, LV_DIR_HOR);
-    lv_obj_set_scrollbar_mode(s_browser_scroller, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_scroll_snap_x(s_browser_scroller, LV_SCROLL_SNAP_CENTER);
-    lv_obj_add_event_cb(s_browser_scroller, on_browser_scroll, LV_EVENT_SCROLL, NULL);
-
+static void browser_resolve_card_count(void)
+{
     s_card_count = albums_count();
     if (s_card_count > MAX_CARDS) {
         size_t total = albums_count();
@@ -1082,7 +1068,10 @@ static void build_browser_screen(void)
         const uint16_t *__t = album_thumb_data(__j);
         ESP_LOGD(TAG, "thumb[%zu]=%p", __j, (const void *)__t);
     }
+}
 
+static void browser_alloc_thumb_pools(void)
+{
     /* One-time PSRAM copy of the raw embedded thumbs (see the pool note at the
      * declarations). Feeds the Cover Flow rasteriser, the PIXEL pixelate pass
      * and the card pool below without flash XIP reads. */
@@ -1175,7 +1164,10 @@ static void build_browser_screen(void)
             else ESP_LOGW(TAG, "GLYPH: fallback thumb pool alloc failed (%zu B)", pool_sz);
         }
     }
+}
 
+static void browser_build_cards(void)
+{
     for (size_t i = 0; i < s_card_count; i++) {
         const album_entry_t *a    = albums_get(i);
         const uint16_t      *thumb = album_thumb_data(i);
@@ -1284,7 +1276,10 @@ static void build_browser_screen(void)
 
         s_cards[i] = card;
     }
+}
 
+static void browser_build_title_labels(void)
+{
     bool cf = (s_browser_style == BROWSER_COVERFLOW);
     s_browser_title = lv_label_create(s_screen_browser);
     style_label(s_browser_title, font_lg(),
@@ -1314,7 +1309,10 @@ static void build_browser_screen(void)
         lv_label_set_text(s_browser_artist,
                           "edit spotify-albums-list.txt + reflash");
     }
+}
 
+static void browser_setup_coverflow(void)
+{
     /* CF perspective mode: make scroller transparent, hide the LVGL card images
      * (scroll physics still use the flex layout), then init the PSRAM canvas.
      * Must happen before apply_card_transforms() which calls cf_render().
@@ -1338,7 +1336,10 @@ static void build_browser_screen(void)
     }
     /* Apply initial transforms (CF calls cf_render; Focus uses image scales). */
     apply_card_transforms();
+}
 
+static void browser_build_paper_furniture(void)
+{
     /* PAPER printed-form furniture. The frame is created after the scroller so
      * its border paints over cards sliding past the screen edge -- covers run
      * "under" the printed frame. The index counter is the data-sheet "NN / NN"
@@ -1362,7 +1363,10 @@ static void build_browser_screen(void)
         snprintf(ib, sizeof ib, "%02d / %02d", s_card_count ? 1 : 0, (int)s_card_count);
         lv_label_set_text(s_br_index_lbl, ib);
     }
+}
 
+static void browser_build_selection_line(void)
+{
     /* Selection marker: a short accent underline fixed beneath the centred card
      * slot (cards always centre-snap to the screen middle), so the active album
      * is unambiguous even in flat Carousel mode. Toggleable in Settings. */
@@ -1379,7 +1383,10 @@ static void build_browser_screen(void)
     lv_obj_align(s_sel_line, LV_ALIGN_TOP_MID, 0,
                  SCROLLER_Y + SCROLLER_H + k_tune_sel_dy[s_mode]);
     if (!s_show_sel_line) lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
+}
 
+static void browser_build_wifi_bars(void)
+{
     /* WiFi-strength indicator: rising bars normally; orbiting dot cluster for Glyph. */
     memset(s_wifi_bars, 0, sizeof s_wifi_bars);
     if (!is_glyph_theme()) {
@@ -1404,7 +1411,10 @@ static void build_browser_screen(void)
             s_wifi_bars[i] = bar;
         }
     }
+}
 
+static void browser_build_fps_label(void)
+{
     /* Live FPS readout: sits right of the WiFi bars in the top strip.
      * Hidden unless s_fps_enabled; updated every second by fps_timer_cb. */
     s_fps_label = lv_label_create(s_screen_browser);
@@ -1415,7 +1425,10 @@ static void build_browser_screen(void)
                  k_tune_fps_x[s_mode], k_tune_fps_y[s_mode]);
     lv_obj_remove_flag(s_fps_label, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     if (!s_fps_enabled) lv_obj_add_flag(s_fps_label, LV_OBJ_FLAG_HIDDEN);
+}
 
+static void browser_build_hint_pill(void)
+{
     /* Tappable "now playing" hint pill at the bottom edge (matches the "albums"
      * pill on now-playing). Tap or swipe up to open now-playing. Bounces once on
      * first boot to advertise the gesture. */
@@ -1434,7 +1447,10 @@ static void build_browser_screen(void)
         lv_anim_set_path_cb(&a, lv_anim_path_bounce);
         lv_anim_start(&a);
     }
+}
 
+static void browser_build_top_buttons(void)
+{
     /* Gear button (top-right) -> settings. Sits in the empty strip above the
      * carousel so it never overlaps a card. A cog glyph (LV_SYMBOL_SETTINGS,
      * 0xF013) -- the universal settings affordance, rendered via font_icon()
@@ -1488,14 +1504,60 @@ static void build_browser_screen(void)
     lv_obj_center(devlbl);
 }
 
-static void build_np_screen(void)
+static void build_browser_screen(void)
 {
-    s_screen_np = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_screen_np, lv_color_hex(s_th->bg), 0);
-    lv_obj_set_style_bg_opa(s_screen_np, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(s_screen_np, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_screen_np, on_gesture, LV_EVENT_GESTURE, NULL);
+    browser_reset_transform_cache();
 
+    s_screen_browser = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_browser, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(s_screen_browser, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_browser, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_screen_browser, on_gesture, LV_EVENT_GESTURE, NULL);
+
+    s_browser_scroller = lv_obj_create(s_screen_browser);
+    lv_obj_set_size(s_browser_scroller, SCREEN_W, SCROLLER_H);
+    lv_obj_set_pos(s_browser_scroller, 0, SCROLLER_Y);
+    lv_obj_set_style_bg_color(s_browser_scroller, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(s_browser_scroller, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_browser_scroller, 0, 0);
+    lv_obj_set_style_pad_top(s_browser_scroller, 0, 0);
+    lv_obj_set_style_pad_bottom(s_browser_scroller, 0, 0);
+    /* Pad left/right so the first and last cards can fully snap to centre. */
+    lv_obj_set_style_pad_left (s_browser_scroller, (SCREEN_W - cs()) / 2, 0);
+    lv_obj_set_style_pad_right(s_browser_scroller, (SCREEN_W - cs()) / 2, 0);
+    lv_obj_set_style_pad_column(s_browser_scroller, cg(), 0);
+    lv_obj_set_flex_flow(s_browser_scroller, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_browser_scroller, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scroll_dir(s_browser_scroller, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(s_browser_scroller, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_snap_x(s_browser_scroller, LV_SCROLL_SNAP_CENTER);
+    lv_obj_add_event_cb(s_browser_scroller, on_browser_scroll, LV_EVENT_SCROLL, NULL);
+
+    browser_resolve_card_count();
+    browser_alloc_thumb_pools();
+    browser_build_cards();
+    browser_build_title_labels();
+    browser_setup_coverflow();
+    browser_build_paper_furniture();
+    browser_build_selection_line();
+    browser_build_wifi_bars();
+    browser_build_fps_label();
+    browser_build_hint_pill();
+    browser_build_top_buttons();
+}
+
+/* build_np_screen helpers -- extracted 2026-07-05 for readability (pure
+ * mechanical split, no behaviour change). Same rule as the browser-screen
+ * helpers above: identical file-scope statics, called in the ORIGINAL
+ * TEXTUAL ORDER from build_np_screen below, so object creation / z-order is
+ * unchanged. Two explicit order dependencies to preserve if this is ever
+ * reordered: PAPER chrome must be first (prints behind everything), and the
+ * transport keys must be created after the seek overlay (hit-test priority
+ * where the two touch zones overlap). */
+
+static void np_build_paper_chrome(void)
+{
     /* PAPER printed-form furniture: outer ink frame + horizontal rules dividing
      * the sheet into its zones (top bar / art + data fields / title block).
      * Created first so every functional element prints on top of the rules. */
@@ -1507,13 +1569,19 @@ static void build_np_screen(void)
          * ART_H ran through the border stroke instead of clearing it. */
         paper_rule(s_screen_np, 8, ART_Y + ART_H + 4, SCREEN_W - 16, 1);
     }
+}
 
+static void np_build_hint_pill(void)
+{
     /* Tappable "albums" hint pill at the top (matches the "now playing" pill on
      * the browser). Tap or swipe down to go back to the browser. */
     lv_obj_t *hint = make_hint_pill(s_screen_np, LV_SYMBOL_DOWN "  ALBUMS",
                                     on_hint_to_browser);
     lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 6);
+}
 
+static void np_build_art(void)
+{
     /* Tap anywhere on the screen to play/pause. The art widget would intercept
      * taps before they reach the screen, so mark it non-clickable. */
     lv_obj_add_event_cb(s_screen_np, on_np_tap, LV_EVENT_CLICKED, NULL);
@@ -1538,7 +1606,10 @@ static void build_np_screen(void)
     if (s_art_dsc && s_art_dsc->data) {
         lv_image_set_src(s_np_art, s_art_dsc);
     }
+}
 
+static void np_build_title_artist(void)
+{
     s_np_title = lv_label_create(s_screen_np);
     lv_obj_set_style_text_letter_space(s_np_title, k_tune_title_lsp[s_mode], 0);
     style_label(s_np_title, font_lg(),
@@ -1553,7 +1624,10 @@ static void build_np_screen(void)
     s_np_artist = lv_label_create(s_screen_np);
     style_label(s_np_artist, font_md(),
                 lv_color_hex(s_th->text2), NP_ARTIST_Y);
+}
 
+static void np_build_device_label(void)
+{
     s_np_device = lv_label_create(s_screen_np);
     lv_label_set_text(s_np_device, "");
     if (is_paper_theme()) {
@@ -1574,7 +1648,10 @@ static void build_np_screen(void)
         lv_obj_set_style_text_font(s_np_device, font_sm(), 0);
         lv_obj_set_pos(s_np_device, 16, NP_DEVICE_Y);
     }
+}
 
+static void np_build_progress_bar(void)
+{
     s_np_progress = lv_bar_create(s_screen_np);
     lv_obj_set_size(s_np_progress, PROG_W, PROG_H);
     lv_obj_set_pos(s_np_progress, PROG_X, PROG_Y);
@@ -1587,7 +1664,10 @@ static void build_np_screen(void)
     lv_obj_set_style_radius(s_np_progress, is_paper_theme() ? 0 : 3, LV_PART_MAIN);
     lv_obj_set_style_radius(s_np_progress, is_paper_theme() ? 0 : 3, LV_PART_INDICATOR);
     lv_obj_remove_flag(s_np_progress, LV_OBJ_FLAG_CLICKABLE);
+}
 
+static void np_build_timestamps(void)
+{
     /* Elapsed (left) / remaining (right) timestamps flanking the bar. Montserrat
      * isn't monospaced, so the labels are fixed-width and edge-aligned toward the
      * bar -- the M:SS text shifts at most a pixel as digits change, not the layout. */
@@ -1614,7 +1694,10 @@ static void build_np_screen(void)
     lv_obj_add_flag(s_np_remain, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(s_np_remain, 12);
     lv_obj_add_event_cb(s_np_remain, on_remain_tap, LV_EVENT_CLICKED, NULL);
+}
 
+static void np_build_seek_overlay(void)
+{
     /* Transparent touch overlay on top of the bar. Reads raw finger X to compute
      * seek position and drives lv_bar_set_value directly during drag. The bar
      * stays the visual source of truth and tracks song timing when not seeking. */
@@ -1632,7 +1715,10 @@ static void build_np_screen(void)
     lv_obj_add_event_cb(seek_ov, on_seek_released,     LV_EVENT_PRESS_LOST, NULL);
     /* Absorb CLICKED so it doesn't bubble to on_np_tap (play/pause). */
     lv_obj_add_event_cb(seek_ov, on_seek_click_absorb, LV_EVENT_CLICKED,   NULL);
+}
 
+static void np_build_seek_thumb(void)
+{
     /* Drag thumb: accent knob centred on the bar, hidden until a scrub starts.
      * A plain rounded rect (no transform), so it's safe under the rotated flush. */
     s_seek_thumb = lv_obj_create(s_screen_np);
@@ -1644,7 +1730,10 @@ static void build_np_screen(void)
     lv_obj_remove_flag(s_seek_thumb, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_seek_thumb, LV_OBJ_FLAG_HIDDEN);
     position_seek_thumb(0);
+}
 
+static void np_build_paper_ruler(void)
+{
     /* PAPER ruler: a printed tick scale under the bar (taller tick every 5th,
      * like the reference radio dial) and a solid ink block riding the playhead.
      * The block doubles as the scrub indicator -- the round thumb stays hidden
@@ -1670,7 +1759,10 @@ static void build_np_screen(void)
         lv_obj_set_pos(s_paper_cursor, PROG_X - PAPER_CUR_W / 2,
                        PROG_Y + PROG_H / 2 - PAPER_CUR_H / 2);
     }
+}
 
+static void np_build_transport_keys(void)
+{
     /* Transport keys: prev / play-pause / next. Square flat tactile keys
      * matching the settings buttons (radius 3), with a pressed accent flash.
      * Created after the seek overlay so they win the hit-test where the two
@@ -1704,7 +1796,10 @@ static void build_np_screen(void)
         if (i == 1) s_np_play_lbl = lbl;   /* centre key reflects play state */
     }
     refresh_play_icon();
+}
 
+static void np_build_chevrons(void)
+{
     /* Faint edge chevrons hinting swipe left/right = next/prev. Pure symbol
      * content (like the gear/devices icons), so font_icon() -- not font_sm()
      * -- keeps PAPER off lv_font_mono_16's fallback-metrics mismatch. */
@@ -1719,7 +1814,10 @@ static void build_np_screen(void)
     lv_obj_set_style_text_color(ch_r, lv_color_hex(s_th->dim), 0);
     lv_obj_set_style_text_font(ch_r, font_icon(), 0);
     lv_obj_align(ch_r, LV_ALIGN_RIGHT_MID, -6, -20);
+}
 
+static void np_build_hud_and_toast(void)
+{
     s_vol_hud = lv_label_create(s_screen_np);
     lv_label_set_text(s_vol_hud, "");
     /* The fixed warm alert hues vanish on the light grounds (PAPER cream,
@@ -1744,7 +1842,10 @@ static void build_np_screen(void)
     lv_obj_set_style_text_font(s_toast, font_md(), 0);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+}
 
+static void np_build_volume_fader(void)
+{
     /* Vertical volume fader in the open right column (clear of the art, the
      * remaining-time label below, and the swipe chevron to its right). It
      * reflects the active device's level; the command fires on release (one per
@@ -1818,6 +1919,30 @@ static void build_np_screen(void)
     lv_obj_add_event_cb(s_np_volume, on_vol_changed,  LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_np_volume, on_vol_released, LV_EVENT_RELEASED,      NULL);
     lv_obj_add_event_cb(s_np_volume, on_vol_press_lost, LV_EVENT_PRESS_LOST,  NULL);
+}
+
+static void build_np_screen(void)
+{
+    s_screen_np = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_np, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(s_screen_np, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_np, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_screen_np, on_gesture, LV_EVENT_GESTURE, NULL);
+
+    np_build_paper_chrome();
+    np_build_hint_pill();
+    np_build_art();
+    np_build_title_artist();
+    np_build_device_label();
+    np_build_progress_bar();
+    np_build_timestamps();
+    np_build_seek_overlay();
+    np_build_seek_thumb();
+    np_build_paper_ruler();
+    np_build_transport_keys();
+    np_build_chevrons();
+    np_build_hud_and_toast();
+    np_build_volume_fader();
 }
 
 /* Highlight the active row by accent fill + black text (no checkmark -- the
@@ -3091,13 +3216,19 @@ static lv_obj_t *settings_page(void)
     return p;
 }
 
-static void build_settings_screen(void)
-{
-    s_screen_settings = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_screen_settings, lv_color_hex(s_th->bg), 0);
-    lv_obj_set_style_bg_opa(s_screen_settings, LV_OPA_COVER, 0);
-    lv_obj_set_scrollbar_mode(s_screen_settings, LV_SCROLLBAR_MODE_OFF);
+/* build_settings_screen helpers -- extracted 2026-07-05 for readability (pure
+ * mechanical split, no behaviour change). Same rule as the browser/now-playing
+ * helpers above: same file-scope statics, called in the ORIGINAL TEXTUAL ORDER
+ * from build_settings_screen below. Two explicit order dependencies: the
+ * header band must be created FIRST (drawn behind everything), and the PAPER
+ * form furniture must be added LAST (so scrolled content slides under it, not
+ * over it). settings_build_display_tail() keeps FONT/SELECTION LINE/
+ * BRIGHTNESS/FPS DISPLAY/MENU TRANSITION together because they share one
+ * local (y0, the layout base that shifts when FONT is hidden) -- splitting
+ * further would mean passing y0 across a function boundary for no benefit. */
 
+static void settings_build_header_band(void)
+{
     /* Navigation header band: surface-coloured background behind the title +
      * DISPLAY/SOUND tab row so the top strip reads as navigation, not content.
      * Must be created FIRST (drawn behind all other children). A hairline
@@ -3122,7 +3253,10 @@ static void build_settings_screen(void)
         lv_obj_set_style_radius(div, 0, 0);
         lv_obj_remove_flag(div, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     }
+}
 
+static void settings_build_back_and_title(void)
+{
     lv_obj_t *back = lv_button_create(s_screen_settings);
     lv_obj_set_size(back, 120, 44);
     lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
@@ -3143,7 +3277,10 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
     paper_title_chip(title);
+}
 
+static void settings_build_tabs(void)
+{
     /* Category tabs: one chip per page; tapping one swaps the visible page. */
     static const char *const k_tab_names[SET_TAB_COUNT] = { "DISPLAY", "SOUND" };
     for (int i = 0; i < SET_TAB_COUNT; i++) {
@@ -3160,11 +3297,10 @@ static void build_settings_screen(void)
         s_set_tabs[i]     = chip;
         s_set_tab_lbls[i] = lbl;
     }
+}
 
-    /* ====== DISPLAY: every visual setting on one scrolling page ====== */
-    lv_obj_t *pg_disp = settings_page();
-    s_set_pages[0] = pg_disp;
-
+static void settings_build_display_appearance(lv_obj_t *pg_disp)
+{
     /* DARK/LIGHT face toggle -- a separate axis from MODE: every mode has both
      * faces, this picks which palette of the pair is live. */
     settings_header(pg_disp, "APPEARANCE", 24, 6);
@@ -3181,7 +3317,10 @@ static void build_settings_screen(void)
         s_dl_btns[i]   = btn;
         s_dl_labels[i] = lbl;
     }
+}
 
+static void settings_build_display_theme(lv_obj_t *pg_disp)
+{
     settings_header(pg_disp, "THEME", 24, 102);
     /* 4 design languages in one row, same pitch as the COLOUR swatches. */
     for (int i = 0; i < MODE_COUNT; i++) {
@@ -3197,7 +3336,10 @@ static void build_settings_screen(void)
         s_theme_btns[i]   = btn;
         s_theme_labels[i] = lbl;
     }
+}
 
+static void settings_build_display_theme_art(lv_obj_t *pg_disp)
+{
     /* THEME ALBUM ART directly under MODE (it modifies what MODE does to the
      * covers): OFF keeps real album art while the PIXEL/PAPER chrome stays. */
     settings_header(pg_disp, "THEME ALBUM ART", 24, 198);
@@ -3210,7 +3352,10 @@ static void build_settings_screen(void)
     s_art_toggle_lbl = lv_label_create(s_art_toggle_btn);
     lv_obj_set_style_text_font(s_art_toggle_lbl, font_md(), 0);
     lv_obj_center(s_art_toggle_lbl);
+}
 
+static void settings_build_display_colour(lv_obj_t *pg_disp)
+{
     /* COLOUR: a single row of 8 hues (the DEEP variant) -- values in ui_tune.h. */
     settings_header(pg_disp, "COLOUR", 24, 294);
     for (int col = 0; col < ACCENT_SHOWN_COUNT; col++) {
@@ -3232,7 +3377,10 @@ static void build_settings_screen(void)
         s_accent_btns[i]   = btn;
         s_accent_labels[i] = lbl;
     }
+}
 
+static void settings_build_display_browser_style(lv_obj_t *pg_disp)
+{
     settings_header(pg_disp, "BROWSER STYLE", 24, 498);
     for (int i = 0; i < BROWSER_STYLE_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(pg_disp);
@@ -3246,7 +3394,10 @@ static void build_settings_screen(void)
         s_brstyle_btns[i]   = btn;
         s_brstyle_labels[i] = lbl;
     }
+}
 
+static void settings_build_display_tail(lv_obj_t *pg_disp)
+{
     /* FONT chooser: hidden in GLYPH and PAPER -- those themes' bespoke fonts
      * (round-dot / teletype mono) are fixed and the SANS/SLAB choice doesn't
      * apply. Clear the refs so refresh_font_selection() skips the
@@ -3337,11 +3488,10 @@ static void build_settings_screen(void)
         s_opt_btns[i]   = btn;
         s_opt_labels[i] = lbl;
     }
+}
 
-    /* =============================== SOUND ============================== */
-    lv_obj_t *pg_snd = settings_page();
-    s_set_pages[1] = pg_snd;
-
+static void settings_build_sound_page(lv_obj_t *pg_snd)
+{
     settings_header(pg_snd, "SOUND", 24, 6);
     s_sound_toggle_btn = lv_button_create(pg_snd);
     lv_obj_set_size(s_sound_toggle_btn, 520, 48);
@@ -3397,13 +3547,45 @@ static void build_settings_screen(void)
         s_sndset_btns[i] = btn;
         s_sndset_lbls[i] = lbl;
     }
+}
 
+static void settings_build_paper_chrome(void)
+{
     /* PAPER form furniture goes on LAST so page content scrolling past the
      * bottom edge slides UNDER the printed frame, not over it. */
     if (is_paper_theme()) {
         paper_frame(s_screen_settings);
         paper_rule(s_screen_settings, 8, 108, SCREEN_W - 16, 1);
     }
+}
+
+static void build_settings_screen(void)
+{
+    s_screen_settings = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_settings, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(s_screen_settings, LV_OPA_COVER, 0);
+    lv_obj_set_scrollbar_mode(s_screen_settings, LV_SCROLLBAR_MODE_OFF);
+
+    settings_build_header_band();
+    settings_build_back_and_title();
+    settings_build_tabs();
+
+    /* ====== DISPLAY: every visual setting on one scrolling page ====== */
+    lv_obj_t *pg_disp = settings_page();
+    s_set_pages[0] = pg_disp;
+    settings_build_display_appearance(pg_disp);
+    settings_build_display_theme(pg_disp);
+    settings_build_display_theme_art(pg_disp);
+    settings_build_display_colour(pg_disp);
+    settings_build_display_browser_style(pg_disp);
+    settings_build_display_tail(pg_disp);
+
+    /* =============================== SOUND ============================== */
+    lv_obj_t *pg_snd = settings_page();
+    s_set_pages[1] = pg_snd;
+    settings_build_sound_page(pg_snd);
+
+    settings_build_paper_chrome();
 
     /* Show the active page (preserved across theme rebuilds), hide the rest. */
     if (s_set_tab >= SET_TAB_COUNT) s_set_tab = 0;
@@ -5126,6 +5308,18 @@ int ui_get_volume(void)
     int v = s_track.volume_pct;
     bsp_display_unlock();
     return v;
+}
+
+int ui_get_centered_album_index(void)
+{
+    /* Same pattern as ui_get_volume: lets the knob anchor MENU_ALBUMS to
+     * wherever the browser actually is, instead of assuming album 0. */
+    if (bsp_display_lock(1000) != ESP_OK) {
+        return s_centered_card;
+    }
+    int idx = s_centered_card;
+    bsp_display_unlock();
+    return idx;
 }
 
 static void vol_hud_hide_cb(lv_timer_t *t)
