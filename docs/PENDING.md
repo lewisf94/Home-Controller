@@ -154,17 +154,47 @@ files, but each `main.c` still re-implements the WiFi state machine, the
 non-HA builds) `decode_and_publish_art`. Three near-duplicate copies, ~290
 lines each.
 
-**Plan when revived:**
-- New top-level component (e.g. `components/app_core/`) covering
-  `connectivity.{c,h}` (WiFi + reconnect timer), `cmd_queue.{c,h}` (the
-  command vocabulary), `art_pipeline.{c,h}` (the JPEG scratch path).
-- Per-build `main.c` keeps only board-specific bring-up (BSP/display, NVS
-  init) and the backend-specific dispatch switch.
-- `scmd_type_t` becomes a union (waveshare's 3 Sonos commands sit alongside
-  CYD's 6 commands; unused values are harmless).
+**Landed 2026-07-02, WAVESHARE ONLY** (`waveshare/components/app_core/`,
+`wifi.c` + `art_buffer.c`), needs a hardware flash+verify. Deliberately
+narrower than the original plan sketch below:
+- **WiFi connect + reconnect** (`app_core_wifi_connect()`): both waveshare
+  `main.c`s now share one event handler + 20 s background-reconnect timer.
+  This also fixes a real gap found while mapping the duplication -- the HA
+  build's own WiFi code had NO recovery after its fast retries exhausted (the
+  non-HA build's timer was hardware-verified; HA's absence was a silent
+  drift). An optional `on_first_connect` callback preserves the non-HA
+  build's connect chime; HA passes NULL (unchanged behaviour -- no chime
+  today, not added as a side effect of this refactor).
+- **Art buffer lifecycle** (`art_buffer_alloc/idle/publish`): the
+  double-buffered-PSRAM swap logic was byte-identical between the two
+  builds; extracted. The actual download/decode step (RAM vs LittleFS-file
+  source, Spotify vs HA transport) stays in each `main.c` -- genuinely
+  different, not worth forcing together.
+- **NOT extracted: the command queue / `scmd_type_t` union idea below.**
+  Read both files fully before scoping this: the two structs aren't just a
+  differently-named enum, they're a different SHAPE (`scmd_t` is a flat
+  type+uint32+char[64]; `hcmd_t` is a proper tagged union), the vocabularies
+  only partly overlap (Sonos commands are non-HA-only), and unifying them
+  would mean editing the hot dispatch `switch` in both `spotify_task` and
+  `ha_task` -- the actual "talk to the backend" logic, which only Lewis can
+  verify on hardware. Low value (each queue is already a compact, self
+  contained ~30-90 lines) for real regression risk. Left as-is.
+- **NOT extracted: CYD.** Both CYD-IDF builds are unverified since the
+  `cyd_shared` extraction (see "CYD-IDF builds may not compile until
+  verified" above) -- consolidating scaffolding that includes code no one
+  can currently compile-test was judged too risky. Revisit once CYD
+  verification clears; the waveshare `app_core` component is a reasonable
+  template if CYD's WiFi/art code turns out similar enough.
+- Bonus fix while in the area: HA's `xQueueCreate` for the command queue had
+  no NULL check (the non-HA build already did) -- added, matching the
+  existing PENDING.md reliability item F4 pattern.
 
-**Trigger:** after CYD verification clears, or before the next feature that
-would otherwise need editing the scaffold in three `main.c` files.
+**Verify on hardware:** flash both waveshare targets; confirm WiFi still
+connects normally, and (if you can simulate it -- e.g. turn the AP off after
+boot) that the HA build now recovers via the 20 s background timer instead
+of staying disconnected forever. Confirm album art still displays/updates on
+both builds (buffer lifecycle unchanged in behaviour, only where the code
+lives).
 
 ### 2. CYD auto-dim/sleep (from 2026-05-30 review bucket C)
 

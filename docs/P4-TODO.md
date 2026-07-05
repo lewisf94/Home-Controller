@@ -86,14 +86,43 @@ items, see [`PENDING.md`](PENDING.md).
      (observed FPS = 1000/(n*15)); dropping to 10 is a one-line experiment.
    - GLYPH's dot pass is still a whole-canvas post-pass (+4-8 ms in GLYPH);
      candidate: per-row-band dotting inside cf_compose.
-2. **`app_core` shared component** — extract the ~290 duplicated lines of
-   WiFi state machine / `scmd_t` queue / art pipeline from the per-build
-   `main.c`s (details in PENDING.md "Deferred architecture work").
-3. **Split the big screen-builders** — `build_browser_screen` (~427 L),
-   `build_np_screen`, `build_settings_screen` into helpers; watch draw-order
-   and cross-rebuild dangling pointers (the GLYPH WiFi-dot crash class).
-4. **RP2040 knob firmware pre-flight review** — FOC detent physics, dual-core
-   init ordering, UART framing/ack edge cases — before the PCB arrives.
+2. **`app_core` shared component** — DONE 2026-07-02 (needs hardware flash
+   verify): `waveshare/components/app_core/` now holds the WiFi
+   connect-and-reconnect state machine and the double-buffered art-buffer
+   lifecycle, shared by both waveshare `main.c`s. Also fixed a real gap found
+   while mapping the duplication: the HA build had no WiFi recovery after its
+   fast retries exhausted (non-HA's 20 s background timer was
+   hardware-verified; HA's absence was silent drift) -- HA now gets the same
+   resilience. The command-queue vocabulary was deliberately left
+   per-build (real struct-shape/vocabulary differences, Sonos-only commands,
+   too much dispatch-switch risk for the value); CYD was left out entirely
+   (its builds are unverified since `cyd_shared` -- see item 5). Full
+   rationale in PENDING.md "Deferred architecture work" #1.
+3. **Split the big screen-builders** — DONE 2026-07-05, HARDWARE-VERIFIED
+   (Lewis confirmed the visual pass 2026-07-05: Browser/Now-Playing/Settings
+   look correct in BASIC and PAPER, no draw-order regressions).
+   `build_browser_screen`/`build_np_screen`/`build_settings_screen` split into
+   12/14/11 small helpers respectively, each doing exactly what its block did
+   inline; every helper is called from the parent in the ORIGINAL TEXTUAL
+   ORDER, and all state is the same file-scope statics as before (no new
+   params except `pg_disp`/`pg_snd` in settings, which were always plain
+   locals). Both targets build with BYTE-IDENTICAL binary size to pre-split
+   (0x6eeff0/13% free non-HA, 0x6dc510/14% free HA).
+4. **RP2040 knob firmware pre-flight review** — DONE 2026-07-05, BOTH FINDINGS
+   FIXED (details in `docs/KNOB-NOTES.md` "Pre-flight code review"). (1)
+   `_compute_torque()` didn't unwrap the encoder's 0-2π angle (Volume was
+   guaranteed to hit a torque discontinuity on a full sweep; Now-Playing scrub
+   on any track >2 min; Albums partially self-healed via per-detent re-anchor)
+   -- fixed with a persistent unwrapped-angle accumulator in
+   `rp2040/src/motor_task.cpp`. (2) Albums/Now-Playing anchored to position 0
+   on menu activation instead of the live centred-album-index/playback-position
+   -- fixed via a new `ui_get_centered_album_index()` getter + wiring both
+   menus to their live values in `knob_input.c`. P4-side changes (`ui.c`,
+   `ui.h`, `knob_input.c`) build-verified clean on both waveshare targets,
+   byte-identical binary size. The RP2040 fix (`motor_task.cpp`) could NOT be
+   compile-checked -- no PlatformIO in this environment -- read it carefully
+   and watch for build errors on the first `pio run`; KNOB-NOTES.md has a
+   specific first-flash sanity check (sweep Volume 0->100, no torque kick).
 5. **CYD resurrection** — compile-verify both CYD-IDF builds (untested since
    the `cyd_shared` extraction) and port back the waveshare-only fixes
    (429 Retry-After holdoff, `RESP_INITIAL_CAP=16K`).
@@ -188,12 +217,11 @@ to PENDING.md. The one actionable runtime gap (B, the Sonos stall) is now fixed
 
 From the 2026-06-15 readability pass. The two clearly-safe wins shipped
 (`2917fca`: NVS `save_*` dedup -> one `nvs_save_u8` helper; the RGB565-packing
-expression at 6 sites -> the existing `rgb888_to_565`). These were DEFERRED
-because they touch verified / perf-sensitive code and want an on-device re-test:
+expression at 6 sites -> the existing `rgb888_to_565`). A third — splitting
+the big screen-builders — is also now DONE + hardware-verified (see active
+queue item 3 above). Remaining, still DEFERRED because they touch verified /
+perf-sensitive code and want an on-device re-test:
 
-- **Split the big screen-builders** — `build_browser_screen` (~427 L),
-  `build_np_screen`, `build_settings_screen` are long procedural LVGL object
-  stacks; extracting helpers risks a draw-order bug. Do once you can flash.
 - **Dither-loop helpers** — factor the RGB565 *unpack* (`r=((px>>11)&0x1F)<<3`…),
   the Rec.601 luma, and the Bayer threshold into `static inline` helpers
   (zero-cost at -O2) used by `paperize_rgb565` / `cf_paper_dither` /

@@ -51,9 +51,36 @@ static bool       s_config_dirty = false;
 static int32_t    s_current_position    = 0;
 static float      s_current_sub_pos     = 0.0f;
 
-// Angle at which position == config.position (reference anchor)
+// Angle at which position == config.position (reference anchor). Expressed on
+// the UNWRAPPED angle basis (see s_unwrapped_angle below), not the sensor's
+// raw [0, 2*PI) reading.
 static float      s_angle_reference     = 0.0f;
 static uint32_t   s_last_nonce          = 0;
+
+// MagneticSensorMT6701SSI::getAngle() wraps every revolution ([0, 2*PI)).
+// _compute_torque()'s detent math needs a continuous angle -- diffing the raw
+// reading against s_angle_reference breaks the instant the two straddle the
+// wrap point (a sudden ~2*PI jump in "raw", i.e. a torque kick). Instead we
+// accumulate an unwrapped angle every tick: the physical motion in one 5 kHz
+// tick is always tiny relative to 2*PI, so wrapping just that ONE-TICK delta
+// (never the absolute angle) is always unambiguous. s_angle_reference and
+// _compute_torque() both operate on this basis, not the raw sensor value.
+static float      s_last_raw_angle      = 0.0f;
+static float      s_unwrapped_angle     = 0.0f;
+
+// Local pi constant -- avoids depending on M_PI, which isn't guaranteed by
+// plain <math.h> on every libc (it's a common but non-standard extension).
+#define KNOB_PI 3.14159265358979323846f
+
+// Wrap a one-tick angle delta into (-PI, PI]. Safe ONLY for small deltas
+// (well under 2*PI) -- do not use this on an absolute angle-vs-reference
+// difference, which is exactly the bug this fixes.
+static inline float __not_in_flash_func(_wrap_delta)(float d)
+{
+    while (d >  KNOB_PI) d -= 2.0f * KNOB_PI;
+    while (d < -KNOB_PI) d += 2.0f * KNOB_PI;
+    return d;
+}
 
 void motor_shared_init(void)
 {
@@ -82,18 +109,25 @@ void motor_task_init(void)
     s_motor.init();
     s_motor.initFOC();
 
-    // Capture initial angle so position 0 starts where the knob is resting
-    s_angle_reference = s_sensor.getAngle();
+    // Capture initial angle so position 0 starts where the knob is resting.
+    // Seeds the unwrap tracker from this same first raw reading so
+    // s_angle_reference and s_unwrapped_angle start on the same basis.
+    s_last_raw_angle  = s_sensor.getAngle();
+    s_unwrapped_angle = s_last_raw_angle;
+    s_angle_reference = s_unwrapped_angle;
 }
 
-static float __not_in_flash_func(_compute_torque)(float current_angle, const KnobConfig *cfg)
+// unwrapped_angle must be on the s_unwrapped_angle basis (continuous, never
+// wraps at 2*PI) -- NOT a raw s_sensor.getAngle() reading. See the
+// s_unwrapped_angle comment near the top of this file for why.
+static float __not_in_flash_func(_compute_torque)(float unwrapped_angle, const KnobConfig *cfg)
 {
     if (cfg->position_width_radians < 1e-6f) {
         return 0.0f;
     }
 
-    // Raw fractional position relative to reference anchor
-    float raw = (current_angle - s_angle_reference) / cfg->position_width_radians;
+    // Fractional position relative to reference anchor
+    float raw = (unwrapped_angle - s_angle_reference) / cfg->position_width_radians;
 
     // Nearest integer detent
     int32_t nearest = (int32_t)roundf(raw);
@@ -108,7 +142,7 @@ static float __not_in_flash_func(_compute_torque)(float current_angle, const Kno
 
     // Angular error toward nearest detent center
     float center = s_angle_reference + nearest * cfg->position_width_radians;
-    float err    = current_angle - center;
+    float err    = unwrapped_angle - center;
 
     // Check snap point: if we're past snap_point fraction of the half-width,
     // we snap to the next detent
@@ -123,7 +157,7 @@ static float __not_in_flash_func(_compute_torque)(float current_angle, const Kno
             nearest = cfg->max_position;
         }
         center = s_angle_reference + nearest * cfg->position_width_radians;
-        err    = current_angle - center;
+        err    = unwrapped_angle - center;
     }
 
     // Spring torque toward detent center
@@ -152,6 +186,12 @@ void __not_in_flash_func(motor_task_loop)(void)
     s_sensor.update();
     s_motor.loopFOC();
 
+    // Accumulate the unwrapped angle (see the s_unwrapped_angle comment above)
+    // before anything else this tick reads it.
+    float raw_angle = s_sensor.getAngle();
+    s_unwrapped_angle += _wrap_delta(raw_angle - s_last_raw_angle);
+    s_last_raw_angle   = raw_angle;
+
     // Pull in a pending config update
     KnobConfig local_cfg = s_config;
     bool       dirty     = false;
@@ -163,14 +203,16 @@ void __not_in_flash_func(motor_task_loop)(void)
         critical_section_exit(&s_cs);
     }
 
-    // Re-anchor reference angle when position_nonce changes (host moved the knob)
+    // Re-anchor reference angle when position_nonce changes (host moved the
+    // knob). Uses the already-updated s_unwrapped_angle (this tick's value),
+    // NOT a fresh s_sensor.getAngle() -- s_angle_reference must stay on the
+    // unwrapped basis, not the raw one.
     if (dirty && local_cfg.position_nonce != s_last_nonce) {
-        s_last_nonce    = local_cfg.position_nonce;
-        float cur_angle = s_sensor.getAngle();
-        s_angle_reference = cur_angle - local_cfg.position * local_cfg.position_width_radians;
+        s_last_nonce      = local_cfg.position_nonce;
+        s_angle_reference = s_unwrapped_angle - local_cfg.position * local_cfg.position_width_radians;
     }
 
-    float torque = _compute_torque(s_sensor.getAngle(), &local_cfg);
+    float torque = _compute_torque(s_unwrapped_angle, &local_cfg);
     s_motor.move(torque);
 }
 

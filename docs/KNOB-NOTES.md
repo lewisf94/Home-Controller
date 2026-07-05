@@ -244,6 +244,104 @@ completely unaffected.
 
 ---
 
+## Pre-flight code review (2026-07-05, before the PCB arrives) — BOTH FIXED
+
+Read-only review of `rp2040/src/{main,motor_task,interface_task}.cpp`,
+`waveshare/components/p4_shared/{knob.c,knob_input.c}`, and
+`proto/home_controller.proto`. Two real findings, both fixed the same day
+(untested on real hardware -- there is no PCB yet -- but P4-side changes
+build-verified clean on both waveshare targets; the RP2040 fix could not be
+compile-checked, no PlatformIO in this environment -- read it carefully on
+the first build).
+
+### 1. `_compute_torque()` does not handle the encoder's angle wrap (significant) -- FIXED
+
+`MagneticSensorMT6701SSI::getAngle()` returns radians in **[0, 2π)** — it wraps
+every physical revolution. `motor_task.cpp`'s `_compute_torque()` computes
+`raw = (current_angle - s_angle_reference) / position_width_radians` directly,
+with no unwrap/accumulation between calls. The moment `current_angle` crosses
+the 2π boundary relative to `s_angle_reference`, the computed delta jumps by
+∓2π instead of the true small step — a sudden torque discontinuity (a kick or
+a snap to the wrong detent).
+
+**How exposed each menu is** (`knob_input.c`'s `_send_*_config` functions):
+- **MENU_VOLUME** (`_send_volume_config`, 3.6°/detent × 0-100) — **guaranteed to
+  wrap**: the full 0→100 range is exactly 360° (2π), and volume is anchored
+  ONCE on menu activation (`_activate_menu`), never re-anchored per detent. A
+  normal 0-to-100 turn crosses the wrap.
+- **MENU_NOW_PLAYING** (`_send_now_playing_config`, 5°/detent, up to `duration_ms
+  / 500` detents) — wraps for any track longer than ~2 minutes (`72°×that many
+  detents`), same no-per-detent-reanchor issue as Volume.
+- **MENU_ALBUMS** (`_send_albums_config`, 10°/detent) — partially mitigated:
+  `_on_state()` DOES call `_send_albums_config(pos)` after every detent, which
+  re-anchors `s_angle_reference` on the RP2040 once the round-trip lands. But
+  the local FOC loop runs at 5 kHz while the re-anchor requires a full UART
+  round-trip (P4 processes KnobState -> sends KnobConfig -> RP2040 decodes +
+  applies on its next tick), so a fast multi-detent flick can still outrun the
+  re-anchor and cross the wrap before it catches up — this project's whole
+  browser is tuned for fast flick-scrolling, so this isn't a hypothetical.
+
+**Fix applied** in `rp2040/src/motor_task.cpp`: `motor_task_loop()` now
+accumulates a persistent `s_unwrapped_angle` every tick (`_wrap_delta()` wraps
+only the ONE-TICK change, which is always tiny relative to 2π, so that step is
+unambiguous even though the absolute angle isn't). `s_angle_reference` and
+`_compute_torque()`'s parameter (renamed `unwrapped_angle` for clarity) both
+now operate on this continuous basis instead of a raw `getAngle()` reading, so
+all three menus are fixed at once, independent of re-anchor frequency. Uses a
+local `KNOB_PI` constant rather than `M_PI` (not proven available on this
+toolchain — nothing else in the RP2040 codebase used it, and PlatformIO isn't
+installed in the environment this fix was written in, so it couldn't be
+compile-checked to confirm). **First-flash check:** turn the Volume knob
+through a full 0->100 sweep (guaranteed to cross the old wrap point) and
+confirm no torque kick/glitch partway through.
+
+### 2. Albums/Now-Playing anchor to position 0 on activation, not the live value (moderate) -- FIXED
+
+`_activate_menu()` correctly anchors **MENU_VOLUME** to the live device volume
+(`ui_get_volume()`) so the first detent doesn't snap playback to a wrong
+value — the comment there explains why. **MENU_ALBUMS** and
+**MENU_NOW_PLAYING** don't get the same treatment: both call their config
+builder with a hardcoded `0` regardless of which album is actually centred or
+how far into the track playback actually is.
+
+The delta-based scroll (`ui_scroll_browser(delta)`) itself isn't affected —
+increments are relative, so scrolling still moves the right direction. What
+breaks is the **endstop feel**: the RP2040 believes position 0 is wherever the
+menu was activated, so turning backward from (say) album 40 of 56 hits a
+phantom endstop after ~0 detents instead of the 40 albums actually behind it,
+while turning forward feels like it has 55 detents of headroom even if the
+browser is already near the end of the list. Same issue for Now-Playing scrub
+relative to actual playback position.
+
+**Fix applied**: `_activate_menu()` in `knob_input.c` now anchors
+MENU_NOW_PLAYING to `ui_get_progress_ms() / SCRUB_STEP_MS` (that getter already
+existed, just wasn't called here) and MENU_ALBUMS to a new
+`ui_get_centered_album_index()` (added to the `ui_*` seam in `ui.c`/`ui.h`,
+mirroring `ui_get_volume()`'s lock-and-read pattern exactly). Both fall back to
+a sensible default (0) if read before the first poll/browser build, same as
+Volume's existing `-1` fallback. Build-verified on both waveshare targets.
+
+### Minor / low-priority observations (not blocking)
+
+- **`ToKnob` has no compile-time size guard.** `interface_task.cpp`'s
+  `_send_state()` has `static_assert(KnobState_size + 4 <= 68, ...)` protecting
+  its (RP2040->P4) send buffer; `knob.c`'s `_send_packet()` (P4->RP2040) has no
+  equivalent for `ToKnob_size` against its 256-byte buffer. Not a bug today
+  (current message sizes fit comfortably and `pb_encode()` fails safely if it
+  ever didn't), but worth mirroring the guard for the same "catch it at compile
+  time, not silently at runtime" reason.
+- **No retry backoff / diagnostic on a permanently unacked config.** `knob.c`'s
+  retry timer retries every 250 ms forever if the RP2040 never acks (e.g.
+  unplugged). Harmless (gated behind `KNOB_ENABLED=0` by default) but there's no
+  log line the way WiFi/Sonos reconnects are surfaced elsewhere in this
+  project — would help debugging a dead link on the bench.
+- **`ToKnob.request_state` is defined in the proto but never sent or handled.**
+  Not a bug (the RP2040 already pushes state proactively every `STATE_TX_MS` or
+  on change), just unused schema surface — fine to leave for a future "force an
+  immediate state push" need.
+
+---
+
 ## Hardware verification checklist
 
 - [ ] Beep-test GPIO46 on J3 header before soldering the harness

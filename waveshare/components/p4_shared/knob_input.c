@@ -110,12 +110,20 @@ static void _activate_menu(menu_t menu)
     // Anchor s_last_position to the SAME position we send in the config, so the
     // motor's first re-anchored report produces a zero delta instead of a
     // spurious jump (the knob reports back the position it was anchored to).
+    // All three anchors below read the LIVE value rather than assuming 0/50:
+    // anchoring to a stale/default value desyncs the knob's endstop feel from
+    // where the content actually is (e.g. hitting a phantom "start of list"
+    // wall a few detents after activating Albums mid-browse).
     int32_t anchor = 0;
 
     switch (menu) {
-    case MENU_NOW_PLAYING:
-        _send_now_playing_config(0);
+    case MENU_NOW_PLAYING: {
+        // Anchor to the live playback position so the endstop feel matches
+        // where the track actually is, not track-start.
+        anchor = (int32_t)(ui_get_progress_ms() / SCRUB_STEP_MS);
+        _send_now_playing_config(anchor);
         break;
+    }
     case MENU_VOLUME: {
         // Anchor to the live device volume so the first detent doesn't snap
         // playback to 50%. -1 (unknown, pre-first-poll) falls back to 50.
@@ -124,9 +132,14 @@ static void _activate_menu(menu_t menu)
         _send_volume_config(anchor);
         break;
     }
-    case MENU_ALBUMS:
-        _send_albums_config(0);
+    case MENU_ALBUMS: {
+        // Anchor to the actually-centred album. -1 (before the first browser
+        // build) falls back to 0.
+        int idx = ui_get_centered_album_index();
+        anchor = (idx >= 0) ? idx : 0;
+        _send_albums_config(anchor);
         break;
+    }
     case MENU_LIGHTS:
         // Future HA -- no-op for now
         break;
