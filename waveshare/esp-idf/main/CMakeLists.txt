@@ -22,6 +22,7 @@ idf_component_register(
         esp_codec_dev
         nanopb
         p4_shared              # shared UI, audio, albums, fonts, knob protocol
+        app_core                # shared WiFi connect/reconnect + art buffer
         esp32_p4_wifi6_touch_lcd_4_3
         lvgl__lvgl
 )

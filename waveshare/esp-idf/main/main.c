@@ -53,13 +53,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/event_groups.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
-#include "esp_wifi.h"
-#include "esp_timer.h"
-#include "esp_event.h"
-#include "esp_netif.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
@@ -72,6 +67,8 @@
 #include "littlefs.h"
 #include "audio.h"
 #include "knob_input.h"
+#include "app_core_wifi.h"
+#include "app_core_art.h"
 
 static const char *TAG = "main";
 
@@ -143,8 +140,6 @@ static const char *sonos_target_host(void)
 #include <stdio.h>
 
 #define WIFI_MAX_RETRY     5
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
 
 /* Now-playing album art. Spotify serves 640x640; album_art.cpp decodes /2 to
  * 320x320 RGB565. The 200 KB buffer lives in PSRAM (internal SRAM is scarce).
@@ -164,9 +159,6 @@ static const char *sonos_target_host(void)
  *                  LittleFS still mounts either way -- flipping this flag changes
  *                  nothing else, so it's a clean on-device comparison. */
 #define ART_DECODE_RAM 0
-
-static EventGroupHandle_t s_wifi_event_group;
-static int s_wifi_retry_count = 0;
 
 /* Typed Spotify command queue. UI / input post requests here; spotify_task
  * drains them so the blocking HTTPS calls stay off the render/input path.
@@ -216,8 +208,7 @@ static QueueHandle_t s_cmd_queue = NULL;
  * the LVGL lock -- so the decode never writes the pixels the render task is
  * reading (that cross-core race on one buffer could corrupt LVGL state).
  * s_art_url_loaded de-dupes downloads so we only fetch on a real art change. */
-static uint8_t        *s_art_rgb[2] = { NULL, NULL };
-static int             s_art_buf    = 0;
+static art_buffer_t    s_art = {0};
 static lv_image_dsc_t  s_art_dsc = {0};
 static char            s_art_url_loaded[256] = {0};
 /* URLs whose JPEG decode failed deterministically. Without this, a malformed /
@@ -281,96 +272,15 @@ void ui_request_get_devices(void)              { _post_cmd(SCMD_GET_DEVICES,   0
 void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
 void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
 
-/* Slow background reconnect timer, armed after the fast retries are exhausted.
- * Without it the device would give up forever on any network blip (router
- * reboot, brief out-of-range) and need a power cycle to recover. */
-static esp_timer_handle_t s_wifi_reconnect_timer = NULL;
-#define WIFI_RECONNECT_PERIOD_US (20ULL * 1000 * 1000)   /* every 20 s */
-
-static void wifi_reconnect_cb(void *arg)
+/* WiFi connect (with resilient background reconnect) and the connect chime
+ * (first successful connection only, whether that's this call or a later
+ * background reconnect) now live in app_core_wifi -- see wifi.c. */
+static void on_wifi_first_connect(void)
 {
-    (void)arg;
-    ESP_LOGI(TAG, "wifi: background reconnect attempt");
-    esp_wifi_connect();
+    audio_play(AUDIO_SFX_CONNECT);
 }
 
-static void wifi_event_handler(void *arg, esp_event_base_t base,
-                               int32_t event_id, void *event_data)
-{
-    (void)arg;
-    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_wifi_retry_count < WIFI_MAX_RETRY) {
-            s_wifi_retry_count++;
-            ESP_LOGW(TAG, "wifi disconnected, retry %d/%d",
-                     s_wifi_retry_count, WIFI_MAX_RETRY);
-            esp_wifi_connect();
-        } else {
-            ESP_LOGE(TAG, "wifi failed after %d retries -- arming background reconnect every %llu s",
-                     WIFI_MAX_RETRY, WIFI_RECONNECT_PERIOD_US / 1000000);
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-            if (s_wifi_reconnect_timer == NULL) {
-                const esp_timer_create_args_t args = {
-                    .callback = wifi_reconnect_cb,
-                    .name     = "wifi_reconnect",
-                };
-                esp_timer_create(&args, &s_wifi_reconnect_timer);
-            }
-            if (s_wifi_reconnect_timer && !esp_timer_is_active(s_wifi_reconnect_timer)) {
-                esp_timer_start_periodic(s_wifi_reconnect_timer, WIFI_RECONNECT_PERIOD_US);
-            }
-        }
-    } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        (void)event_data;  /* IP intentionally not logged (keeps logs shareable) */
-        ESP_LOGI(TAG, "wifi connected (DHCP lease acquired)");
-        s_wifi_retry_count = 0;
-        if (s_wifi_reconnect_timer && esp_timer_is_active(s_wifi_reconnect_timer)) {
-            esp_timer_stop(s_wifi_reconnect_timer);
-        }
-        /* Connect chime, first successful connect only (not on later reconnects). */
-        static bool chimed = false;
-        if (!chimed) { chimed = true; audio_play(AUDIO_SFX_CONNECT); }
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-    }
-}
-
-static esp_err_t wifi_init_sta(void)
-{
-    s_wifi_event_group = xEventGroupCreate();
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid              = WIFI_SSID,
-            .password          = WIFI_PASSWORD,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "wifi connecting...");  /* SSID not logged (keeps logs shareable) */
-
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
-
-    return (bits & WIFI_CONNECTED_BIT) ? ESP_OK : ESP_FAIL;
-}
-
-/* Download the cover at `url`, decode it into the idle s_art_rgb buffer (PSRAM)
+/* Download the cover at `url`, decode it into the idle art buffer (PSRAM)
  * and hand it to ui.c, which republishes under the LVGL lock. Decodes into the
  * idle buffer then swaps, so the render task's current buffer is never touched.
  * The download+decode path is selected by ART_DECODE_RAM (see its definition).
@@ -378,8 +288,7 @@ static esp_err_t wifi_init_sta(void)
  * -1 = download failed (transient -- retry next poll). */
 static int fetch_and_publish_art(const char *url)
 {
-    int next = s_art_buf ^ 1;
-    uint8_t *buf = s_art_rgb[next];
+    uint8_t *buf = art_buffer_idle(&s_art);
     if (!buf) return -1;
 
     uint16_t w = 0, h = 0;
@@ -404,8 +313,7 @@ static int fetch_and_publish_art(const char *url)
     }
     ESP_LOGI(TAG, "decoded %ux%u album art (%u bytes)",
              (unsigned)w, (unsigned)h, (unsigned)(w * h * 2));
-    ui_art_refresh(buf, w, h);
-    s_art_buf = next;
+    art_buffer_publish(&s_art, w, h);
     return 1;
 }
 
@@ -783,10 +691,7 @@ void app_main(void)
 
     /* Now-playing art buffer (PSRAM -- internal SRAM is scarce) + LittleFS
      * scratch for the downloaded JPEG. Both ready before spotify_task decodes. */
-    s_art_rgb[0] = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
-    s_art_rgb[1] = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
-    if (!s_art_rgb[0] || !s_art_rgb[1])
-        ESP_LOGE(TAG, "failed to allocate %d-byte art buffers", ART_RGB_BYTES);
+    art_buffer_alloc(&s_art, ART_RGB_BYTES);
     if (!littlefs_mount()) ESP_LOGW(TAG, "littlefs mount failed -- album art disabled");
 
     /* Display first so we see something while WiFi connects. */
@@ -837,13 +742,13 @@ void app_main(void)
     /* Let the ESP32-C6 WiFi slave boot its esp_hosted firmware before esp_wifi_init. */
     vTaskDelay(pdMS_TO_TICKS(3000));
 
-    if (wifi_init_sta() != ESP_OK) {
-        /* Initial connect exhausted its fast retries. Don't abort: the WiFi
-         * event handler has armed the slow background reconnect timer, which
-         * will keep trying every 20 s and recover transparently once the AP is
-         * reachable. Bring up the UI anyway so the browser is usable (and the
-         * "No active Spotify device" toast surfaces if the user taps a card
-         * before the link is up). */
+    if (app_core_wifi_connect(WIFI_SSID, WIFI_PASSWORD, WIFI_MAX_RETRY,
+                              on_wifi_first_connect) != ESP_OK) {
+        /* Initial connect exhausted its fast retries. Don't abort: app_core_wifi
+         * has armed the slow background reconnect timer, which will keep trying
+         * every 20 s and recover transparently once the AP is reachable. Bring
+         * up the UI anyway so the browser is usable (and the "No active Spotify
+         * device" toast surfaces if the user taps a card before the link is up). */
         ESP_LOGE(TAG, "wifi did not connect -- continuing; background reconnect will keep trying");
     }
 

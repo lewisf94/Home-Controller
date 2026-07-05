@@ -22,13 +22,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/event_groups.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
-#include "esp_wifi.h"
-#include "esp_timer.h"
-#include "esp_event.h"
-#include "esp_netif.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
@@ -40,6 +35,8 @@
 #include "album_art.h"
 #include "littlefs.h"
 #include "audio.h"
+#include "app_core_wifi.h"
+#include "app_core_art.h"
 
 #define KNOB_ENABLED 0   /* set 1 when the RP2040 haptic knob hardware is fitted */
 #if KNOB_ENABLED
@@ -49,61 +46,11 @@
 static const char *TAG = "main";
 
 /* ── WiFi ──────────────────────────────────────────────────────────────────── */
-#define WIFI_MAX_RETRY     10
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
-
-static EventGroupHandle_t s_wifi_event_group;
-static int                s_wifi_retry = 0;
-
-static void on_wifi_event(void *arg, esp_event_base_t base,
-                          int32_t id, void *data)
-{
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_wifi_retry < WIFI_MAX_RETRY) {
-            esp_wifi_connect();
-            s_wifi_retry++;
-        } else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-        }
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        s_wifi_retry = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-    }
-}
-
-static void wifi_init(void)
-{
-    s_wifi_event_group = xEventGroupCreate();
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    esp_event_handler_instance_t h1, h2;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        WIFI_EVENT, ESP_EVENT_ANY_ID, &on_wifi_event, NULL, &h1));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        IP_EVENT, IP_EVENT_STA_GOT_IP, &on_wifi_event, NULL, &h2));
-
-    wifi_config_t wc = { .sta = { .ssid = WIFI_SSID, .password = WIFI_PASSWORD } };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
-        portMAX_DELAY);
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "WiFi connected");
-    } else {
-        ESP_LOGE(TAG, "WiFi failed after %d retries", WIFI_MAX_RETRY);
-    }
-}
+/* Connect (with resilient background reconnect after fast retries exhaust)
+ * lives in app_core_wifi -- see waveshare/components/app_core/wifi.c. No
+ * connect chime here (unlike the non-HA build) -- matches this build's prior
+ * behaviour; pass a callback to app_core_wifi_connect() if one is wanted. */
+#define WIFI_MAX_RETRY 10
 
 /* ── Command queue ─────────────────────────────────────────────────────────── */
 typedef enum {
@@ -162,14 +109,12 @@ void ui_request_select_sonos(const char *host)
     { (void)host; /* all HA media_players switch via ui_request_transfer */ }
 
 /* ── Art decode ─────────────────────────────────────────────────────────────── */
-/* Double-buffered in PSRAM: ha_task decodes into the idle buffer, then
- * ui_art_refresh republishes it to LVGL under the LVGL lock -- so a decode
- * never overwrites the pixels the render task is currently reading. Mirrors
- * waveshare/esp-idf/main.c's s_art_rgb pattern (a single shared buffer here
- * previously let JPEGDEC overwrite the live art mid-render, tearing the
- * on-screen cover). */
-static uint8_t        *s_art_rgb[2]  = { NULL, NULL };
-static int             s_art_buf_idx = 0;
+/* Double-buffered in PSRAM (app_core_art, shared with waveshare/esp-idf/main.c):
+ * ha_task decodes into the idle buffer, then art_buffer_publish republishes it
+ * to LVGL under the LVGL lock -- so a decode never overwrites the pixels the
+ * render task is currently reading (a single shared buffer here previously let
+ * JPEGDEC overwrite the live art mid-render, tearing the on-screen cover). */
+static art_buffer_t    s_art = {0};
 static lv_image_dsc_t  s_art_dsc = {0};
 
 #define ART_DECODE_W 320
@@ -179,16 +124,14 @@ static lv_image_dsc_t  s_art_dsc = {0};
 
 static void decode_art(const char *path)
 {
-    int      next = s_art_buf_idx ^ 1;
-    uint8_t *buf  = s_art_rgb[next];
+    uint8_t *buf = art_buffer_idle(&s_art);
     if (!buf) return;
     uint16_t w = 0, h = 0;
     if (!album_art_decode_file(path, (uint16_t *)buf, ART_DECODE_W * ART_DECODE_H, &w, &h)) {
         ESP_LOGE(TAG, "art decode failed");
         return;
     }
-    ui_art_refresh(buf, w, h);
-    s_art_buf_idx = next;
+    art_buffer_publish(&s_art, w, h);
 }
 
 /* ── HA task ────────────────────────────────────────────────────────────────── */
@@ -253,12 +196,15 @@ void app_main(void)
     bsp_display_backlight_on();
     ESP_LOGI(TAG, "display up");
 
-    wifi_init();
+    if (app_core_wifi_connect(WIFI_SSID, WIFI_PASSWORD, WIFI_MAX_RETRY, NULL) != ESP_OK) {
+        /* Initial connect exhausted its fast retries. Don't abort: app_core_wifi
+         * has armed the slow background reconnect timer, which will keep trying
+         * every 20 s and recover transparently once the AP is reachable. */
+        ESP_LOGE(TAG, "wifi did not connect -- continuing; background reconnect will keep trying");
+    }
 
     /* Art decode buffers in PSRAM (double-buffered, see decode_art above). */
-    s_art_rgb[0] = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
-    s_art_rgb[1] = heap_caps_malloc(ART_RGB_BYTES, MALLOC_CAP_SPIRAM);
-    if (!s_art_rgb[0] || !s_art_rgb[1]) ESP_LOGE(TAG, "art buf alloc failed");
+    art_buffer_alloc(&s_art, ART_RGB_BYTES);
 
     littlefs_mount();
 
@@ -272,6 +218,10 @@ void app_main(void)
     ha_client_init(HA_HOST, HA_PORT, HA_TOKEN, HA_ENTITY);
 
     s_cmd_queue = xQueueCreate(CMD_QUEUE_DEPTH, sizeof(hcmd_t));
+    if (!s_cmd_queue) {
+        ESP_LOGE(TAG, "failed to create command queue");
+        return;   /* no mailbox -> nothing could drive playback; give up */
+    }
     xTaskCreatePinnedToCore(ha_task, "ha_task", 8192, NULL, 5, NULL, 0);
 
 #if KNOB_ENABLED

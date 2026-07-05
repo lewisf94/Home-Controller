@@ -547,6 +547,35 @@ directly; `spotify.h` re-exports it so existing call sites stay unchanged.
 **`album_thumbs.bin`** — the gitignored binary is now at
 `waveshare/components/p4_shared/album_thumbs.bin` (private build folder).
 
+### Shared component — `waveshare/components/app_core/` — LANDED 2026-07-02, needs hardware flash-verify
+
+App-scaffolding shared by both waveshare `main.c`s, found via the same
+`EXTRA_COMPONENT_DIRS` as `p4_shared` — no CMakeLists.txt wiring needed
+beyond each build's `main/CMakeLists.txt` listing `app_core` in
+`PRIV_REQUIRES`. Two files:
+- **`wifi.c` / `app_core_wifi.h`** — `app_core_wifi_connect(ssid, password,
+  max_retry, on_first_connect)`: STA connect + event handler + the 20 s
+  background reconnect timer (armed once fast retries exhaust, so a router
+  blip doesn't need a power cycle to recover from). This closed a real gap:
+  the HA build's own WiFi code had no recovery path at all after its fast
+  retries ran out — only the non-HA build (hardware-verified) had the timer.
+  `on_first_connect` is an optional callback fired once, ever, on the first
+  successful IP lease (immediate or from a later background retry) — the
+  non-HA build passes a small wrapper that plays the connect chime; the HA
+  build passes NULL (preserves its existing chime-less behaviour).
+- **`art_buffer.c` / `app_core_art.h`** — `art_buffer_t` +
+  `alloc/idle/publish`: the double-buffered PSRAM swap lifecycle that was
+  byte-identical between the two builds. The actual download+decode step
+  (RAM vs LittleFS-file source, Spotify vs HA transport) stays in each
+  `main.c` — genuinely different, not folded in.
+
+**Deliberately NOT extracted** (see PENDING.md "Deferred architecture work"
+#1 for the full reasoning): the command queue / `scmd_type_t`↔`hcmd_t`
+vocabulary (real struct-shape and command-set differences; unifying would
+mean editing the hot dispatch switch in both `spotify_task` and `ha_task`
+for little value), and anything CYD (both CYD-IDF builds are unverified
+since the `cyd_shared` extraction — see docs/PENDING.md).
+
 ### ESP32-P4 HA variant — stub exists, NOT hardware-tested — `waveshare/esp-idf-ha/`
 
 Backend swapped to `ha_client.c` (Home Assistant WebSocket). The shared
