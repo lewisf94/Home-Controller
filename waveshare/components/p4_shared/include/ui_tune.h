@@ -70,6 +70,7 @@
 #define TUNE_TOPBTN_Y          {   0,   0,   0,   8 }
 #define TUNE_GEAR_X            (-6)
 #define TUNE_DEVBTN_X          (-56)
+#define TUNE_LIGHTSBTN_X       (-106)   /* one more 50px slot left of DEVBTN */
 /* PAPER only: Y of the "NN / NN" album index counter, and of the printed
  * header rule. Counter Y=17 shares the buttons'/FPS's ~y25 header-row centre
  * (mono_16 line height 16). Rule Y=46 clears the button bottom (y42) and
@@ -91,6 +92,12 @@
  * 0xF048, 0xF04B, 0xF04C, 0xF051, 0xF053, 0xF054, 0xF077-0xF079.
  */
 #define TUNE_DEVICES_ICON      LV_SYMBOL_VOLUME_MID
+
+/* Lights-selector icon (HA build; harmless on non-HA, see ui_request_get_lights).
+ * LVGL has no lightbulb glyph in this FA5 subset, so POWER (a toggle/on-off
+ * rune) is the closest fit that's still in the PIXEL-safe codepoint list above
+ * (0xF011). */
+#define TUNE_LIGHTS_ICON       LV_SYMBOL_POWER
 
 /* =========================================================================
  * NOW PLAYING                                       { BASIC, GLYPH, PIXEL, PAPER }

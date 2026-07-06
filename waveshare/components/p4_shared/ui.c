@@ -514,6 +514,15 @@ static lv_obj_t   *s_screen_devices  = NULL;
 static lv_obj_t   *s_dev_list        = NULL;
 static ui_device_t s_dev_entries[MAX_DEVICES];
 static int         s_dev_entry_count = 0;
+
+/* Lights selector screen (HA build only; harmless no-op elsewhere -- see
+ * ui_request_get_lights). Mirrors the devices selector exactly: s_light_entries
+ * caches the current rows so a row's toggle/slider handler can look up its
+ * entity_id by index (the widget's user_data is that index). */
+static lv_obj_t   *s_screen_lights     = NULL;
+static lv_obj_t   *s_light_list        = NULL;
+static ui_light_t  s_light_entries[MAX_LIGHTS];
+static int         s_light_entry_count = 0;
 static lv_obj_t *s_line_toggle_btn = NULL;   /* Settings ON/OFF toggle for it */
 static lv_obj_t *s_line_toggle_lbl = NULL;
 static lv_obj_t *s_brightness_slider = NULL;   /* Settings backlight slider */
@@ -683,6 +692,11 @@ static void on_open_devices(lv_event_t *e);
 static void on_devices_back(lv_event_t *e);
 static void on_device_tap(lv_event_t *e);
 static void build_devices_screen(void);
+static void on_open_lights(lv_event_t *e);
+static void on_lights_back(lv_event_t *e);
+static void on_light_toggle(lv_event_t *e);
+static void on_light_brightness(lv_event_t *e);
+static void build_lights_screen(void);
 static void on_transport_prev(lv_event_t *e);
 static void on_transport_toggle(lv_event_t *e);
 static void on_transport_next(lv_event_t *e);
@@ -1502,6 +1516,26 @@ static void browser_build_top_buttons(void)
     lv_obj_set_style_text_color(devlbl, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(devlbl, font_icon(), 0);
     lv_obj_center(devlbl);
+
+    /* Lights button (left of devices) -> the HA lights selector. Harmless on
+     * the non-HA build (opens to "No lights configured", see
+     * ui_request_get_lights). Same flat, transparent-at-rest treatment. */
+    lv_obj_t *lightsbtn = lv_button_create(s_screen_browser);
+    lv_obj_set_size(lightsbtn, 44, TOPBTN_H);
+    lv_obj_align(lightsbtn, LV_ALIGN_TOP_RIGHT, TUNE_LIGHTSBTN_X, tb_y);
+    lv_obj_set_style_pad_all(lightsbtn, 0, 0);
+    lv_obj_set_style_bg_opa(lightsbtn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(lightsbtn, 3, 0);
+    lv_obj_set_style_shadow_width(lightsbtn, 0, 0);
+    lv_obj_set_style_bg_color(lightsbtn, lv_color_hex(accent_color()),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(lightsbtn, LV_OPA_40, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_add_event_cb(lightsbtn, on_open_lights, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lightslbl = lv_label_create(lightsbtn);
+    lv_label_set_text(lightslbl, TUNE_LIGHTS_ICON);
+    lv_obj_set_style_text_color(lightslbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(lightslbl, font_icon(), 0);
+    lv_obj_center(lightslbl);
 }
 
 static void build_browser_screen(void)
@@ -3697,6 +3731,95 @@ static void on_device_tap(lv_event_t *e)
     if (s_screen_np) lv_screen_load(s_screen_np);
 }
 
+static void build_lights_screen(void)
+{
+    s_screen_lights = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_lights, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(s_screen_lights, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_lights, LV_OBJ_FLAG_SCROLLABLE);
+    if (is_paper_theme()) {
+        paper_frame(s_screen_lights);
+        paper_rule(s_screen_lights, 8, 60, SCREEN_W - 16, 1);
+    }
+
+    lv_obj_t *back = lv_button_create(s_screen_lights);
+    lv_obj_set_size(back, 120, 44);
+    lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
+    lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
+    style_key_btn(back);
+    lv_obj_add_event_cb(back, on_lights_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  BACK");
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(back_lbl, font_sm(), 0);
+    lv_obj_center(back_lbl);
+
+    lv_obj_t *title = lv_label_create(s_screen_lights);
+    lv_label_set_text(title, "LIGHTS");
+    lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(title, font_lg(), 0);
+    lv_obj_set_style_text_letter_space(title, 3, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+    paper_title_chip(title);
+
+    /* Scrollable list container; ui_set_lights() fills it with one row per
+     * light. Starts on the "No lights configured" placeholder (on_open_lights
+     * resets it every time the screen opens; matches build_devices_screen). */
+    s_light_list = lv_obj_create(s_screen_lights);
+    lv_obj_set_size(s_light_list, 760, 384);
+    lv_obj_align(s_light_list, LV_ALIGN_TOP_MID, 0, 66);
+    lv_obj_set_style_bg_opa(s_light_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_light_list, 0, 0);
+    lv_obj_set_style_pad_all(s_light_list, 4, 0);
+    lv_obj_set_style_pad_row(s_light_list, 8, 0);
+    lv_obj_set_flex_flow(s_light_list, LV_FLEX_FLOW_COLUMN);
+}
+
+static void on_open_lights(lv_event_t *e)
+{
+    (void)e;
+    if (!s_screen_lights) return;
+    /* Unlike DEVICES's "Scanning...", go straight to the empty-state text: the
+     * non-HA build's ui_request_get_lights() is a pure no-op (there is no
+     * lights backend to answer), so a "Scanning..." placeholder would never
+     * resolve there. On the HA build ui_set_lights() normally replaces this
+     * within a fraction of a second (local-network get_states round trip). */
+    if (s_light_list) {
+        lv_obj_clean(s_light_list);
+        s_light_entry_count = 0;
+        lv_obj_t *lbl = lv_label_create(s_light_list);
+        lv_label_set_text(lbl, "No lights configured");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+        lv_obj_set_style_text_font(lbl, font_md(), 0);
+    }
+    lv_screen_load(s_screen_lights);   /* instant, like devices/settings */
+    ui_request_get_lights();
+}
+
+static void on_lights_back(lv_event_t *e)
+{
+    (void)e;
+    if (s_screen_browser) lv_screen_load(s_screen_browser);
+}
+
+static void on_light_toggle(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_light_entry_count) return;
+    ui_request_light_toggle(s_light_entries[i].entity_id);
+    audio_play(AUDIO_SFX_SELECT);
+}
+
+static void on_light_brightness(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_light_entry_count) return;
+    lv_obj_t *sl = lv_event_get_target(e);
+    int pct = lv_slider_get_value(sl);
+    ui_request_light_brightness(s_light_entries[i].entity_id, pct);
+    audio_play(AUDIO_SFX_TICK);
+}
+
 static void on_transition_option(lv_event_t *e)
 {
     ui_transition_t style = (ui_transition_t)(uintptr_t)lv_event_get_user_data(e);
@@ -3766,12 +3889,14 @@ static void apply_theme_cb(void *unused)
     bool      was_np      = (active == s_screen_np);
     bool      was_setting = (active == s_screen_settings);
     bool      was_devices = (active == s_screen_devices);
+    bool      was_lights  = (active == s_screen_lights);
     int       saved_card  = s_centered_card;   /* preserve carousel position */
 
     lv_obj_t *old_browser  = s_screen_browser;
     lv_obj_t *old_np       = s_screen_np;
     lv_obj_t *old_settings = s_screen_settings;
     lv_obj_t *old_devices  = s_screen_devices;
+    lv_obj_t *old_lights   = s_screen_lights;
 
     /* Stop all animated features before deleting old screens. */
     cf_deinit();   /* free CF canvas PSRAM; lv_image is a child of old_browser */
@@ -3799,6 +3924,7 @@ static void apply_theme_cb(void *unused)
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
+    build_lights_screen();
     if (is_glyph_theme()) build_volume_screen();
 
     /* Restore carousel position -- build always starts at card 0. Force the
@@ -3917,6 +4043,7 @@ static void apply_theme_cb(void *unused)
     lv_screen_load(was_np ? s_screen_np :
                    was_setting ? s_screen_settings :
                    was_devices ? s_screen_devices :
+                   was_lights  ? s_screen_lights :
                    was_volume  ? (s_screen_volume ? s_screen_volume : s_screen_browser) :
                    s_screen_browser);
     /* Clear any input-device reference to a widget on the screens about to be
@@ -3928,6 +4055,7 @@ static void apply_theme_cb(void *unused)
     lv_obj_delete(old_np);
     lv_obj_delete(old_settings);
     if (old_devices) lv_obj_delete(old_devices);
+    if (old_lights)  lv_obj_delete(old_lights);
     if (old_volume)  lv_obj_delete(old_volume);
 }
 
@@ -4049,6 +4177,7 @@ void ui_init(lv_image_dsc_t *art_dsc)
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
+    build_lights_screen();
     if (is_glyph_theme()) build_volume_screen();
     if (is_glyph_theme()) {
         prog_particles_start(s_screen_np);
@@ -4316,6 +4445,83 @@ void ui_set_devices(const ui_device_t *list, int count)
             lv_obj_align(dt, LV_ALIGN_LEFT_MID, 12, 14);
         }
         s_dev_entry_count = count;
+    }
+    bsp_display_unlock();
+}
+
+void ui_set_lights(const ui_light_t *list, int count)
+{
+    if (count > MAX_LIGHTS) count = MAX_LIGHTS;
+    if (count < 0) count = 0;
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_set_lights: display lock timeout, skipping");
+        return;
+    }
+    s_light_entry_count = 0;
+    if (s_light_list) {
+        lv_obj_clean(s_light_list);
+        if (count == 0) {
+            lv_obj_t *lbl = lv_label_create(s_light_list);
+            lv_label_set_text(lbl, "No lights configured");
+            lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+            lv_obj_set_style_text_font(lbl, font_md(), 0);
+        }
+        for (int i = 0; i < count; i++) {
+            s_light_entries[i] = list[i];
+            bool dimmable = (list[i].brightness_pct >= 0);
+
+            /* A plain container, not a button: a light row needs TWO
+             * independently-tappable controls (power toggle + brightness
+             * slider), and LVGL buttons can't nest another interactive
+             * widget safely. style_key_btn() only touches generic obj
+             * styles (radius/border), so it applies here exactly as it does
+             * to the devices row. */
+            lv_obj_t *row = lv_obj_create(s_light_list);
+            lv_obj_set_size(row, lv_pct(100), dimmable ? 76 : 56);
+            lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            style_key_btn(row);
+            lv_obj_set_style_bg_color(row, lv_color_hex(s_th->surface), 0);
+            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+
+            lv_obj_t *nm = lv_label_create(row);
+            lv_label_set_text(nm, list[i].name);
+            lv_obj_set_style_text_color(nm,
+                lv_color_hex(list[i].is_on ? accent_color() : s_th->text), 0);
+            lv_obj_set_style_text_font(nm, font_md(), 0);
+            lv_obj_align(nm, LV_ALIGN_TOP_LEFT, 12, 8);
+
+            lv_obj_t *toggle = lv_button_create(row);
+            lv_obj_set_size(toggle, 56, 32);
+            lv_obj_align(toggle, LV_ALIGN_TOP_RIGHT, -8, 6);
+            style_key_btn(toggle);
+            lv_obj_set_style_bg_color(toggle,
+                lv_color_hex(list[i].is_on ? accent_color() : s_th->bg), 0);
+            lv_obj_add_event_cb(toggle, on_light_toggle, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)i);
+            lv_obj_t *tlbl = lv_label_create(toggle);
+            lv_label_set_text(tlbl, LV_SYMBOL_POWER);
+            lv_obj_set_style_text_color(tlbl,
+                lv_color_hex(list[i].is_on ? s_th->bg : s_th->text2), 0);
+            lv_obj_set_style_text_font(tlbl, font_icon(), 0);
+            lv_obj_center(tlbl);
+
+            if (dimmable) {
+                lv_obj_t *sl = lv_slider_create(row);
+                lv_obj_set_size(sl, lv_pct(90), 12);
+                lv_obj_align(sl, LV_ALIGN_BOTTOM_MID, 0, -8);
+                lv_slider_set_range(sl, 1, 100);
+                lv_slider_set_value(sl, list[i].brightness_pct, LV_ANIM_OFF);
+                lv_obj_set_style_bg_color(sl, lv_color_hex(s_th->track), LV_PART_MAIN);
+                lv_obj_set_style_bg_color(sl, lv_color_hex(accent_color()), LV_PART_INDICATOR);
+                lv_obj_set_style_bg_color(sl, lv_color_hex(accent_color()), LV_PART_KNOB);
+                lv_obj_set_style_radius(sl, is_paper_theme() ? 0 : 4, LV_PART_MAIN);
+                lv_obj_set_style_radius(sl, is_paper_theme() ? 0 : 4, LV_PART_INDICATOR);
+                if (is_paper_theme()) lv_obj_set_style_radius(sl, 0, LV_PART_KNOB);
+                lv_obj_add_event_cb(sl, on_light_brightness, LV_EVENT_RELEASED,
+                                    (void *)(intptr_t)i);
+            }
+        }
+        s_light_entry_count = count;
     }
     bsp_display_unlock();
 }

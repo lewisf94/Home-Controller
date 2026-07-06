@@ -37,6 +37,7 @@ static esp_websocket_client_handle_t s_ws = NULL;
 static int s_msg_id = 1;                 /* incrementing WS command id */
 static int s_states_req_id = 0;          /* id of our now-playing get_states request */
 static int s_devices_req_id = 0;         /* id of a device-list get_states request */
+static int s_lights_req_id = 0;          /* id of a light-list get_states request */
 static int s_sub_id = 0;                 /* id of the active subscribe_trigger (for unsubscribe) */
 
 static spotify_track_t s_track = {0};
@@ -187,10 +188,11 @@ static void send_subscribe(void)
     ws_send(buf);
 }
 
-/* call_service with optional service_data object body (without braces).
- * Returns true if the WebSocket send succeeded. */
-static bool call_service(const char *domain, const char *service,
-                         const char *service_data /* e.g. "\"x\":1" or NULL */)
+/* call_service targeting an explicit entity_id, with an optional service_data
+ * object body (without braces). Returns true if the WebSocket send succeeded. */
+static bool call_service_entity(const char *domain, const char *service,
+                                const char *entity_id,
+                                const char *service_data /* e.g. "\"x\":1" or NULL */)
 {
     char buf[384];
     int id = s_msg_id++;
@@ -199,14 +201,22 @@ static bool call_service(const char *domain, const char *service,
                  "{\"id\":%d,\"type\":\"call_service\",\"domain\":\"%s\","
                  "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"},"
                  "\"service_data\":{%s}}",
-                 id, domain, service, s_entity ? s_entity : "", service_data);
+                 id, domain, service, entity_id ? entity_id : "", service_data);
     } else {
         snprintf(buf, sizeof(buf),
                  "{\"id\":%d,\"type\":\"call_service\",\"domain\":\"%s\","
                  "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"}}",
-                 id, domain, service, s_entity ? s_entity : "");
+                 id, domain, service, entity_id ? entity_id : "");
     }
     return ws_send(buf);
+}
+
+/* call_service against the active media_player (s_entity) -- every playback
+ * command below targets it, so this stays the short call site they use. */
+static bool call_service(const char *domain, const char *service,
+                         const char *service_data)
+{
+    return call_service_entity(domain, service, s_entity, service_data);
 }
 
 bool ha_toggle_play_pause(void) { return call_service("media_player", "media_play_pause",     NULL); }
@@ -254,6 +264,20 @@ bool ha_play_album(const char *spotify_uri)
     snprintf(data, sizeof(data),
              "\"media_id\":\"%s\",\"media_type\":\"album\"", media_id);
     return call_service("music_assistant", "play_media", data);
+}
+
+bool ha_light_toggle(const char *entity_id)
+{
+    return call_service_entity("light", "toggle", entity_id, NULL);
+}
+
+bool ha_light_set_brightness(const char *entity_id, int pct)
+{
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    char data[32];
+    snprintf(data, sizeof(data), "\"brightness_pct\":%d", pct);
+    return call_service_entity("light", "turn_on", entity_id, data);
 }
 
 /* ── Inbound (state parsing) ─────────────────────────────────────────────── */
@@ -389,6 +413,54 @@ static void build_device_list(const char *arr)
     ui_set_devices(devs, n);
 }
 
+/* Build the lights list from a get_states result array: every light entity
+ * becomes one row. Unlike build_device_list(), ui_light_t.entity_id (64 B)
+ * comfortably fits a full HA entity_id, so no index-indirection table is
+ * needed -- ha_light_toggle()/ha_light_set_brightness() take it directly. */
+static void build_light_list(const char *arr)
+{
+    static ui_light_t lights[MAX_LIGHTS];   /* static: only ever touched on the WS task */
+    int n = 0;
+    if (arr && *arr == '[') {
+        const char *p = arr + 1;
+        while (*p && n < MAX_LIGHTS) {
+            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+            if (*p != '{') break;
+            const char *obj = p;
+            char eid[96];
+            if (json_obj_get_str(obj, "entity_id", eid, sizeof(eid)) &&
+                strncmp(eid, "light.", 6) == 0) {
+                ui_light_t *l = &lights[n];
+                memset(l, 0, sizeof(*l));
+
+                snprintf(l->entity_id, sizeof(l->entity_id), "%s", eid);
+
+                char state[16] = {0};
+                json_obj_get_str(obj, "state", state, sizeof(state));
+                l->is_on = (strcmp(state, "on") == 0);
+
+                const char *attrs = json_obj_get(obj, "attributes");
+                char fname[64] = {0};
+                if (attrs) json_obj_get_str(attrs, "friendly_name", fname, sizeof(fname));
+                snprintf(l->name, sizeof(l->name), "%.39s", fname[0] ? fname : eid + 6);
+
+                /* HA reports brightness 0-255; a light usually omits the
+                 * attribute entirely while off, which correctly leaves this
+                 * at -1 (ui.c then hides the slider for that row). */
+                l->brightness_pct = -1;
+                double bri = 0.0;
+                if (attrs && json_obj_get_double(attrs, "brightness", &bri))
+                    l->brightness_pct = (int)(bri * 100.0 / 255.0 + 0.5);
+
+                n++;
+            }
+            p = json_skip_value(p);
+        }
+    }
+    ESP_LOGI(TAG, "lights: %d light entities", n);
+    ui_set_lights(lights, n);
+}
+
 static void handle_message(const char *msg)
 {
     char type[24] = {0};
@@ -427,6 +499,9 @@ static void handle_message(const char *msg)
         } else if (s_devices_req_id && id == s_devices_req_id) {
             build_device_list(json_obj_get(msg, "result"));
             s_devices_req_id = 0;
+        } else if (s_lights_req_id && id == s_lights_req_id) {
+            build_light_list(json_obj_get(msg, "result"));
+            s_lights_req_id = 0;
         }
     }
 }
@@ -509,6 +584,15 @@ void ha_request_devices(void)
     s_devices_req_id = s_msg_id++;
     snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_devices_req_id);
     if (!ws_send(buf)) s_devices_req_id = 0;
+}
+
+void ha_request_lights(void)
+{
+    /* Re-pull every entity's state; the result handler filters light.* */
+    char buf[64];
+    s_lights_req_id = s_msg_id++;
+    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_lights_req_id);
+    if (!ws_send(buf)) s_lights_req_id = 0;
 }
 
 void ha_set_active_entity(const char *sel)

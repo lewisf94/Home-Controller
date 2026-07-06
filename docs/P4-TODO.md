@@ -123,12 +123,37 @@ items, see [`PENDING.md`](PENDING.md).
    compile-checked -- no PlatformIO in this environment -- read it carefully
    and watch for build errors on the first `pio run`; KNOB-NOTES.md has a
    specific first-flash sanity check (sweep Volume 0->100, no torque kick).
-5. **CYD resurrection** — compile-verify both CYD-IDF builds (untested since
-   the `cyd_shared` extraction) and port back the waveshare-only fixes
-   (429 Retry-After holdoff, `RESP_INITIAL_CAP=16K`).
-6. **HA build: lights menu** — new screen on `waveshare/esp-idf-ha` to view
-   and control Home Assistant `light` entities (toggle + brightness at
-   minimum) over the existing WebSocket client, behind the `ui_*` seam.
+5. **CYD resurrection** — ON HOLD 2026-07-05 (Lewis: "ignore cyd stuff atm").
+   Blocked on tooling anyway: this machine only has ESP-IDF 5.5.4 installed
+   (used for waveshare); the CYD builds need 6.0 (`cyd/esp-idf/README.md` —
+   the display driver already uses 6.0's `rgb_ele_order`, not 5.x's
+   `rgb_endian`, per `PORT-NOTES.md`). Still TODO whenever picked back up:
+   compile-verify both CYD-IDF builds (untested since the `cyd_shared`
+   extraction) and port back the waveshare-only fixes (429 Retry-After
+   holdoff, `RESP_INITIAL_CAP=16K`).
+6. **HA build: lights menu** — DONE 2026-07-05, BUILD-VERIFIED (both waveshare
+   targets, HA 14% / non-HA 13% app-partition free), NOT YET HARDWARE-TESTED.
+   A third top-bar icon (left of DEVICES) opens a scrollable `light.*` list:
+   power-icon toggle + a brightness slider (shown only when the entity reports
+   `brightness`), release-gated so dragging doesn't flood HA. Fetched the same
+   one-shot `get_states` way as DEVICES (`ha_request_lights()` /
+   `build_light_list()`, own `s_lights_req_id`) -- no live push subscription,
+   so the list is a snapshot re-fetched on every screen open. Toggle/brightness
+   go through a new `call_service_entity()` targeting the tapped light's own
+   entity_id (`call_service()` is now a thin wrapper over it for the active
+   media_player, unchanged at every existing call site). Lives in the SHARED
+   `p4_shared/ui.c` like DEVICES, so the non-HA build gets the screen too --
+   its three `ui_request_light_*()` seam functions are no-ops (mirrors how the
+   HA build no-ops `ui_request_select_sonos` the other way), so it always shows
+   "No lights configured" there by design, never a hang. One real bug caught
+   by the build itself: `ui_light_t.entity_id` was first sized 64 B against a
+   96 B `eid` source buffer (GCC `-Werror=format-truncation`) -- resized to 96
+   throughout (`ui_light_t`, both `hcmd_t` fields in the HA build's `main.c`) to
+   match the `eid[96]`/`s_dev_ids[][96]` convention already used everywhere
+   else in `ha_client.c` for one HA entity_id.
+   **Verify on hardware:** toggle + dim a real light from the HA build; confirm
+   the non-HA build's LIGHTS screen opens cleanly to the empty state and never
+   crashes/hangs (it never calls a backend).
 
 ---
 

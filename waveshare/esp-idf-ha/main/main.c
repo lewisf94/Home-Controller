@@ -61,8 +61,11 @@ typedef enum {
     HCMD_VOLUME,
     HCMD_SHUFFLE,
     HCMD_PLAY_ALBUM,
-    HCMD_GET_DEVICES,  /* enumerate HA media_player entities */
-    HCMD_TRANSFER,     /* switch the active media_player entity */
+    HCMD_GET_DEVICES,       /* enumerate HA media_player entities */
+    HCMD_TRANSFER,          /* switch the active media_player entity */
+    HCMD_GET_LIGHTS,        /* enumerate HA light entities */
+    HCMD_LIGHT_TOGGLE,      /* toggle one light on/off */
+    HCMD_LIGHT_BRIGHTNESS,  /* set one light's brightness */
 } hcmd_type_t;
 
 typedef struct {
@@ -72,6 +75,11 @@ typedef struct {
         int      volume_pct;
         char     album_uri[64];
         char     device_id[64];
+        char     light_id[96];   /* HCMD_LIGHT_TOGGLE -- matches ui_light_t.entity_id */
+        struct {
+            char entity_id[96];
+            int  pct;
+        } light_brightness;      /* HCMD_LIGHT_BRIGHTNESS */
     };
 } hcmd_t;
 
@@ -107,6 +115,22 @@ void ui_request_transfer(const char *device_id)
 }
 void ui_request_select_sonos(const char *host)
     { (void)host; /* all HA media_players switch via ui_request_transfer */ }
+void ui_request_get_lights(void)
+    { hcmd_t c = {.type=HCMD_GET_LIGHTS}; xQueueSend(s_cmd_queue,&c,0); }
+void ui_request_light_toggle(const char *entity_id)
+{
+    hcmd_t c = { .type = HCMD_LIGHT_TOGGLE };
+    snprintf(c.light_id, sizeof c.light_id, "%s", entity_id ? entity_id : "");
+    xQueueSend(s_cmd_queue, &c, 0);
+}
+void ui_request_light_brightness(const char *entity_id, int pct)
+{
+    hcmd_t c = { .type = HCMD_LIGHT_BRIGHTNESS };
+    snprintf(c.light_brightness.entity_id, sizeof c.light_brightness.entity_id,
+             "%s", entity_id ? entity_id : "");
+    c.light_brightness.pct = pct;
+    xQueueSend(s_cmd_queue, &c, 0);
+}
 
 /* ── Art decode ─────────────────────────────────────────────────────────────── */
 /* Double-buffered in PSRAM (app_core_art, shared with waveshare/esp-idf/main.c):
@@ -167,6 +191,12 @@ static void ha_task(void *arg)
             case HCMD_PLAY_ALBUM:   ha_play_album(cmd.album_uri);        break;
             case HCMD_GET_DEVICES:  ha_request_devices();                break;
             case HCMD_TRANSFER:     ha_set_active_entity(cmd.device_id); break;
+            case HCMD_GET_LIGHTS:   ha_request_lights();                break;
+            case HCMD_LIGHT_TOGGLE: ha_light_toggle(cmd.light_id);       break;
+            case HCMD_LIGHT_BRIGHTNESS:
+                ha_light_set_brightness(cmd.light_brightness.entity_id,
+                                         cmd.light_brightness.pct);
+                break;
             default: break;
             }
         }

@@ -272,6 +272,16 @@ void ui_request_get_devices(void)              { _post_cmd(SCMD_GET_DEVICES,   0
 void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
 void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
 
+/* Lights are an HA-only concept (waveshare/esp-idf-ha/main/ha_client.c) -- this
+ * build talks straight to the Spotify Web API and has no lights backend, so
+ * the seam is a no-op here (mirrors how the HA build no-ops
+ * ui_request_select_sonos the other way). The LIGHTS screen still opens; it
+ * just always reads "No lights configured" since ui_set_lights() is never
+ * called from this build. */
+void ui_request_get_lights(void)                                 { }
+void ui_request_light_toggle(const char *entity_id)               { (void)entity_id; }
+void ui_request_light_brightness(const char *entity_id, int pct)  { (void)entity_id; (void)pct; }
+
 /* WiFi connect (with resilient background reconnect) and the connect chime
  * (first successful connection only, whether that's this call or a later
  * background reconnect) now live in app_core_wifi -- see wifi.c. */

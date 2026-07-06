@@ -80,7 +80,16 @@ Deep-dive queue (one at a time, Lewis's request): **A concurrency — DONE (clea
 
 | Area | What landed | Commits |
 |---|---|---|
-| Perf — Cover Flow rasteriser rewrite (VERIFIED on hardware, 3 profiled iterations) | `cf_render` rebuilt: `cf_prep_card` per-column trapezoid tables (internal-SRAM, ~23 KB) + `cf_compose` row-major composite — nearest-first with a covered-span clip so occluded pixels are never computed; separate 467 KB clear eliminated; per-pixel divide -> fixed-point multiply; PAPER ink frame + duotone folded in-row (duotone via a lazy 64 KB RGB565->luma LUT, frame test split out of the non-PAPER hot loop). Geometry math verbatim. Measured comp: BASIC 29->17.5 ms (19->23 FPS), PAPER 52-55->31-33 ms (12->16-18 FPS). `cf_prof` log relabelled `prep`/`comp`. Remaining CF perf levers parked in P4-TODO (downstream blit/rotate/flush ~24-27 ms, LV_DEF_REFR_PERIOD quantisation, GLYPH post-pass). | pending commit |
+| Perf — Cover Flow rasteriser rewrite (VERIFIED on hardware, 3 profiled iterations) | `cf_render` rebuilt: `cf_prep_card` per-column trapezoid tables (internal-SRAM, ~23 KB) + `cf_compose` row-major composite — nearest-first with a covered-span clip so occluded pixels are never computed; separate 467 KB clear eliminated; per-pixel divide -> fixed-point multiply; PAPER ink frame + duotone folded in-row (duotone via a lazy 64 KB RGB565->luma LUT, frame test split out of the non-PAPER hot loop). Geometry math verbatim. Measured comp: BASIC 29->17.5 ms (19->23 FPS), PAPER 52-55->31-33 ms (12->16-18 FPS). `cf_prof` log relabelled `prep`/`comp`. Remaining CF perf levers parked in P4-TODO (downstream blit/rotate/flush ~24-27 ms, LV_DEF_REFR_PERIOD quantisation, GLYPH post-pass). | `af86e57` |
+
+### Waveshare — committed 2026-07-05 (Claude Code session)
+
+| Area | What landed | Commits |
+|---|---|---|
+| Arch — `app_core` shared component | See "Deferred architecture work" #1 below. | `31eaf04` |
+| Refactor — `ui.c` screen-builder split (HARDWARE-VERIFIED) | `build_browser_screen`/`build_np_screen`/`build_settings_screen` split into 12/14/11 helpers, exact original call order + statics, byte-identical binary size. Lewis confirmed Browser/Now-Playing/Settings look correct in BASIC and PAPER, no draw-order regressions. | `489dd58` |
+| Fix — RP2040 knob angle-wrap + live-anchor | `_compute_torque()` now diffs against a persistent unwrapped-angle accumulator instead of the raw [0,2pi) sensor reading (was guaranteed to hit a torque discontinuity on Volume's 0-100 sweep); `knob_input.c`'s `_activate_menu()` anchors Albums/Now-Playing to the live centred-album-index/playback-position instead of 0. P4 side build-verified; RP2040 side (`motor_task.cpp`) could not be compiled here (no PlatformIO) -- read carefully on first `pio run`. | `1bd4fa7` |
+| Feature — HA build LIGHTS screen (BUILD-VERIFIED, not yet hardware-tested) | Third browser top-bar icon opens a scrollable `light.*` list (power toggle + release-gated brightness slider). Lives in shared `p4_shared/ui.c` like DEVICES, so it also exists on the non-HA build with a no-op backend (always reads "No lights configured" there, by design). `ha_client.c` gained `call_service_entity()` (targets an explicit entity, not just the active media_player), `build_light_list()`, and a second `s_lights_req_id` alongside the devices fetch. Both waveshare targets build clean (HA 14% / non-HA 13% free). Full detail in P4-TODO.md item 6. | pending commit |
 
 ### RP2040 haptic knob — committed/researched 2026-06-18 (Claude Code session)
 

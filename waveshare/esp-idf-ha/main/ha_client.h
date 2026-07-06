@@ -45,6 +45,16 @@ bool ha_play_album(const char *spotify_uri);   /* "spotify:album:ID" */
 void ha_request_devices(void);
 void ha_set_active_entity(const char *entity_id);
 
+/* Lights (HA build only). ha_request_lights() asks HA for all light.*
+ * entities and pushes them to the UI via ui_set_lights(). Toggle and
+ * brightness are direct call_service commands, same fire-and-forget contract
+ * as the playback commands above -- the row-tap/slider handler doesn't wait
+ * for a reply; re-opening the screen (a fresh ha_request_lights()) picks up
+ * whatever state actually landed. */
+void ha_request_lights(void);
+bool ha_light_toggle(const char *entity_id);
+bool ha_light_set_brightness(const char *entity_id, int pct);
+
 /* Album art: when a track change brings a new entity_picture, the event
  * handler stashes its relative URL. The ha task polls this (consume-once),
  * builds the absolute URL, downloads + decodes it off the WebSocket task.

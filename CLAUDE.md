@@ -592,6 +592,30 @@ The `ha_client.c` is adapted from `cyd/esp-idf-ha/`; the only change is
 `#include "player.h"` instead of `"spotify.h"`. The WebSocket dep is
 `esp_websocket_client` (listed in `main/idf_component.yml`).
 
+**LIGHTS screen (BUILD-VERIFIED, not yet hardware-tested)** — a third top-bar
+icon on the browser (left of DEVICES, `TUNE_LIGHTSBTN_X` in `ui_tune.h`) opens
+a scrollable list of HA `light.*` entities: tap the power icon to toggle,
+drag the brightness slider (only shown when the entity reports a `brightness`
+attribute) to dim, released via `LV_EVENT_RELEASED` so a drag doesn't flood HA
+with intermediate values. Fetched with the same one-shot `get_states` pattern
+as DEVICES (`ha_request_lights()`/`build_light_list()` filter for the
+`light.` prefix; a second `s_lights_req_id` distinguishes the response from a
+concurrent devices fetch) -- there is no live push subscription, so the list
+is a snapshot re-fetched every time the screen opens. Toggle/brightness are
+direct `call_service` calls against the tapped light's own entity_id, added via
+a new `call_service_entity()` (the original `call_service()` is now a thin
+wrapper that targets the active media_player, `s_entity`, unchanged for every
+existing call site). The screen, `ui_light_t`, and all three
+`ui_request_light_*()`/`ui_set_lights()` seam functions live in the SHARED
+`p4_shared/ui.c` (like DEVICES), so the non-HA `waveshare/esp-idf` build also
+gets the screen -- its `ui_request_get_lights/light_toggle/light_brightness`
+are no-ops (mirrors how the HA build no-ops `ui_request_select_sonos` the
+other way), so the screen just reads "No lights configured" there permanently
+by design. Both waveshare targets build clean (HA 14% app-partition free, non-HA
+13%). **Needs a hardware flash+verify**: toggle/brightness against a real HA
+light, and confirm the non-HA build's LIGHTS screen shows the empty state and
+never crashes/hangs.
+
 ---
 
 ### RP2040 haptic knob co-MCU — `rp2040/` + `waveshare/esp-idf/main/knob*`

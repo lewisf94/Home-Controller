@@ -80,6 +80,34 @@ typedef struct {
 /* Populate the DEVICES screen list (copies the rows). Safe from any task. */
 void ui_set_devices(const ui_device_t *list, int count);
 
+/* Lights selector (HA build only). ui_request_get_lights() asks the backend
+ * to fetch all light.* entities and hand them back via ui_set_lights().
+ * Tapping a row's power icon calls ui_request_light_toggle(); releasing its
+ * brightness slider calls ui_request_light_brightness(). The non-HA build
+ * implements all three as no-ops (there is no lights backend there) -- the
+ * screen still opens and shows "No lights configured", mirroring how the
+ * HA build no-ops ui_request_select_sonos() the other way. */
+void ui_request_get_lights(void);
+void ui_request_light_toggle(const char *entity_id);
+void ui_request_light_brightness(const char *entity_id, int pct);
+
+/* One row in the lights selector. `entity_id` is the full HA entity_id (e.g.
+ * "light.living_room" -- 96 B matches the eid[96] scratch buffers ha_client.c
+ * uses everywhere else for one, so unlike ui_device_t.id no index-indirection
+ * table is needed). brightness_pct is -1 when the light isn't dimmable or its
+ * brightness is unknown (typically: an off light whose state object omits the
+ * attribute) -- the row then shows just a toggle. */
+#define MAX_LIGHTS 16
+typedef struct {
+    char name[40];
+    char entity_id[96];
+    bool is_on;
+    int  brightness_pct;
+} ui_light_t;
+
+/* Populate the LIGHTS screen list (copies the rows). Safe from any task. */
+void ui_set_lights(const ui_light_t *list, int count);
+
 /* UI state queries and actions. Safe to call from any task -- each takes the
  * LVGL lock internally. This is the seam for physical controls (the future
  * RP2040 knob/button co-MCU feeding events from a UART task). */
