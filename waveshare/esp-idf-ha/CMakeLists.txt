@@ -24,3 +24,10 @@ idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
 if(lvgl_lib)
     target_compile_definitions(${lvgl_lib} PUBLIC LV_USE_OBSERVER=1)
 endif()
+
+# The shared UI is linked into both P4 builds. Only the HA build has a backend
+# for light.* entities, so only this target exposes the Lights entry point.
+idf_component_get_property(p4_shared_lib p4_shared COMPONENT_LIB)
+if(p4_shared_lib)
+    target_compile_definitions(${p4_shared_lib} PUBLIC P4_HAS_HA_LIGHTS=1)
+endif()

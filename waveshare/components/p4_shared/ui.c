@@ -74,6 +74,28 @@ static const char *TAG = "ui";
 
 #define SCREEN_W 800
 #define SCREEN_H 480
+#ifndef TUNE_ADDBTN_X
+#define TUNE_ADDBTN_X (-156)
+#endif
+#ifndef P4_HAS_HA_LIGHTS
+#define P4_HAS_HA_LIGHTS 0
+#endif
+
+#define UI_ALBUM_CANDIDATE_MAX 16
+typedef struct {
+    char title[80];
+    char artist[56];
+    char uri[64];
+} ui_album_candidate_t;
+
+/* Local seams kept out of ui.h while the runtime catalogue is a prototype. */
+void ui_request_get_album_candidates(void);
+void ui_set_album_candidates(const void *list, int count, bool ok);
+void album_catalog_init(void);
+const album_entry_t *album_catalog_get(size_t index);
+size_t album_catalog_count(void);
+bool album_catalog_contains_uri(const char *uri);
+bool album_catalog_add(const char *title, const char *artist, const char *uri);
 
 /* Centre album is drawn at 286 px in ALL browser styles (matches Cover Flow's
  * 220px thumb x CF_CARD_SCALE 1.30). The flex scroller is sized to fit it. */
@@ -201,9 +223,9 @@ static lv_obj_t *s_browser_title    = NULL;
 static lv_obj_t *s_browser_artist   = NULL;
 static lv_obj_t *s_wifi_bars[4]     = {0};
 
-/* Upper bound on browsable albums. s_card_count tracks albums_count() (derived
- * from the generated albums.c, itself from spotify-albums-list.txt) -- this cap
- * only bounds the static card arrays; raise it if the list ever grows past it. */
+/* Upper bound on browsable albums. s_card_count tracks album_catalog_count()
+ * (generated seed albums + controller-added runtime albums); this cap only
+ * bounds the static card arrays. */
 #define MAX_CARDS 128
 static lv_obj_t       *s_cards[MAX_CARDS]    = {0};
 static lv_obj_t       *s_card_imgs[MAX_CARDS] = {0};  /* child lv_image per card */
@@ -444,6 +466,8 @@ static uint16_t       *s_pix_thumbs     = NULL;   /* PSRAM: s_card_count * PIX_T
  * included). Either pool failing to allocate falls back to the old paths. */
 static uint16_t       *s_thumbs_psram   = NULL;   /* raw ALBUM_THUMB_W^2 copies */
 static uint16_t       *s_card_pool      = NULL;   /* CARD_SIZE^2, current theme */
+static size_t          s_thumbs_psram_count = 0;
+static size_t          s_card_pool_count    = 0;
 static uint16_t       *s_pix_art_buf   = NULL;    /* PSRAM: PIX_ART_RES^2 px art scratch */
 static lv_image_dsc_t  s_pix_art_dsc  = {0};
 static const uint8_t  *s_last_raw_art  = NULL;    /* pointer into PSRAM art decode buf */
@@ -514,6 +538,13 @@ static lv_obj_t   *s_screen_devices  = NULL;
 static lv_obj_t   *s_dev_list        = NULL;
 static ui_device_t s_dev_entries[MAX_DEVICES];
 static int         s_dev_entry_count = 0;
+
+/* Album add screen: direct Spotify populates this from the user's saved
+ * library. Rows are cached so the ADD button can persist the selected album. */
+static lv_obj_t             *s_screen_album_add = NULL;
+static lv_obj_t             *s_album_add_list   = NULL;
+static ui_album_candidate_t  s_album_candidates[UI_ALBUM_CANDIDATE_MAX];
+static int                   s_album_candidate_count = 0;
 
 /* Lights selector screen (HA build only; harmless no-op elsewhere -- see
  * ui_request_get_lights). Mirrors the devices selector exactly: s_light_entries
@@ -692,6 +723,10 @@ static void on_open_devices(lv_event_t *e);
 static void on_devices_back(lv_event_t *e);
 static void on_device_tap(lv_event_t *e);
 static void build_devices_screen(void);
+static void on_open_album_add(lv_event_t *e);
+static void on_album_add_back(lv_event_t *e);
+static void on_album_candidate_add(lv_event_t *e);
+static void build_album_add_screen(void);
 static void on_open_lights(lv_event_t *e);
 static void on_lights_back(lv_event_t *e);
 static void on_light_toggle(lv_event_t *e);
@@ -942,7 +977,7 @@ static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t
 /* Raw thumb source: the PSRAM copy when available, else the flash original. */
 static const uint16_t *thumb_src(size_t i)
 {
-    if (s_thumbs_psram)
+    if (s_thumbs_psram && i < s_thumbs_psram_count)
         return s_thumbs_psram + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
     return album_thumb_data(i);
 }
@@ -1055,9 +1090,9 @@ static void browser_reset_transform_cache(void)
 
 static void browser_resolve_card_count(void)
 {
-    s_card_count = albums_count();
+    s_card_count = album_catalog_count();
     if (s_card_count > MAX_CARDS) {
-        size_t total = albums_count();
+        size_t total = album_catalog_count();
         ESP_LOGW(TAG, "album list has %u entries but MAX_CARDS is %d; showing first %d",
                  (unsigned)total, MAX_CARDS, MAX_CARDS);
         s_card_count = MAX_CARDS;
@@ -1076,7 +1111,7 @@ static void browser_resolve_card_count(void)
     /* Debug: print thumbnail / album counts and a few thumb pointers to help
      * diagnose missing/corrupt embedded blobs when Cover Flow shows blank cards. */
     ESP_LOGI(TAG, "albums_count=%zu s_card_count=%zu album_thumb_count=%zu ALBUM_THUMB=%dx%d browser_style=%s",
-             albums_count(), s_card_count, album_thumb_count(), (int)ALBUM_THUMB_W, (int)ALBUM_THUMB_H,
+             album_catalog_count(), s_card_count, album_thumb_count(), (int)ALBUM_THUMB_W, (int)ALBUM_THUMB_H,
              k_browser_style_names[s_browser_style]);
     for (size_t __j = 0; __j < (s_card_count < 4 ? s_card_count : 4); __j++) {
         const uint16_t *__t = album_thumb_data(__j);
@@ -1086,6 +1121,17 @@ static void browser_resolve_card_count(void)
 
 static void browser_alloc_thumb_pools(void)
 {
+    if (s_thumbs_psram && s_thumbs_psram_count != s_card_count) {
+        heap_caps_free(s_thumbs_psram);
+        s_thumbs_psram = NULL;
+        s_thumbs_psram_count = 0;
+    }
+    if (s_card_pool && s_card_pool_count != s_card_count) {
+        heap_caps_free(s_card_pool);
+        s_card_pool = NULL;
+        s_card_pool_count = 0;
+    }
+
     /* One-time PSRAM copy of the raw embedded thumbs (see the pool note at the
      * declarations). Feeds the Cover Flow rasteriser, the PIXEL pixelate pass
      * and the card pool below without flash XIP reads. */
@@ -1099,6 +1145,7 @@ static void browser_alloc_thumb_pools(void)
                 if (t) memcpy(dst, t, ALBUM_THUMB_BYTES);
                 else   memset(dst, 0, ALBUM_THUMB_BYTES);
             }
+            s_thumbs_psram_count = s_card_count;
         } else {
             ESP_LOGW(TAG, "thumb PSRAM pool alloc failed (%zu B)", raw_sz);
         }
@@ -1113,10 +1160,12 @@ static void browser_alloc_thumb_pools(void)
         if (s_pix_thumbs) {
             for (size_t __pi = 0; __pi < s_card_count; __pi++) {
                 const uint16_t *__src = thumb_src(__pi);
+                uint16_t *__dst = s_pix_thumbs + __pi * PIX_THUMB_RES * PIX_THUMB_RES;
                 if (__src) {
                     pixelate_rgb565(__src, ALBUM_THUMB_W, ALBUM_THUMB_H,
-                                    s_pix_thumbs + __pi * PIX_THUMB_RES * PIX_THUMB_RES,
-                                    PIX_THUMB_RES, PIX_THUMB_RES);
+                                    __dst, PIX_THUMB_RES, PIX_THUMB_RES);
+                } else {
+                    memset(__dst, 0, PIX_THUMB_RES * PIX_THUMB_RES * sizeof(uint16_t));
                 }
             }
         } else {
@@ -1144,6 +1193,7 @@ static void browser_alloc_thumb_pools(void)
         if (s_card_pool) {
             for (size_t i = 0; i < s_card_count; i++)
                 fill_card_tile(i, s_card_pool + i * (size_t)CARD_SIZE * CARD_SIZE);
+            s_card_pool_count = s_card_count;
         } else {
             ESP_LOGW(TAG, "card pool alloc failed (%zu B SPIRAM)", pool_sz);
         }
@@ -1160,9 +1210,10 @@ static void browser_alloc_thumb_pools(void)
             if (s_paper_thumbs)
                 for (size_t i = 0; i < s_card_count; i++) {
                     const uint16_t *src = thumb_src(i);
+                    uint16_t *dst = s_paper_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
                     if (src) paperize_rgb565(src, ALBUM_THUMB_W, ALBUM_THUMB_H,
-                                             s_paper_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H,
-                                             ALBUM_THUMB_W, ALBUM_THUMB_H);
+                                             dst, ALBUM_THUMB_W, ALBUM_THUMB_H);
+                    else     memset(dst, 0, ALBUM_THUMB_BYTES); /* runtime album, no thumb */
                 }
             else ESP_LOGW(TAG, "PAPER: fallback thumb pool alloc failed (%zu B)", pool_sz);
         } else if (is_glyph_theme()) {
@@ -1171,9 +1222,10 @@ static void browser_alloc_thumb_pools(void)
             if (s_glyph_thumbs)
                 for (size_t i = 0; i < s_card_count; i++) {
                     const uint16_t *src = thumb_src(i);
+                    uint16_t *dst = s_glyph_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
                     if (src) glyphize_rgb565(src, ALBUM_THUMB_W, ALBUM_THUMB_H,
-                                             s_glyph_thumbs + i * ALBUM_THUMB_W * ALBUM_THUMB_H,
-                                             ALBUM_THUMB_W, ALBUM_THUMB_H);
+                                             dst, ALBUM_THUMB_W, ALBUM_THUMB_H);
+                    else     memset(dst, 0, ALBUM_THUMB_BYTES); /* runtime album, no thumb */
                 }
             else ESP_LOGW(TAG, "GLYPH: fallback thumb pool alloc failed (%zu B)", pool_sz);
         }
@@ -1183,7 +1235,7 @@ static void browser_alloc_thumb_pools(void)
 static void browser_build_cards(void)
 {
     for (size_t i = 0; i < s_card_count; i++) {
-        const album_entry_t *a    = albums_get(i);
+        const album_entry_t *a    = album_catalog_get(i);
         const uint16_t      *thumb = album_thumb_data(i);
 
         lv_obj_t *card = lv_obj_create(s_browser_scroller);
@@ -1313,7 +1365,7 @@ static void browser_build_title_labels(void)
                 lv_color_hex(s_th->text2), cf ? CF_ARTIST_Y : BR_ARTIST_Y);
 
     if (s_card_count > 0) {
-        const album_entry_t *a = albums_get(0);
+        const album_entry_t *a = album_catalog_get(0);
         lv_label_set_text(s_browser_title, a->title);
         lv_label_set_text(s_browser_artist, a->artist);
         s_centered_card = 0;
@@ -1517,9 +1569,9 @@ static void browser_build_top_buttons(void)
     lv_obj_set_style_text_font(devlbl, font_icon(), 0);
     lv_obj_center(devlbl);
 
-    /* Lights button (left of devices) -> the HA lights selector. Harmless on
-     * the non-HA build (opens to "No lights configured", see
-     * ui_request_get_lights). Same flat, transparent-at-rest treatment. */
+#if P4_HAS_HA_LIGHTS
+    /* Lights button (left of devices) -> the HA lights selector. Same flat,
+     * transparent-at-rest treatment as the other top-row tools. */
     lv_obj_t *lightsbtn = lv_button_create(s_screen_browser);
     lv_obj_set_size(lightsbtn, 44, TOPBTN_H);
     lv_obj_align(lightsbtn, LV_ALIGN_TOP_RIGHT, TUNE_LIGHTSBTN_X, tb_y);
@@ -1536,6 +1588,28 @@ static void browser_build_top_buttons(void)
     lv_obj_set_style_text_color(lightslbl, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(lightslbl, font_icon(), 0);
     lv_obj_center(lightslbl);
+#endif
+
+    /* Add-album button (left of lights/devices) -> saved-library album picker. Uses a
+     * plain plus glyph so it renders in every compiled font/theme. */
+    lv_obj_t *addbtn = lv_button_create(s_screen_browser);
+    lv_obj_set_size(addbtn, 44, TOPBTN_H);
+    lv_obj_align(addbtn, LV_ALIGN_TOP_RIGHT,
+                 P4_HAS_HA_LIGHTS ? TUNE_ADDBTN_X : TUNE_LIGHTSBTN_X,
+                 tb_y);
+    lv_obj_set_style_pad_all(addbtn, 0, 0);
+    lv_obj_set_style_bg_opa(addbtn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(addbtn, 3, 0);
+    lv_obj_set_style_shadow_width(addbtn, 0, 0);
+    lv_obj_set_style_bg_color(addbtn, lv_color_hex(accent_color()),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(addbtn, LV_OPA_40, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_add_event_cb(addbtn, on_open_album_add, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *addlbl = lv_label_create(addbtn);
+    lv_label_set_text(addlbl, "+");
+    lv_obj_set_style_text_color(addlbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(addlbl, font_md(), 0);
+    lv_obj_center(addlbl);
 }
 
 static void build_browser_screen(void)
@@ -3731,6 +3805,93 @@ static void on_device_tap(lv_event_t *e)
     if (s_screen_np) lv_screen_load(s_screen_np);
 }
 
+static void build_album_add_screen(void)
+{
+    s_screen_album_add = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_album_add, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(s_screen_album_add, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_screen_album_add, LV_OBJ_FLAG_SCROLLABLE);
+    if (is_paper_theme()) {
+        paper_frame(s_screen_album_add);
+        paper_rule(s_screen_album_add, 8, 60, SCREEN_W - 16, 1);
+    }
+
+    lv_obj_t *back = lv_button_create(s_screen_album_add);
+    lv_obj_set_size(back, 120, 44);
+    lv_obj_align(back, LV_ALIGN_TOP_LEFT, 8, 8);
+    lv_obj_set_style_bg_color(back, lv_color_hex(s_th->surface), 0);
+    style_key_btn(back);
+    lv_obj_add_event_cb(back, on_album_add_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(back);
+    lv_label_set_text(bl, "BACK");
+    lv_obj_set_style_text_color(bl, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(bl, font_md(), 0);
+    lv_obj_center(bl);
+
+    lv_obj_t *title = lv_label_create(s_screen_album_add);
+    lv_label_set_text(title, "ADD ALBUMS");
+    lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(title, font_lg(), 0);
+    lv_obj_set_style_text_letter_space(title, 3, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+    paper_title_chip(title);
+
+    s_album_add_list = lv_obj_create(s_screen_album_add);
+    lv_obj_set_size(s_album_add_list, 760, 384);
+    lv_obj_align(s_album_add_list, LV_ALIGN_TOP_MID, 0, 66);
+    lv_obj_set_style_bg_opa(s_album_add_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_album_add_list, 0, 0);
+    lv_obj_set_style_pad_all(s_album_add_list, 4, 0);
+    lv_obj_set_style_pad_row(s_album_add_list, 8, 0);
+    lv_obj_set_flex_flow(s_album_add_list, LV_FLEX_FLOW_COLUMN);
+}
+
+static void album_add_placeholder(const char *text)
+{
+    if (!s_album_add_list) return;
+    lv_obj_clean(s_album_add_list);
+    s_album_candidate_count = 0;
+    lv_obj_t *lbl = lv_label_create(s_album_add_list);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(lbl, font_md(), 0);
+}
+
+static void on_open_album_add(lv_event_t *e)
+{
+    (void)e;
+    if (!s_screen_album_add) return;
+    album_add_placeholder("Loading saved albums...");
+    lv_screen_load(s_screen_album_add);
+    ui_request_get_album_candidates();
+}
+
+static void on_album_add_back(lv_event_t *e)
+{
+    (void)e;
+    if (s_screen_browser) lv_screen_load(s_screen_browser);
+}
+
+static void on_album_candidate_add(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_album_candidate_count) return;
+    ui_album_candidate_t *c = &s_album_candidates[i];
+    bool added = album_catalog_add(c->title, c->artist, c->uri);
+    lv_obj_t *btn = lv_event_get_target(e);
+    if (added || album_catalog_contains_uri(c->uri)) {
+        lv_obj_add_state(btn, LV_STATE_DISABLED);
+        lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+        if (lbl) lv_label_set_text(lbl, "ADDED");
+    }
+    if (added) {
+        audio_play(AUDIO_SFX_SELECT);
+        lv_async_call(rebuild_browser_cb, NULL);
+    } else {
+        audio_play(AUDIO_SFX_BACK);
+    }
+}
+
 static void build_lights_screen(void)
 {
     s_screen_lights = lv_obj_create(NULL);
@@ -3775,15 +3936,17 @@ static void build_lights_screen(void)
     lv_obj_set_flex_flow(s_light_list, LV_FLEX_FLOW_COLUMN);
 }
 
+#if P4_HAS_HA_LIGHTS
+/* Only the HA build creates the top-bar lights button that fires this (see
+ * browser_build_top_buttons); guarded to match so the non-HA build doesn't
+ * carry an unused-function warning. */
 static void on_open_lights(lv_event_t *e)
 {
     (void)e;
     if (!s_screen_lights) return;
-    /* Unlike DEVICES's "Scanning...", go straight to the empty-state text: the
-     * non-HA build's ui_request_get_lights() is a pure no-op (there is no
-     * lights backend to answer), so a "Scanning..." placeholder would never
-     * resolve there. On the HA build ui_set_lights() normally replaces this
-     * within a fraction of a second (local-network get_states round trip). */
+    /* Unlike DEVICES's "Scanning...", go straight to the empty-state text:
+     * ui_set_lights() normally replaces this within a fraction of a second
+     * (local-network get_states round trip). */
     if (s_light_list) {
         lv_obj_clean(s_light_list);
         s_light_entry_count = 0;
@@ -3795,6 +3958,7 @@ static void on_open_lights(lv_event_t *e)
     lv_screen_load(s_screen_lights);   /* instant, like devices/settings */
     ui_request_get_lights();
 }
+#endif
 
 static void on_lights_back(lv_event_t *e)
 {
@@ -3806,6 +3970,7 @@ static void on_light_toggle(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= s_light_entry_count) return;
+    ESP_LOGI(TAG, "light toggle tap -> %s", s_light_entries[i].entity_id);
     ui_request_light_toggle(s_light_entries[i].entity_id);
     audio_play(AUDIO_SFX_SELECT);
 }
@@ -3890,6 +4055,7 @@ static void apply_theme_cb(void *unused)
     bool      was_setting = (active == s_screen_settings);
     bool      was_devices = (active == s_screen_devices);
     bool      was_lights  = (active == s_screen_lights);
+    bool      was_album_add = (active == s_screen_album_add);
     int       saved_card  = s_centered_card;   /* preserve carousel position */
 
     lv_obj_t *old_browser  = s_screen_browser;
@@ -3897,6 +4063,7 @@ static void apply_theme_cb(void *unused)
     lv_obj_t *old_settings = s_screen_settings;
     lv_obj_t *old_devices  = s_screen_devices;
     lv_obj_t *old_lights   = s_screen_lights;
+    lv_obj_t *old_album_add = s_screen_album_add;
 
     /* Stop all animated features before deleting old screens. */
     cf_deinit();   /* free CF canvas PSRAM; lv_image is a child of old_browser */
@@ -3924,6 +4091,7 @@ static void apply_theme_cb(void *unused)
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
+    build_album_add_screen();
     build_lights_screen();
     if (is_glyph_theme()) build_volume_screen();
 
@@ -3936,7 +4104,7 @@ static void apply_theme_cb(void *unused)
                            LV_ANIM_OFF);
         s_centered_card = saved_card;
         s_target_card   = saved_card;
-        const album_entry_t *a = albums_get((size_t)saved_card);
+        const album_entry_t *a = album_catalog_get((size_t)saved_card);
         if (a && s_browser_title && s_browser_artist) {
             lv_label_set_text(s_browser_title,  a->title);
             lv_label_set_text(s_browser_artist, a->artist);
@@ -4043,6 +4211,7 @@ static void apply_theme_cb(void *unused)
     lv_screen_load(was_np ? s_screen_np :
                    was_setting ? s_screen_settings :
                    was_devices ? s_screen_devices :
+                   was_album_add ? s_screen_album_add :
                    was_lights  ? s_screen_lights :
                    was_volume  ? (s_screen_volume ? s_screen_volume : s_screen_browser) :
                    s_screen_browser);
@@ -4055,6 +4224,7 @@ static void apply_theme_cb(void *unused)
     lv_obj_delete(old_np);
     lv_obj_delete(old_settings);
     if (old_devices) lv_obj_delete(old_devices);
+    if (old_album_add) lv_obj_delete(old_album_add);
     if (old_lights)  lv_obj_delete(old_lights);
     if (old_volume)  lv_obj_delete(old_volume);
 }
@@ -4152,6 +4322,7 @@ static void apply_audio_theme(void)
 void ui_init(lv_image_dsc_t *art_dsc)
 {
     s_art_dsc = art_dsc;
+    album_catalog_init();
 
     /* Runtime tiny_ttf fonts are DISABLED on this target. LVGL's bundled
      * stb_truetype rasterizer asserts (stb_truetype_htcw.h:3673,
@@ -4177,6 +4348,7 @@ void ui_init(lv_image_dsc_t *art_dsc)
     build_np_screen();
     build_settings_screen();
     build_devices_screen();
+    build_album_add_screen();
     build_lights_screen();
     if (is_glyph_theme()) build_volume_screen();
     if (is_glyph_theme()) {
@@ -4252,7 +4424,7 @@ void ui_set_track_info(const spotify_track_t *info)
         if (info->album_uri[0]) {
             int new_idx = -1;
             for (size_t i = 0; i < s_card_count; i++) {
-                const album_entry_t *a = albums_get(i);
+                const album_entry_t *a = album_catalog_get(i);
                 if (a && strcmp(a->uri, info->album_uri) == 0) {
                     new_idx = (int)i;
                     break;
@@ -4445,6 +4617,78 @@ void ui_set_devices(const ui_device_t *list, int count)
             lv_obj_align(dt, LV_ALIGN_LEFT_MID, 12, 14);
         }
         s_dev_entry_count = count;
+    }
+    bsp_display_unlock();
+}
+
+void ui_set_album_candidates(const void *raw_list, int count, bool ok)
+{
+    const ui_album_candidate_t *list = (const ui_album_candidate_t *)raw_list;
+    if (!list) count = 0;
+    if (count > UI_ALBUM_CANDIDATE_MAX) count = UI_ALBUM_CANDIDATE_MAX;
+    if (count < 0) count = 0;
+    if (bsp_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "ui_set_album_candidates: display lock timeout, skipping");
+        return;
+    }
+
+    s_album_candidate_count = 0;
+    if (s_album_add_list) {
+        lv_obj_clean(s_album_add_list);
+        if (!ok || count == 0) {
+            lv_obj_t *lbl = lv_label_create(s_album_add_list);
+            lv_label_set_text(lbl, ok ? "No saved albums returned"
+                                      : "Saved albums unavailable");
+            lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+            lv_obj_set_style_text_font(lbl, font_md(), 0);
+        }
+
+        for (int i = 0; i < count; i++) {
+            s_album_candidates[i] = list[i];
+            bool exists = album_catalog_contains_uri(list[i].uri);
+
+            lv_obj_t *row = lv_obj_create(s_album_add_list);
+            lv_obj_set_size(row, lv_pct(100), 74);
+            lv_obj_set_style_bg_color(row, lv_color_hex(s_th->surface), 0);
+            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(row, is_paper_theme() ? 3 : 6, 0);
+            lv_obj_set_style_border_width(row, is_paper_theme() ? 2 : 0, 0);
+            lv_obj_set_style_border_color(row, lv_color_hex(s_th->track), 0);
+            lv_obj_set_style_pad_all(row, 0, 0);
+            lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *title = lv_label_create(row);
+            lv_label_set_text(title, list[i].title);
+            lv_obj_set_width(title, 520);
+            lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
+            lv_obj_set_style_text_font(title, font_md(), 0);
+            lv_obj_align(title, LV_ALIGN_LEFT_MID, 14, -13);
+
+            lv_obj_t *artist = lv_label_create(row);
+            lv_label_set_text(artist, list[i].artist);
+            lv_obj_set_width(artist, 520);
+            lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_color(artist, lv_color_hex(s_th->text2), 0);
+            lv_obj_set_style_text_font(artist, font_sm(), 0);
+            lv_obj_align(artist, LV_ALIGN_LEFT_MID, 14, 17);
+
+            lv_obj_t *add = lv_button_create(row);
+            lv_obj_set_size(add, 112, 42);
+            lv_obj_align(add, LV_ALIGN_RIGHT_MID, -12, 0);
+            lv_obj_set_style_bg_color(add, lv_color_hex(exists ? s_th->track : accent_color()), 0);
+            style_key_btn(add);
+            if (exists) lv_obj_add_state(add, LV_STATE_DISABLED);
+            else lv_obj_add_event_cb(add, on_album_candidate_add, LV_EVENT_CLICKED,
+                                     (void *)(intptr_t)i);
+
+            lv_obj_t *al = lv_label_create(add);
+            lv_label_set_text(al, exists ? "ADDED" : "ADD");
+            lv_obj_set_style_text_color(al, lv_color_hex(is_paper_theme() ? s_th->bg : s_th->text), 0);
+            lv_obj_set_style_text_font(al, font_sm(), 0);
+            lv_obj_center(al);
+        }
+        s_album_candidate_count = count;
     }
     bsp_display_unlock();
 }
@@ -4773,7 +5017,7 @@ static void on_card_clicked(lv_event_t *e)
         return;
     }
 
-    const album_entry_t *a = albums_get((size_t)centred);
+    const album_entry_t *a = album_catalog_get((size_t)centred);
     if (!a) return;
     ESP_LOGI(TAG, "play album: %s -- %s", a->artist, a->title);
     audio_play(AUDIO_SFX_SELECT);
@@ -4819,7 +5063,7 @@ static void on_browser_scroll(lv_event_t *e)
         snprintf(ib, sizeof ib, "%02d / %02d", idx + 1, (int)s_card_count);
         lv_label_set_text(s_br_index_lbl, ib);
     }
-    const album_entry_t *a = albums_get((size_t)idx);
+    const album_entry_t *a = album_catalog_get((size_t)idx);
     if (!a) return;
     if (s_browser_title)  lv_label_set_text(s_browser_title, a->title);
     if (s_browser_artist) lv_label_set_text(s_browser_artist, a->artist);
@@ -5358,7 +5602,7 @@ static void rebuild_browser_cb(void *unused)
                            LV_ANIM_OFF);
         s_centered_card = saved_card;
         s_target_card   = saved_card;
-        const album_entry_t *a = albums_get((size_t)saved_card);
+        const album_entry_t *a = album_catalog_get((size_t)saved_card);
         if (a && s_browser_title && s_browser_artist) {
             lv_label_set_text(s_browser_title,  a->title);
             lv_label_set_text(s_browser_artist, a->artist);
@@ -5448,7 +5692,7 @@ void ui_play_centered_album(void)
         return;
     }
     int idx = find_centered_card();
-    const album_entry_t *a = (idx >= 0) ? albums_get((size_t)idx) : NULL;
+    const album_entry_t *a = (idx >= 0) ? album_catalog_get((size_t)idx) : NULL;
     if (a) {
         ESP_LOGI(TAG, "play album (encoder): %s -- %s", a->artist, a->title);
         audio_play(AUDIO_SFX_SELECT);

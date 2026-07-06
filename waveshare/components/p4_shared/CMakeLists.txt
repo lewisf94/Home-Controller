@@ -65,6 +65,7 @@ idf_component_register(
         "ui.c"
         "audio.c"
         "albums.c"
+        "album_catalog.c"
         "album_thumbs.c"
         "album_art.cpp"
         "littlefs.c"

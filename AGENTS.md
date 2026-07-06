@@ -1,6 +1,6 @@
-# CLAUDE.md — Project Memory for Claude Code
+# AGENTS.md — Project Memory for Codex
 
-This file gives a fresh Claude Code session full project context. Read it before
+This file gives a fresh Codex session full project context. Read it before
 making changes. If you change architecture or hardware, update this file.
 
 ---
@@ -20,7 +20,7 @@ build — feature-complete and hardware-verified), its Home Assistant variant
 LVGL (`cyd/platformio/`, needs a hardware pass), and the new Waveshare ESP32-P4
 direct-Spotify build (`waveshare/esp-idf/`, UI hardware-verified — the lead P4
 build). He works
-locally in VS Code with Claude Code and intermittently uses Claude Code on the
+locally in VS Code with Codex and intermittently uses Codex on the
 web. This file is the source of truth across sessions.
 
 ---
@@ -260,6 +260,14 @@ tabbed Settings all run on device.
 
 What's in `ui.c` as committed:
 - Full LVGL browser + now-playing + volume HUD + WiFi bars, laid out for 800×480.
+- Browser top-bar `+` screen for the first runtime album-add flow: direct
+  Spotify fetches the user's saved albums (`/v1/me/albums`), while the HA build
+  asks the active media_player's media browser (`media_player/browse_media`) and
+  follows album-like folders until it finds playable Spotify albums. Both show
+  ADD/ADDED rows and append selected album metadata to an NVS runtime catalogue
+  layered after the compiled seed albums. Direct Spotify requires
+  `user-library-read`; HA depends on Music Assistant/media-player browse exposing
+  Spotify album IDs. No runtime thumbnail cache/search/remove/reorder yet.
 - Three browser styles (Carousel / Focus / Cover Flow), NVS-persisted. Carousel/
   Focus transform the child `lv_image` (scale + recolor; no object-layer transforms
   — the only safe per-scroll transform path on this board; see CRITICAL NOTE).
@@ -529,8 +537,8 @@ lives here. Mirrors the `cyd/components/cyd_shared/` pattern. Both
 `list(APPEND EXTRA_COMPONENT_DIRS ../components)` in their top-level
 `CMakeLists.txt`.
 
-Files in `p4_shared/`: `ui.c`, `audio.c`, `albums.c`, `album_thumbs.c`,
-`album_art.cpp`, `littlefs.c`, `knob.c`, `knob_input.c`,
+Files in `p4_shared/`: `ui.c`, `audio.c`, `albums.c`, `album_catalog.c`,
+`album_thumbs.c`, `album_art.cpp`, `littlefs.c`, `knob.c`, `knob_input.c`,
 `home_controller.pb.c`, all eight font `.c` files, three TTF embed files.
 
 Headers in `p4_shared/include/`: `ui.h`, `audio.h`, `albums.h`,
@@ -812,6 +820,12 @@ rotation is already enabled by the vendored BSP). A future
   covers → albums.c → thumbs). Flags: `--no-covers`, `--no-generate`,
   `--no-embed` opt out of individual stages. (`embed_albums_idf.py` still runs
   standalone if you only added a cover by hand.)
+- **P4 also has runtime-added albums.** `album_catalog.c` wraps generated
+  `albums.c` with a small NVS-backed runtime metadata list used by the shared P4
+  browser and knob config. It is append-only for now (max 16 runtime albums) and
+  stores metadata only; thumbnails still come from the compiled seed blob, so
+  runtime albums intentionally fall back to no-art/letter-card paths until a
+  runtime thumbnail cache lands.
 - **Browser thumbnails stay aligned via the same source.** `album_thumbs.bin` is
   indexed *positionally* by album order, so it must match `albums.c`.
   `scripts/embed_albums_idf.py` imports the sorted list from `gen_albums.py` and
@@ -844,14 +858,14 @@ rotation is already enabled by the vendored BSP). A future
   building/flashing only (it carries the real `secrets.h`); never push from there.
   Before pushing, make sure the working repo has every change — edits made for
   flashing (copied into private) must also be applied in the working repo.
-- Commit author must be **Lewis**, not "Claude". In cloud/web sessions the git
-  config defaults to `Claude <noreply@anthropic.com>` — always fix it before
+- Commit author must be **Lewis**, not "Codex". In cloud/web sessions the git
+  config defaults to `Codex <noreply@anthropic.com>` — always fix it before
   the first commit by running:
   `git config user.name "Lewis" && git config user.email "lewisf94@users.noreply.github.com"`
   If commits are already made with the wrong author, rewrite them with:
   `git rebase <last-good-sha> --exec "git commit --amend --reset-author --no-edit"`
   then force-push.
-- **Do NOT include the `https://claude.ai/code/session_…` footer** in commit
+- **Do NOT include the `https://Codex.ai/code/session_…` footer** in commit
   messages
 - **Always push directly to `main`** — never create a branch. The default is
   always `git push -u origin main`. Do not create a branch even if asked

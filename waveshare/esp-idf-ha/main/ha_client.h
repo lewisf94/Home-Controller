@@ -45,6 +45,12 @@ bool ha_play_album(const char *spotify_uri);   /* "spotify:album:ID" */
 void ha_request_devices(void);
 void ha_set_active_entity(const char *entity_id);
 
+/* Album candidates for the shared Add Albums screen. The HA backend uses the
+ * active media_player's media browser, so this depends on Music Assistant (or
+ * the selected HA media_player) exposing browsable Spotify albums. Results are
+ * pushed asynchronously to ui_set_album_candidates(). */
+void ha_request_album_candidates(void);
+
 /* Lights (HA build only). ha_request_lights() asks HA for all light.*
  * entities and pushes them to the UI via ui_set_lights(). Toggle and
  * brightness are direct call_service commands, same fire-and-forget contract

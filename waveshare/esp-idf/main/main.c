@@ -172,6 +172,7 @@ typedef enum {
     SCMD_SEEK_MS,
     SCMD_SET_VOLUME,
     SCMD_GET_DEVICES,    /* fetch device list -> ui_set_devices */
+    SCMD_GET_ALBUM_CANDIDATES, /* fetch saved-library albums -> ui_set_album_candidates */
     SCMD_TRANSFER,       /* str = Spotify device id to transfer playback to */
     SCMD_SELECT_SONOS,   /* str = Sonos LAN IP to drive over UPnP */
     SCMD_TOGGLE_SHUFFLE,
@@ -194,6 +195,7 @@ static const scmd_meta_t k_scmd_meta[] = {
     [SCMD_SEEK_MS]        = { "seek",              false },
     [SCMD_SET_VOLUME]     = { "set_volume",        false },
     [SCMD_GET_DEVICES]    = { "get_devices",       true  },
+    [SCMD_GET_ALBUM_CANDIDATES] = { "get_album_candidates", true },
     [SCMD_TRANSFER]       = { "transfer",          true  },
     [SCMD_SELECT_SONOS]   = { "select_sonos",      true  },
     [SCMD_TOGGLE_SHUFFLE] = { "toggle_shuffle",    false },
@@ -202,6 +204,9 @@ _Static_assert(sizeof k_scmd_meta / sizeof k_scmd_meta[0] == SCMD_TOGGLE_SHUFFLE
                "k_scmd_meta is missing an entry -- update when adding a new scmd_type_t");
 
 static QueueHandle_t s_cmd_queue = NULL;
+#define ALBUM_CANDIDATE_MAX 16
+
+void ui_set_album_candidates(const void *list, int count, bool ok);
 
 /* Now-playing art handed to the UI. Double-buffered in PSRAM: the Spotify task
  * decodes into the idle buffer, then ui_art_refresh swaps lv_image to it under
@@ -269,15 +274,15 @@ void ui_request_seek(uint32_t ms)      { _post_cmd(SCMD_SEEK_MS,        ms,     
 void ui_request_volume(int pct)        { _post_cmd(SCMD_SET_VOLUME,     (uint32_t)pct, NULL); }
 void ui_request_shuffle(void)          { _post_cmd(SCMD_TOGGLE_SHUFFLE, 0,             NULL); }
 void ui_request_get_devices(void)              { _post_cmd(SCMD_GET_DEVICES,   0, NULL); }
+void ui_request_get_album_candidates(void)     { _post_cmd(SCMD_GET_ALBUM_CANDIDATES, 0, NULL); }
 void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
 void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
 
 /* Lights are an HA-only concept (waveshare/esp-idf-ha/main/ha_client.c) -- this
  * build talks straight to the Spotify Web API and has no lights backend, so
  * the seam is a no-op here (mirrors how the HA build no-ops
- * ui_request_select_sonos the other way). The LIGHTS screen still opens; it
- * just always reads "No lights configured" since ui_set_lights() is never
- * called from this build. */
+ * ui_request_select_sonos the other way). The shared UI only exposes the
+ * Lights entry point when the HA build defines P4_HAS_HA_LIGHTS. */
 void ui_request_get_lights(void)                                 { }
 void ui_request_light_toggle(const char *entity_id)               { (void)entity_id; }
 void ui_request_light_brightness(const char *entity_id, int pct)  { (void)entity_id; (void)pct; }
@@ -626,6 +631,14 @@ static void spotify_task(void *arg)
 #endif
                         ui_set_devices(list, n);
                         ESP_LOGI(TAG, "devices: %d spotify + sonos -> %d total", sc, n);
+                        break;
+                    }
+                    case SCMD_GET_ALBUM_CANDIDATES: {
+                        static spotify_album_candidate_t sp[ALBUM_CANDIDATE_MAX];
+                        int sc = 0;
+                        bool got = spotify_get_saved_albums(sp, ALBUM_CANDIDATE_MAX, &sc);
+                        ui_set_album_candidates(sp, got ? sc : 0, got);
+                        ESP_LOGI(TAG, "album candidates: %d saved albums (ok=%d)", got ? sc : 0, got ? 1 : 0);
                         break;
                     }
                     case SCMD_TRANSFER:

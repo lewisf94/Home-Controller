@@ -38,6 +38,8 @@ static int s_msg_id = 1;                 /* incrementing WS command id */
 static int s_states_req_id = 0;          /* id of our now-playing get_states request */
 static int s_devices_req_id = 0;         /* id of a device-list get_states request */
 static int s_lights_req_id = 0;          /* id of a light-list get_states request */
+static int s_album_browse_req_id = 0;    /* id of a media_player/browse_media request */
+static int s_album_browse_depth = 0;     /* follow at most a few folder layers */
 static int s_sub_id = 0;                 /* id of the active subscribe_trigger (for unsubscribe) */
 
 static spotify_track_t s_track = {0};
@@ -52,6 +54,18 @@ static char s_art_loaded[256] = {0};     /* last URL we already fetched */
 static char  *s_rx     = NULL;
 static size_t s_rx_cap = 0;
 #define RX_MAX_CAP (64 * 1024)
+
+/* Must match ui.c's private ui_album_candidate_t layout. Kept local so the
+ * shared public include/ folder does not need a private-folder include sync. */
+#define HA_ALBUM_CANDIDATE_MAX 16
+#define HA_ALBUM_BROWSE_MAX_DEPTH 3
+typedef struct {
+    char title[80];
+    char artist[56];
+    char uri[64];
+} ha_album_candidate_t;
+
+void ui_set_album_candidates(const void *list, int count, bool ok);
 
 /* ── JSON scanner ────────────────────────────────────────────────────────── */
 static const char *json_skip_string(const char *p)
@@ -152,6 +166,240 @@ static bool json_obj_get_double(const char *obj, const char *key, double *out)
 }
 
 /* ── Outbound (WebSocket sends) ──────────────────────────────────────────── */
+static bool ws_send(const char *json);
+
+static bool ascii_contains_ci(const char *s, const char *needle)
+{
+    if (!s || !needle || !needle[0]) return false;
+    size_t nl = strlen(needle);
+    for (; *s; s++) {
+        size_t i = 0;
+        while (i < nl) {
+            char a = s[i], b = needle[i];
+            if (!a) return false;
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) break;
+            i++;
+        }
+        if (i == nl) return true;
+    }
+    return false;
+}
+
+static bool json_bool_is_true(const char *p)
+{
+    return p && strncmp(p, "true", 4) == 0;
+}
+
+static const char *json_array_first_obj(const char *arr)
+{
+    if (!arr || *arr != '[') return NULL;
+    const char *p = arr + 1;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    return (*p == '{') ? p : NULL;
+}
+
+static const char *json_array_next_obj(const char *obj)
+{
+    const char *p = json_skip_value(obj);
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    return (*p == '{') ? p : NULL;
+}
+
+static void json_escape(char *out, size_t out_len, const char *src)
+{
+    if (!out || out_len == 0) return;
+    size_t i = 0;
+    if (src) {
+        while (*src && i + 1 < out_len) {
+            char c = *src++;
+            if ((c == '"' || c == '\\') && i + 2 < out_len) {
+                out[i++] = '\\';
+                out[i++] = c;
+            } else if ((unsigned char)c < 0x20) {
+                out[i++] = ' ';
+            } else {
+                out[i++] = c;
+            }
+        }
+    }
+    out[i] = '\0';
+}
+
+static bool is_spotify_id_char(char c)
+{
+    return (c >= 'A' && c <= 'Z') ||
+           (c >= 'a' && c <= 'z') ||
+           (c >= '0' && c <= '9');
+}
+
+static bool spotify_album_uri_from_id(const char *id, char *out, size_t out_len)
+{
+    char clean[50];
+    size_t i = 0;
+    while (id && is_spotify_id_char(*id) && i + 1 < sizeof(clean))
+        clean[i++] = *id++;
+    clean[i] = '\0';
+    if (i == 0) return false;
+    snprintf(out, out_len, "spotify:album:%s", clean);
+    return true;
+}
+
+static bool to_spotify_album_uri(const char *media_id, char *out, size_t out_len)
+{
+    if (!media_id || !out || out_len == 0) return false;
+    if (strncmp(media_id, "spotify:album:", 14) == 0) {
+        return spotify_album_uri_from_id(media_id + 14, out, out_len);
+    }
+    const char *p = strstr(media_id, "spotify://album/");
+    if (p) {
+        return spotify_album_uri_from_id(p + 16, out, out_len);
+    }
+    return false;
+}
+
+static bool send_album_browse(const char *media_id, const char *media_type, int depth)
+{
+    char ent[128], id[192], typ[64], buf[560];
+    json_escape(ent, sizeof(ent), s_entity ? s_entity : "");
+    json_escape(id, sizeof(id), media_id ? media_id : "");
+    json_escape(typ, sizeof(typ), media_type ? media_type : "");
+
+    s_album_browse_req_id = s_msg_id++;
+    s_album_browse_depth = depth;
+    if (id[0]) {
+        snprintf(buf, sizeof(buf),
+                 "{\"id\":%d,\"type\":\"media_player/browse_media\","
+                 "\"entity_id\":\"%s\",\"media_content_id\":\"%s\","
+                 "\"media_content_type\":\"%s\"}",
+                 s_album_browse_req_id, ent, id, typ[0] ? typ : "album");
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "{\"id\":%d,\"type\":\"media_player/browse_media\","
+                 "\"entity_id\":\"%s\"}",
+                 s_album_browse_req_id, ent);
+    }
+
+    ESP_LOGI(TAG, "browse albums depth=%d%s", depth, id[0] ? " (+media_id)" : "");
+    if (!ws_send(buf)) {
+        s_album_browse_req_id = 0;
+        ui_set_album_candidates(NULL, 0, false);
+        return false;
+    }
+    return true;
+}
+
+typedef struct {
+    char media_id[160];
+    char media_type[48];
+    int score;
+} browse_follow_t;
+
+static void consider_album_follow(const char *child, browse_follow_t *best)
+{
+    char title[80] = {0}, media_class[40] = {0}, media_type[48] = {0}, media_id[160] = {0};
+    json_obj_get_str(child, "title", title, sizeof(title));
+    json_obj_get_str(child, "media_class", media_class, sizeof(media_class));
+    json_obj_get_str(child, "media_content_type", media_type, sizeof(media_type));
+    json_obj_get_str(child, "media_content_id", media_id, sizeof(media_id));
+
+    bool expandable = json_bool_is_true(json_obj_get(child, "can_expand"));
+    if (!expandable && !ascii_contains_ci(media_class, "directory")) return;
+
+    int score = 0;
+    if (ascii_contains_ci(title, "album") ||
+        ascii_contains_ci(media_class, "album") ||
+        ascii_contains_ci(media_type, "album") ||
+        ascii_contains_ci(media_id, "album")) {
+        score += 100;
+    }
+    if (ascii_contains_ci(title, "spotify") ||
+        ascii_contains_ci(media_id, "spotify")) {
+        score += 30;
+    }
+    if (ascii_contains_ci(title, "library") ||
+        ascii_contains_ci(media_id, "library")) {
+        score += 20;
+    }
+
+    if (score > best->score && media_id[0]) {
+        best->score = score;
+        snprintf(best->media_id, sizeof(best->media_id), "%.159s", media_id);
+        snprintf(best->media_type, sizeof(best->media_type), "%.47s", media_type);
+    }
+}
+
+static bool album_candidate_from_child(const char *child, ha_album_candidate_t *out)
+{
+    char media_id[160] = {0}, media_class[40] = {0}, media_type[48] = {0};
+    json_obj_get_str(child, "media_content_id", media_id, sizeof(media_id));
+    json_obj_get_str(child, "media_class", media_class, sizeof(media_class));
+    json_obj_get_str(child, "media_content_type", media_type, sizeof(media_type));
+
+    bool album_like = ascii_contains_ci(media_class, "album") ||
+                      ascii_contains_ci(media_type, "album") ||
+                      ascii_contains_ci(media_id, "album");
+    const char *can_play = json_obj_get(child, "can_play");
+    if (!album_like || (can_play && !json_bool_is_true(can_play))) return false;
+
+    memset(out, 0, sizeof(*out));
+    if (!to_spotify_album_uri(media_id, out->uri, sizeof(out->uri))) return false;
+    json_obj_get_str(child, "title", out->title, sizeof(out->title));
+    json_obj_get_str(child, "subtitle", out->artist, sizeof(out->artist));
+    if (!out->artist[0]) json_obj_get_str(child, "artist",  out->artist, sizeof(out->artist));
+    if (!out->artist[0]) json_obj_get_str(child, "creator", out->artist, sizeof(out->artist));
+    if (!out->artist[0]) snprintf(out->artist, sizeof(out->artist), "Music Assistant");
+    return out->title[0] && out->uri[0];
+}
+
+static void handle_album_browse_result(const char *result)
+{
+    static ha_album_candidate_t cands[HA_ALBUM_CANDIDATE_MAX];
+    browse_follow_t follow = {0};
+    int n = 0, seen = 0;
+    char first_id[96] = {0}, first_class[40] = {0};
+
+    const char *children = result ? json_obj_get(result, "children") : NULL;
+    const char *child = json_array_first_obj(children);
+    while (child) {
+        if (seen++ == 0) {
+            json_obj_get_str(child, "media_content_id", first_id, sizeof(first_id));
+            json_obj_get_str(child, "media_class", first_class, sizeof(first_class));
+        }
+        if (n < HA_ALBUM_CANDIDATE_MAX &&
+            album_candidate_from_child(child, &cands[n])) {
+            n++;
+        } else {
+            consider_album_follow(child, &follow);
+        }
+        child = json_array_next_obj(child);
+    }
+
+    if (n > 0) {
+        ESP_LOGI(TAG, "album browse: %d candidates", n);
+        s_album_browse_req_id = 0;
+        ui_set_album_candidates(cands, n, true);
+        return;
+    }
+
+    if (follow.score > 0 && s_album_browse_depth < HA_ALBUM_BROWSE_MAX_DEPTH) {
+        send_album_browse(follow.media_id, follow.media_type, s_album_browse_depth + 1);
+        return;
+    }
+
+    /* Dead end: log what this level actually contained so the follow heuristic
+     * can be tuned against the real Music Assistant browse tree (its media_id
+     * scheme varies by MA version -- see P4-TODO "album catalogue management"). */
+    ESP_LOGW(TAG, "album browse: no playable Spotify albums found "
+                  "(depth=%d children=%d first_id=%s first_class=%s)",
+             s_album_browse_depth, seen,
+             first_id[0] ? first_id : "(none)",
+             first_class[0] ? first_class : "(none)");
+    s_album_browse_req_id = 0;
+    ui_set_album_candidates(NULL, 0, true);
+}
+
 static bool ws_send(const char *json)
 {
     if (!s_ws || !esp_websocket_client_is_connected(s_ws)) {
@@ -208,6 +456,9 @@ static bool call_service_entity(const char *domain, const char *service,
                  "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"}}",
                  id, domain, service, entity_id ? entity_id : "");
     }
+    ESP_LOGI(TAG, "call_service %s.%s -> %s%s",
+             domain, service, entity_id ? entity_id : "",
+             (service_data && service_data[0]) ? " (+data)" : "");
     return ws_send(buf);
 }
 
@@ -414,7 +665,7 @@ static void build_device_list(const char *arr)
 }
 
 /* Build the lights list from a get_states result array: every light entity
- * becomes one row. Unlike build_device_list(), ui_light_t.entity_id (64 B)
+ * becomes one row. Unlike build_device_list(), ui_light_t.entity_id (96 B)
  * comfortably fits a full HA entity_id, so no index-indirection table is
  * needed -- ha_light_toggle()/ha_light_set_brightness() take it directly. */
 static void build_light_list(const char *arr)
@@ -491,6 +742,15 @@ static void handle_message(const char *msg)
         int id = 0;
         const char *idp = json_obj_get(msg, "id");
         if (idp) id = atoi(idp);
+        const char *success = json_obj_get(msg, "success");
+        bool failed = (success && strncmp(success, "false", 5) == 0);
+        if (failed) {
+            char err_msg[128] = {0};
+            const char *err = json_obj_get(msg, "error");
+            if (!json_obj_get_str(err, "message", err_msg, sizeof(err_msg)))
+                snprintf(err_msg, sizeof(err_msg), "unknown error");
+            ESP_LOGW(TAG, "result id=%d FAILED: %s", id, err_msg);
+        }
         if (id == s_states_req_id) {
             const char *arr = json_obj_get(msg, "result");
             const char *st  = find_entity_in_array(arr);
@@ -502,6 +762,13 @@ static void handle_message(const char *msg)
         } else if (s_lights_req_id && id == s_lights_req_id) {
             build_light_list(json_obj_get(msg, "result"));
             s_lights_req_id = 0;
+        } else if (s_album_browse_req_id && id == s_album_browse_req_id) {
+            if (failed) {
+                s_album_browse_req_id = 0;
+                ui_set_album_candidates(NULL, 0, false);
+            } else {
+                handle_album_browse_result(json_obj_get(msg, "result"));
+            }
         }
     }
 }
@@ -520,6 +787,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
         case WEBSOCKET_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "ws disconnected");
             s_states_req_id = 0;
+            if (s_album_browse_req_id) {
+                s_album_browse_req_id = 0;
+                ui_set_album_candidates(NULL, 0, false);
+            }
             break;
         case WEBSOCKET_EVENT_DATA: {
             /* op_code 1 = text, 0 = continuation. Ignore ping/pong/binary/close. */
@@ -584,6 +855,11 @@ void ha_request_devices(void)
     s_devices_req_id = s_msg_id++;
     snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_devices_req_id);
     if (!ws_send(buf)) s_devices_req_id = 0;
+}
+
+void ha_request_album_candidates(void)
+{
+    send_album_browse(NULL, NULL, 0);
 }
 
 void ha_request_lights(void)

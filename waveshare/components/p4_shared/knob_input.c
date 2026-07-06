@@ -33,6 +33,8 @@
 
 static const char *TAG = "knob_input";
 
+size_t album_catalog_count(void);
+
 // Scrub step: each detent = 500 ms of track position
 #define SCRUB_STEP_MS 500
 
@@ -59,7 +61,7 @@ static void _send_albums_config(int32_t position)
     cfg.position               = position;
     cfg.position_nonce         = (uint32_t)xTaskGetTickCount();
     cfg.min_position           = 0;
-    cfg.max_position           = (int32_t)albums_count() - 1;
+    cfg.max_position           = (int32_t)album_catalog_count() - 1;
     cfg.position_width_radians = 10.0f * (float)M_PI / 180.0f;
     cfg.detent_strength_unit   = 1.0f;
     cfg.endstop_strength_unit  = 1.0f;

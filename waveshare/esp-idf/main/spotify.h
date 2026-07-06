@@ -80,3 +80,19 @@ bool spotify_get_devices(spotify_device_t *out, int max, int *count);
 
 /* Transfer playback to device_id (PUT /me/player, play=true). Blocking HTTPS. */
 bool spotify_transfer_playback(const char *device_id);
+
+/* One Spotify album candidate for the on-device Add Albums flow.
+ * LAYOUT CONTRACT: must stay byte-identical to ui.c's private
+ * ui_album_candidate_t and ha_client.c's ha_album_candidate_t -- the list is
+ * passed to ui_set_album_candidates() through a void* seam while the runtime
+ * catalogue is a prototype. Change all three together (or promote the struct
+ * to a shared header when this graduates). */
+typedef struct {
+    char title[80];
+    char artist[56];
+    char uri[64];       /* spotify:album:... */
+} spotify_album_candidate_t;
+
+/* First page of the user's saved albums. Requires the OAuth refresh token to
+ * include Spotify's user-library-read scope. Returns true on HTTP 200. */
+bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *count);

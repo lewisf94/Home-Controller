@@ -71,6 +71,10 @@
 #define TUNE_GEAR_X            (-6)
 #define TUNE_DEVBTN_X          (-56)
 #define TUNE_LIGHTSBTN_X       (-106)   /* one more 50px slot left of DEVBTN */
+/* Add-albums "+" button: next 50px slot left of LIGHTS on the HA build. On the
+ * non-HA build there is no lights button (P4_HAS_HA_LIGHTS unset) and the "+"
+ * takes the TUNE_LIGHTSBTN_X slot instead -- see browser_build_top_buttons. */
+#define TUNE_ADDBTN_X          (-156)
 /* PAPER only: Y of the "NN / NN" album index counter, and of the printed
  * header rule. Counter Y=17 shares the buttons'/FPS's ~y25 header-row centre
  * (mono_16 line height 16). Rule Y=46 clears the button bottom (y42) and

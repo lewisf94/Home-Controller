@@ -22,6 +22,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include <stdbool.h>
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -63,6 +64,7 @@ typedef enum {
     HCMD_PLAY_ALBUM,
     HCMD_GET_DEVICES,       /* enumerate HA media_player entities */
     HCMD_TRANSFER,          /* switch the active media_player entity */
+    HCMD_GET_ALBUM_CANDIDATES, /* browse active media_player for albums */
     HCMD_GET_LIGHTS,        /* enumerate HA light entities */
     HCMD_LIGHT_TOGGLE,      /* toggle one light on/off */
     HCMD_LIGHT_BRIGHTNESS,  /* set one light's brightness */
@@ -107,6 +109,8 @@ void ui_request_shuffle(void)
     { hcmd_t c = {.type=HCMD_SHUFFLE}; xQueueSend(s_cmd_queue,&c,0); }
 void ui_request_get_devices(void)
     { hcmd_t c = {.type=HCMD_GET_DEVICES}; xQueueSend(s_cmd_queue,&c,0); }
+void ui_request_get_album_candidates(void)
+    { hcmd_t c = {.type=HCMD_GET_ALBUM_CANDIDATES}; xQueueSend(s_cmd_queue,&c,0); }
 void ui_request_transfer(const char *device_id)
 {
     hcmd_t c = { .type = HCMD_TRANSFER };
@@ -145,6 +149,14 @@ static lv_image_dsc_t  s_art_dsc = {0};
 #define ART_DECODE_H 320
 #define ART_RGB_BYTES ((size_t)ART_DECODE_W * ART_DECODE_H * 2)
 #define ART_FILE_PATH "/littlefs/art.jpg"
+#define LIGHT_REFRESH_DELAY_MS 400
+
+static void refresh_lights_after_command(bool sent)
+{
+    if (!sent) return;
+    vTaskDelay(pdMS_TO_TICKS(LIGHT_REFRESH_DELAY_MS));
+    ha_request_lights();
+}
 
 static void decode_art(const char *path)
 {
@@ -191,11 +203,17 @@ static void ha_task(void *arg)
             case HCMD_PLAY_ALBUM:   ha_play_album(cmd.album_uri);        break;
             case HCMD_GET_DEVICES:  ha_request_devices();                break;
             case HCMD_TRANSFER:     ha_set_active_entity(cmd.device_id); break;
+            case HCMD_GET_ALBUM_CANDIDATES:
+                ha_request_album_candidates();
+                break;
             case HCMD_GET_LIGHTS:   ha_request_lights();                break;
-            case HCMD_LIGHT_TOGGLE: ha_light_toggle(cmd.light_id);       break;
+            case HCMD_LIGHT_TOGGLE:
+                refresh_lights_after_command(ha_light_toggle(cmd.light_id));
+                break;
             case HCMD_LIGHT_BRIGHTNESS:
-                ha_light_set_brightness(cmd.light_brightness.entity_id,
-                                         cmd.light_brightness.pct);
+                refresh_lights_after_command(
+                    ha_light_set_brightness(cmd.light_brightness.entity_id,
+                                            cmd.light_brightness.pct));
                 break;
             default: break;
             }

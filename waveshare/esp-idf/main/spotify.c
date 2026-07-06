@@ -1025,3 +1025,74 @@ bool spotify_get_devices(spotify_device_t *out, int max, int *count)
     if (count) *count = n;
     return (err == ESP_OK && status == 200);
 }
+
+bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *count)
+{
+    if (count) *count = 0;
+    if (!out || max <= 0) return false;
+    if (max > 50) max = 50;   /* Spotify's page limit cap. */
+    if (!ensure_token()) return false;
+
+    char url[96];
+    snprintf(url, sizeof(url), "https://api.spotify.com/v1/me/albums?limit=%d", max);
+
+    resp_buf_t resp = {0};
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_GET,
+        .event_handler     = http_event_handler,
+        .user_data         = &resp,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 5000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+
+    char bearer[320];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
+    esp_http_client_set_header(client, "Authorization", bearer);
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    int n = 0;
+    if (err == ESP_OK && status == 200 && resp.data) {
+        const char *item = json_arr_first_obj(json_obj_get(resp.data, "items"));
+        while (item && n < max) {
+            const char *album = json_obj_get(item, "album");
+            if (album && *album == '{') {
+                spotify_album_candidate_t *a = &out[n];
+                memset(a, 0, sizeof(*a));
+                const char *v;
+                if ((v = json_obj_get(album, "name")))
+                    json_copy_string(v, a->title, sizeof(a->title));
+                if ((v = json_obj_get(album, "uri")))
+                    json_copy_string(v, a->uri, sizeof(a->uri));
+                const char *artist = json_arr_first_obj(json_obj_get(album, "artists"));
+                if (artist && (v = json_obj_get(artist, "name")))
+                    json_copy_string(v, a->artist, sizeof(a->artist));
+                if (!a->artist[0])
+                    snprintf(a->artist, sizeof(a->artist), "Unknown artist");
+                if (a->title[0] && strncmp(a->uri, "spotify:album:", 14) == 0)
+                    n++;
+            }
+
+            const char *after = json_skip_value(item);
+            while (*after==' '||*after=='\t'||*after=='\n'||*after=='\r'||*after==',') after++;
+            item = (*after == '{') ? after : NULL;
+        }
+    } else if (status == 401) {
+        ESP_LOGW(TAG, "get_saved_albums got 401, invalidating cached token");
+        s_token_expiry_us = 0;
+        s_access_token[0] = '\0';
+    } else if (status == 403) {
+        ESP_LOGW(TAG, "get_saved_albums got 403 (refresh token likely lacks user-library-read)");
+    } else {
+        ESP_LOGW(TAG, "get_saved_albums err=%d status=%d", (int)err, status);
+    }
+
+    free(resp.data);
+    if (count) *count = n;
+    return (err == ESP_OK && status == 200);
+}

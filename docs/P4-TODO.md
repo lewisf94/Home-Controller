@@ -145,7 +145,10 @@ items, see [`PENDING.md`](PENDING.md).
    `p4_shared/ui.c` like DEVICES, so the non-HA build gets the screen too --
    its three `ui_request_light_*()` seam functions are no-ops (mirrors how the
    HA build no-ops `ui_request_select_sonos` the other way), so it always shows
-   "No lights configured" there by design, never a hang. One real bug caught
+   "No lights configured" there by design, never a hang. Follow-up diagnostics
+   now log light taps, HA service sends, and failed result frames; toggle and
+   brightness commands also re-fetch the light list after a short Matter
+   round-trip delay so the UI reflects accepted state. One real bug caught
    by the build itself: `ui_light_t.entity_id` was first sized 64 B against a
    96 B `eid` source buffer (GCC `-Werror=format-truncation`) -- resized to 96
    throughout (`ui_light_t`, both `hcmd_t` fields in the HA build's `main.c`) to
@@ -259,10 +262,6 @@ perf-sensitive code and want an on-device re-test:
 
 These would each be a small/medium PR.
 
-- **Restricted-device 403 hint** — on a `403 Restricted device` write, show the
-  existing toast ("Active device is restricted -- transfer first") so the silent
-  FAILED log isn't the only feedback. `ui_show_toast` exists; just thread it
-  through (status 403 isn't surfaced today — verified). Still open.
 - **Aesthetic pass (functional colour-coded transport keys, mono numerals)** —
   NOTE the theme SYSTEM was overhauled since this was written (four dark/light
   MODEs, 24-swatch accents, PAPER's mono fonts), so re-scope first. Still un-done
@@ -277,6 +276,10 @@ These would each be a small/medium PR.
   double-check on hardware.
 
 Retired since this list was written:
+- **Restricted-device 403 hint** — DONE: the direct-Spotify dispatcher now
+  surfaces `spotify_last_cmd_status() == 403` with the existing toast
+  ("Active device is restricted -- transfer first") instead of leaving only a
+  serial `FAILED` log.
 - **Cover Flow "show more covers each side"** — DONE/obsolete: the old "only 1 per
   side / 248 px slots" was the pre-rasteriser layout. The PSRAM column rasteriser
   (`70812a0`) now draws a converging fan capped at `CF_MAX_SIDE = 3` covers/side.
@@ -325,6 +328,34 @@ rather than trusting the old "~96 % full" figure. Flash is 32 MB (8 MB app + 4 M
   quality drops at small sizes.
 - **Move thumbs to a data partition** loaded at runtime. Cleanest long-term
   but adds a startup load step.
+
+## Open — album catalogue management
+
+- **Add albums from the controller itself** — replace or supplement the current
+  compile-time `spotify-albums-list.txt` + embedded-thumb pipeline with a
+  runtime catalogue path. Target UX: from the Albums screen, open an Add/Search
+  flow, search Spotify albums and/or browse the user's saved library, preview
+  results with cover art, then add the chosen album to the selection list without
+  a laptop/reflash.
+  - First slice landed 2026-07-06 (BUILD-VERIFIED, not hardware-tested): the
+    shared P4 UI has a top-bar `+` screen that asks the direct-Spotify backend
+    for the first page of saved albums (`/v1/me/albums`) and the HA backend for
+    the active media player's media-browser albums (`media_player/browse_media`).
+    It displays duplicate-aware ADD/ADDED rows and appends selected album
+    metadata to a small NVS runtime catalogue layered after the compiled seed
+    albums. The knob config now reads the combined catalogue count too. Direct
+    Spotify requires `user-library-read`; HA depends on Music Assistant (or the
+    selected HA media_player) exposing playable Spotify albums in the media
+    browser.
+  - Still open: free-text search (`/v1/search?type=album` on direct Spotify or
+    a Music Assistant/HA search API) and a controller-friendly text-entry flow.
+  - Storage still open: downloaded/cached thumbnails in a data partition or
+    LittleFS-style store. Runtime albums currently add metadata only, so they
+    fall back to the no-art card paths instead of getting embedded thumbs.
+  - UI/input still open: remove/reorder actions and clearer progress/error
+    toasts for network failures.
+  - Capacity: depends on the runtime-thumb/data-partition decision above; avoid
+    growing `albums.c`/`album_thumbs.bin` for albums added on-device.
 
 ---
 
