@@ -142,10 +142,10 @@ items, see [`PENDING.md`](PENDING.md).
    go through a new `call_service_entity()` targeting the tapped light's own
    entity_id (`call_service()` is now a thin wrapper over it for the active
    media_player, unchanged at every existing call site). Lives in the SHARED
-   `p4_shared/ui.c` like DEVICES, so the non-HA build gets the screen too --
-   its three `ui_request_light_*()` seam functions are no-ops (mirrors how the
-   HA build no-ops `ui_request_select_sonos` the other way), so it always shows
-   "No lights configured" there by design, never a hang. Follow-up diagnostics
+   `p4_shared/ui.c` like DEVICES, but the direct-Spotify build compiles out the
+   top-bar Lights entry because it has no HA lights backend (`P4_HAS_HA_LIGHTS`
+   is only defined by the HA build). The non-HA seam functions remain no-ops so
+   the shared code still links. Follow-up diagnostics
    now log light taps, HA service sends, and failed result frames; toggle and
    brightness commands also re-fetch the light list after a short Matter
    round-trip delay so the UI reflects accepted state. One real bug caught
@@ -347,8 +347,15 @@ rather than trusting the old "~96 % full" figure. Flash is 32 MB (8 MB app + 4 M
     Spotify requires `user-library-read`; HA depends on Music Assistant (or the
     selected HA media_player) exposing playable Spotify albums in the media
     browser.
+  - 2026-07-07: failures now explained ON SCREEN (403 missing-scope hint, HA
+    browse error text, network); `get_spotify_token.py` (repo root) now
+    requests `user-library-read` (scopes are frozen at authorisation time —
+    the original playback-only token can NEVER read the library; mint + install
+    a fresh one); Settings > SETUP lets a user enter WiFi + Spotify credentials
+    on-device (NVS overrides secrets.h at boot, `p4_shared/creds.c`).
   - Still open: free-text search (`/v1/search?type=album` on direct Spotify or
-    a Music Assistant/HA search API) and a controller-friendly text-entry flow.
+    a Music Assistant/HA search API) and a controller-friendly text-entry flow
+    (the SETUP keyboard overlay is reusable for this).
   - Storage still open: downloaded/cached thumbnails in a data partition or
     LittleFS-style store. Runtime albums currently add metadata only, so they
     fall back to the no-art card paths instead of getting embedded thumbs.

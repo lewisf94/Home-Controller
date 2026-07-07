@@ -27,7 +27,10 @@ endif()
 
 # The shared UI is linked into both P4 builds. Only the HA build has a backend
 # for light.* entities, so only this target exposes the Lights entry point.
+# P4_BACKEND_HA additionally tells the shared UI which backend it serves
+# (currently: which credential rows Settings > SETUP shows -- the HA build
+# carries no Spotify credentials by design).
 idf_component_get_property(p4_shared_lib p4_shared COMPONENT_LIB)
 if(p4_shared_lib)
-    target_compile_definitions(${p4_shared_lib} PUBLIC P4_HAS_HA_LIGHTS=1)
+    target_compile_definitions(${p4_shared_lib} PUBLIC P4_HAS_HA_LIGHTS=1 P4_BACKEND_HA=1)
 endif()

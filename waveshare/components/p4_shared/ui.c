@@ -80,17 +80,32 @@ static const char *TAG = "ui";
 #ifndef P4_HAS_HA_LIGHTS
 #define P4_HAS_HA_LIGHTS 0
 #endif
+/* Set (=1) by waveshare/esp-idf-ha's top-level CMakeLists: gates the HA-only
+ * bits of the shared UI (lights entry, which SETUP credential rows show). */
+#ifndef P4_BACKEND_HA
+#define P4_BACKEND_HA 0
+#endif
 
 #define UI_ALBUM_CANDIDATE_MAX 16
+#define CREDS_KEY_WIFI_SSID  "wifi_ssid"
+#define CREDS_KEY_WIFI_PASS  "wifi_pass"
+#define CREDS_KEY_SP_ID      "sp_id"
+#define CREDS_KEY_SP_SECRET  "sp_secret"
+#define CREDS_KEY_SP_REFRESH "sp_refresh"
+#define CREDS_VAL_MAX 300
+
 typedef struct {
     char title[80];
     char artist[56];
     char uri[64];
 } ui_album_candidate_t;
 
-/* Local seams kept out of ui.h while the runtime catalogue is a prototype. */
+/* Local seams kept out of ui.h while the runtime catalogue is a prototype.
+ * `err` NULL = success; else a short human reason shown on the add screen. */
 void ui_request_get_album_candidates(void);
-void ui_set_album_candidates(const void *list, int count, bool ok);
+void ui_set_album_candidates(const void *list, int count, const char *err);
+bool creds_get_stored(const char *key, char *out, size_t out_len);
+bool creds_set(const char *key, const char *value);
 void album_catalog_init(void);
 const album_entry_t *album_catalog_get(size_t index);
 size_t album_catalog_count(void);
@@ -564,13 +579,36 @@ static lv_obj_t *s_volume_slider     = NULL;   /* Settings UI-sound volume slide
 static lv_obj_t *s_volume_val        = NULL;   /* "NN%" label beside it */
 
 /* Settings is split into category pages reached by a chip row at the top
- * (Appearance / Display / Sound). One page is visible at a time; the rest are
+ * (Display / Sound / Setup). One page is visible at a time; the rest are
  * hidden. s_set_tab survives a theme rebuild so the active page is preserved. */
-#define SET_TAB_COUNT  2
+#define SET_TAB_COUNT  3
 static lv_obj_t *s_set_tabs[SET_TAB_COUNT]     = {0};   /* category chip buttons */
 static lv_obj_t *s_set_tab_lbls[SET_TAB_COUNT] = {0};
 static lv_obj_t *s_set_pages[SET_TAB_COUNT]    = {0};   /* page containers */
 static uint8_t   s_set_tab = 0;                         /* active category page */
+
+/* SETUP tab: runtime credential overrides (creds.h). One row per field; the
+ * value label never shows a stored secret, only "set (n chars)". The HA build
+ * hides the Spotify trio (it has no Spotify backend). */
+typedef struct {
+    const char *key;      /* creds.h NVS key */
+    const char *label;    /* row header text */
+    bool secret;          /* mask the stored value in the row */
+} setup_field_t;
+static const setup_field_t k_setup_fields[] = {
+    { CREDS_KEY_WIFI_SSID,  "WIFI SSID",             false },
+    { CREDS_KEY_WIFI_PASS,  "WIFI PASSWORD",         true  },
+#if !P4_BACKEND_HA
+    { CREDS_KEY_SP_ID,      "SPOTIFY CLIENT ID",     true  },
+    { CREDS_KEY_SP_SECRET,  "SPOTIFY CLIENT SECRET", true  },
+    { CREDS_KEY_SP_REFRESH, "SPOTIFY REFRESH TOKEN", true  },
+#endif
+};
+#define SETUP_FIELD_COUNT ((int)(sizeof k_setup_fields / sizeof k_setup_fields[0]))
+static lv_obj_t *s_setup_val_lbls[8]  = {0};   /* value label per field */
+static lv_obj_t *s_cred_editor        = NULL;  /* lv_layer_top() keyboard overlay */
+static lv_obj_t *s_cred_editor_ta     = NULL;
+static int       s_cred_editor_field  = -1;
 
 /* SOUND SET selector: option 0 = AUTO (follow MODE), then one per named set. */
 #define SND_SET_OPTS 8
@@ -707,6 +745,16 @@ static void on_settings_tab(lv_event_t *e);
 static void refresh_settings_tabs(void);
 static void on_sound_set_option(lv_event_t *e);
 static void refresh_sound_set_selection(void);
+/* SETUP tab (runtime credentials) */
+static void refresh_setup_fields(void);
+static void on_setup_field_tap(lv_event_t *e);
+static void on_setup_restart(lv_event_t *e);
+static void open_cred_editor(int idx);
+static void cred_editor_close(void);
+static void on_cred_editor_save(lv_event_t *e);
+static void on_cred_editor_cancel(lv_event_t *e);
+static void on_cred_kb_event(lv_event_t *e);
+static void settings_build_setup_page(lv_obj_t *pg);
 static void save_sound_set(int8_t v);
 static void fps_render_ready_cb(lv_event_t *e);
 static void fps_timer_cb(lv_timer_t *t);
@@ -3389,12 +3437,15 @@ static void settings_build_back_and_title(void)
 
 static void settings_build_tabs(void)
 {
-    /* Category tabs: one chip per page; tapping one swaps the visible page. */
-    static const char *const k_tab_names[SET_TAB_COUNT] = { "DISPLAY", "SOUND" };
+    /* Category tabs: one chip per page; tapping one swaps the visible page.
+     * Chips centre as a row whatever SET_TAB_COUNT is (3 x 220 + gaps = 684,
+     * still inside the 800 px panel). */
+    static const char *const k_tab_names[SET_TAB_COUNT] = { "DISPLAY", "SOUND", "SETUP" };
     for (int i = 0; i < SET_TAB_COUNT; i++) {
         lv_obj_t *chip = lv_button_create(s_screen_settings);
         lv_obj_set_size(chip, 220, 44);
-        lv_obj_align(chip, LV_ALIGN_TOP_MID, (int)((i - 0.5f) * 232.0f), 60);
+        lv_obj_align(chip, LV_ALIGN_TOP_MID,
+                     (int)((i - (SET_TAB_COUNT - 1) / 2.0f) * 232.0f), 60);
         style_key_btn(chip);
         style_button_press(chip);
         lv_obj_add_event_cb(chip, on_settings_tab, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
@@ -3657,6 +3708,211 @@ static void settings_build_sound_page(lv_obj_t *pg_snd)
     }
 }
 
+/* ── SETUP tab: runtime credential entry ─────────────────────────────────────
+ * Lets a user who didn't bake secrets.h at flash time enter WiFi + Spotify
+ * credentials on the device. Values live in NVS (creds.c) and are read by
+ * main.c ONCE at boot -- so every row edit ends with "restart to apply", and
+ * the page has a RESTART key. The stored value is never rendered in full for
+ * secret fields ("set (n chars)"), never logged, and the editor pre-fills
+ * ONLY a stored override -- never the compiled secrets.h value. */
+
+static void setup_field_value_text(int idx, char *out, size_t out_len)
+{
+    const setup_field_t *f = &k_setup_fields[idx];
+    char v[CREDS_VAL_MAX];
+    if (!creds_get_stored(f->key, v, sizeof v)) {
+        snprintf(out, out_len, "using flashed value");
+    } else if (f->secret) {
+        snprintf(out, out_len, "set (%d chars)", (int)strlen(v));
+    } else {
+        /* Non-secret (SSID): show it, capped well under the row width. */
+        snprintf(out, out_len, "%.40s", v);
+    }
+}
+
+static void refresh_setup_fields(void)
+{
+    for (int i = 0; i < SETUP_FIELD_COUNT; i++) {
+        if (!s_setup_val_lbls[i]) continue;
+        char b[48];
+        setup_field_value_text(i, b, sizeof b);
+        lv_label_set_text(s_setup_val_lbls[i], b);
+    }
+}
+
+static void cred_editor_close(void)
+{
+    if (s_cred_editor) {
+        lv_obj_delete(s_cred_editor);
+        s_cred_editor    = NULL;
+        s_cred_editor_ta = NULL;
+    }
+    s_cred_editor_field = -1;
+}
+
+static void on_cred_editor_save(lv_event_t *e)
+{
+    (void)e;
+    if (s_cred_editor_field < 0 || s_cred_editor_field >= SETUP_FIELD_COUNT ||
+        !s_cred_editor_ta) return;
+    const setup_field_t *f = &k_setup_fields[s_cred_editor_field];
+    bool ok = creds_set(f->key, lv_textarea_get_text(s_cred_editor_ta));
+    cred_editor_close();
+    refresh_setup_fields();
+    ui_show_toast(ok ? "Saved - restart to apply" : "Save failed", 2500);
+    audio_play(ok ? AUDIO_SFX_SELECT : AUDIO_SFX_BACK);
+}
+
+static void on_cred_editor_cancel(lv_event_t *e)
+{
+    (void)e;
+    cred_editor_close();
+    audio_play(AUDIO_SFX_BACK);
+}
+
+static void on_cred_kb_event(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY)       on_cred_editor_save(e);   /* keyboard tick key */
+    else if (code == LV_EVENT_CANCEL) cred_editor_close();      /* keyboard close key */
+}
+
+static void open_cred_editor(int idx)
+{
+    if (idx < 0 || idx >= SETUP_FIELD_COUNT) return;
+    cred_editor_close();
+    s_cred_editor_field = idx;
+    const setup_field_t *f = &k_setup_fields[idx];
+
+    /* Full-screen overlay on the TOP layer: modal over whatever screen is
+     * active, created fresh per edit and deleted on close -- so the theme
+     * rebuild path never has to know it exists (it can't be reached while
+     * the overlay has the screen). */
+    lv_obj_t *ov = lv_obj_create(lv_layer_top());
+    s_cred_editor = ov;
+    lv_obj_set_size(ov, SCREEN_W, SCREEN_H);
+    lv_obj_set_pos(ov, 0, 0);
+    lv_obj_set_style_bg_color(ov, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(ov, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ov, 0, 0);
+    lv_obj_set_style_radius(ov, 0, 0);
+    lv_obj_set_style_pad_all(ov, 0, 0);
+    lv_obj_remove_flag(ov, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(ov);
+    lv_label_set_text(title, f->label);
+    lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(title, font_md(), 0);
+    lv_obj_set_style_text_letter_space(title, 2, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    lv_obj_t *hint = lv_label_create(ov);
+    lv_label_set_text(hint, "Save with an empty box to go back to the flashed value");
+    lv_obj_set_style_text_color(hint, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(hint, font_sm(), 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 44);
+
+    s_cred_editor_ta = lv_textarea_create(ov);
+    lv_obj_set_size(s_cred_editor_ta, 700, 52);
+    lv_obj_align(s_cred_editor_ta, LV_ALIGN_TOP_MID, 0, 74);
+    lv_textarea_set_one_line(s_cred_editor_ta, true);
+    lv_textarea_set_max_length(s_cred_editor_ta, CREDS_VAL_MAX - 1);
+    /* Montserrat regardless of theme: the pixel/mono theme fonts miss some
+     * keyboard symbols and long tokens need a compact readable face. */
+    lv_obj_set_style_text_font(s_cred_editor_ta, &lv_font_montserrat_20, 0);
+    char stored[CREDS_VAL_MAX];
+    /* Pre-fill ONLY a stored override -- the compiled secrets.h value must
+     * never be rendered back to the screen. */
+    lv_textarea_set_text(s_cred_editor_ta,
+        creds_get_stored(f->key, stored, sizeof stored) ? stored : "");
+
+    lv_obj_t *save = lv_button_create(ov);
+    lv_obj_set_size(save, 160, 46);
+    lv_obj_align(save, LV_ALIGN_TOP_MID, -90, 140);
+    style_key_btn(save);
+    lv_obj_set_style_bg_color(save, lv_color_hex(accent_color()), 0);
+    lv_obj_add_event_cb(save, on_cred_editor_save, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sl = lv_label_create(save);
+    lv_label_set_text(sl, "SAVE");
+    lv_obj_set_style_text_font(sl, font_sm(), 0);
+    lv_obj_center(sl);
+
+    lv_obj_t *cancel = lv_button_create(ov);
+    lv_obj_set_size(cancel, 160, 46);
+    lv_obj_align(cancel, LV_ALIGN_TOP_MID, 90, 140);
+    style_key_btn(cancel);
+    lv_obj_set_style_bg_color(cancel, lv_color_hex(s_th->surface), 0);
+    lv_obj_add_event_cb(cancel, on_cred_editor_cancel, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *cl = lv_label_create(cancel);
+    lv_label_set_text(cl, "CANCEL");
+    lv_obj_set_style_text_font(cl, font_sm(), 0);
+    lv_obj_center(cl);
+
+    lv_obj_t *kb = lv_keyboard_create(ov);
+    lv_obj_set_size(kb, SCREEN_W, 250);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(kb, s_cred_editor_ta);
+    /* Montserrat carries every LV_SYMBOL the key map uses (the PIXEL font's
+     * baked FA subset does not -- backspace would render blank). */
+    lv_obj_set_style_text_font(kb, &lv_font_montserrat_20, 0);
+    lv_obj_add_event_cb(kb, on_cred_kb_event, LV_EVENT_ALL, NULL);
+}
+
+static void on_setup_field_tap(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    audio_play(AUDIO_SFX_TICK);
+    open_cred_editor(i);
+}
+
+static void on_setup_restart(lv_event_t *e)
+{
+    (void)e;
+    esp_restart();
+}
+
+static void settings_build_setup_page(lv_obj_t *pg)
+{
+    int y = 6;
+    for (int i = 0; i < SETUP_FIELD_COUNT; i++) {
+        settings_header(pg, k_setup_fields[i].label, 24, y);
+        lv_obj_t *btn = lv_button_create(pg);
+        lv_obj_set_size(btn, 520, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, y + 32);
+        style_key_btn(btn);
+        style_button_press(btn);
+        lv_obj_add_event_cb(btn, on_setup_field_tap, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, font_sm(), 0);
+        lv_obj_center(lbl);
+        s_setup_val_lbls[i] = lbl;
+        y += 96;
+    }
+
+    settings_header(pg, "APPLY", 24, y);
+    lv_obj_t *rb = lv_button_create(pg);
+    lv_obj_set_size(rb, 520, 48);
+    lv_obj_align(rb, LV_ALIGN_TOP_MID, 0, y + 32);
+    style_key_btn(rb);
+    style_button_press(rb);
+    lv_obj_add_event_cb(rb, on_setup_restart, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *rl = lv_label_create(rb);
+    lv_label_set_text(rl, "RESTART NOW");
+    lv_obj_set_style_text_font(rl, font_sm(), 0);
+    lv_obj_center(rl);
+
+    lv_obj_t *note = lv_label_create(pg);
+    lv_label_set_text(note,
+        "Values stored here override the ones compiled in at\n"
+        "flash time, and are read once at boot.");
+    lv_obj_set_style_text_color(note, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(note, font_sm(), 0);
+    lv_obj_align(note, LV_ALIGN_TOP_MID, 0, y + 92);
+
+    refresh_setup_fields();
+}
+
 static void settings_build_paper_chrome(void)
 {
     /* PAPER form furniture goes on LAST so page content scrolling past the
@@ -3692,6 +3948,11 @@ static void build_settings_screen(void)
     lv_obj_t *pg_snd = settings_page();
     s_set_pages[1] = pg_snd;
     settings_build_sound_page(pg_snd);
+
+    /* =============================== SETUP ============================== */
+    lv_obj_t *pg_setup = settings_page();
+    s_set_pages[2] = pg_setup;
+    settings_build_setup_page(pg_setup);
 
     settings_build_paper_chrome();
 
@@ -3861,7 +4122,7 @@ static void on_open_album_add(lv_event_t *e)
 {
     (void)e;
     if (!s_screen_album_add) return;
-    album_add_placeholder("Loading saved albums...");
+    album_add_placeholder("Loading albums...");
     lv_screen_load(s_screen_album_add);
     ui_request_get_album_candidates();
 }
@@ -4621,7 +4882,7 @@ void ui_set_devices(const ui_device_t *list, int count)
     bsp_display_unlock();
 }
 
-void ui_set_album_candidates(const void *raw_list, int count, bool ok)
+void ui_set_album_candidates(const void *raw_list, int count, const char *err)
 {
     const ui_album_candidate_t *list = (const ui_album_candidate_t *)raw_list;
     if (!list) count = 0;
@@ -4635,10 +4896,14 @@ void ui_set_album_candidates(const void *raw_list, int count, bool ok)
     s_album_candidate_count = 0;
     if (s_album_add_list) {
         lv_obj_clean(s_album_add_list);
-        if (!ok || count == 0) {
+        if ((err && err[0]) || count == 0) {
+            /* Failure shows the backend's actual reason (403 scope, HA browse
+             * error, network...) instead of a blanket "unavailable" -- the
+             * why used to be serial-only, which made this screen a dead end. */
             lv_obj_t *lbl = lv_label_create(s_album_add_list);
-            lv_label_set_text(lbl, ok ? "No saved albums returned"
-                                      : "Saved albums unavailable");
+            lv_label_set_text(lbl, (err && err[0]) ? err : "No albums returned");
+            lv_obj_set_width(lbl, 720);
+            lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
             lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
             lv_obj_set_style_text_font(lbl, font_md(), 0);
         }

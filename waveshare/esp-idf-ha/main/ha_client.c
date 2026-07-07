@@ -65,7 +65,8 @@ typedef struct {
     char uri[64];
 } ha_album_candidate_t;
 
-void ui_set_album_candidates(const void *list, int count, bool ok);
+/* `err` NULL = success; else a short human reason shown on the add screen. */
+void ui_set_album_candidates(const void *list, int count, const char *err);
 
 /* ── JSON scanner ────────────────────────────────────────────────────────── */
 static const char *json_skip_string(const char *p)
@@ -284,7 +285,7 @@ static bool send_album_browse(const char *media_id, const char *media_type, int 
     ESP_LOGI(TAG, "browse albums depth=%d%s", depth, id[0] ? " (+media_id)" : "");
     if (!ws_send(buf)) {
         s_album_browse_req_id = 0;
-        ui_set_album_candidates(NULL, 0, false);
+        ui_set_album_candidates(NULL, 0, "Home Assistant is not connected");
         return false;
     }
     return true;
@@ -379,7 +380,7 @@ static void handle_album_browse_result(const char *result)
     if (n > 0) {
         ESP_LOGI(TAG, "album browse: %d candidates", n);
         s_album_browse_req_id = 0;
-        ui_set_album_candidates(cands, n, true);
+        ui_set_album_candidates(cands, n, NULL);
         return;
     }
 
@@ -397,7 +398,9 @@ static void handle_album_browse_result(const char *result)
              first_id[0] ? first_id : "(none)",
              first_class[0] ? first_class : "(none)");
     s_album_browse_req_id = 0;
-    ui_set_album_candidates(NULL, 0, true);
+    ui_set_album_candidates(NULL, 0,
+        "No Spotify albums found in this player's media browser - "
+        "check Music Assistant exposes them (serial log has the browse tree)");
 }
 
 static bool ws_send(const char *json)
@@ -744,8 +747,8 @@ static void handle_message(const char *msg)
         if (idp) id = atoi(idp);
         const char *success = json_obj_get(msg, "success");
         bool failed = (success && strncmp(success, "false", 5) == 0);
+        char err_msg[128] = {0};
         if (failed) {
-            char err_msg[128] = {0};
             const char *err = json_obj_get(msg, "error");
             if (!json_obj_get_str(err, "message", err_msg, sizeof(err_msg)))
                 snprintf(err_msg, sizeof(err_msg), "unknown error");
@@ -765,7 +768,10 @@ static void handle_message(const char *msg)
         } else if (s_album_browse_req_id && id == s_album_browse_req_id) {
             if (failed) {
                 s_album_browse_req_id = 0;
-                ui_set_album_candidates(NULL, 0, false);
+                char why[192];
+                snprintf(why, sizeof(why), "Home Assistant refused the media "
+                         "browse: %s", err_msg);
+                ui_set_album_candidates(NULL, 0, why);
             } else {
                 handle_album_browse_result(json_obj_get(msg, "result"));
             }
@@ -789,7 +795,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
             s_states_req_id = 0;
             if (s_album_browse_req_id) {
                 s_album_browse_req_id = 0;
-                ui_set_album_candidates(NULL, 0, false);
+                ui_set_album_candidates(NULL, 0, "Home Assistant disconnected");
             }
             break;
         case WEBSOCKET_EVENT_DATA: {

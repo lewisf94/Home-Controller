@@ -94,5 +94,8 @@ typedef struct {
 } spotify_album_candidate_t;
 
 /* First page of the user's saved albums. Requires the OAuth refresh token to
- * include Spotify's user-library-read scope. Returns true on HTTP 200. */
-bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *count);
+ * include Spotify's user-library-read scope (mint one with
+ * get_spotify_token.py, repo root). Returns true on HTTP 200. On failure fills
+ * `err` (when non-NULL) with a short user-facing reason for the add screen. */
+bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *count,
+                              char *err, size_t err_len);

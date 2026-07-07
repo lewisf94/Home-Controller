@@ -72,6 +72,14 @@
 
 static const char *TAG = "main";
 
+#define CREDS_KEY_WIFI_SSID  "wifi_ssid"
+#define CREDS_KEY_WIFI_PASS  "wifi_pass"
+#define CREDS_KEY_SP_ID      "sp_id"
+#define CREDS_KEY_SP_SECRET  "sp_secret"
+#define CREDS_KEY_SP_REFRESH "sp_refresh"
+#define CREDS_VAL_MAX 300
+bool creds_get(const char *key, char *out, size_t out_len, const char *fallback);
+
 /* Optional direct Sonos control (Spotify can't drive a Sonos -- it's a
  * restricted device, so we talk to it over UPnP). Configure in secrets.h:
  *   - one speaker:  #define SONOS_HOST "192.168.1.50"   (any restricted device
@@ -206,7 +214,8 @@ _Static_assert(sizeof k_scmd_meta / sizeof k_scmd_meta[0] == SCMD_TOGGLE_SHUFFLE
 static QueueHandle_t s_cmd_queue = NULL;
 #define ALBUM_CANDIDATE_MAX 16
 
-void ui_set_album_candidates(const void *list, int count, bool ok);
+/* `err` NULL = success; else a short human reason shown on the add screen. */
+void ui_set_album_candidates(const void *list, int count, const char *err);
 
 /* Now-playing art handed to the UI. Double-buffered in PSRAM: the Spotify task
  * decodes into the idle buffer, then ui_art_refresh swaps lv_image to it under
@@ -483,10 +492,20 @@ static bool poll_and_publish(spotify_track_t *info)
  * times (~300 ms apart, capped ~2 s) until the title, device or progress shows
  * the command took effect, so the on-screen details catch up within ~1 s.
  * Non-track commands just refresh once. */
+/* Effective Spotify credentials: a Settings > SETUP override stored in NVS
+ * wins over the compiled secrets.h value (creds.h). Static because
+ * spotify_init keeps the pointers for the program's lifetime. */
+static char s_cred_sp_id[80];
+static char s_cred_sp_secret[80];
+static char s_cred_sp_refresh[CREDS_VAL_MAX];
+
 static void spotify_task(void *arg)
 {
     (void)arg;
-    spotify_init(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN);
+    creds_get(CREDS_KEY_SP_ID,      s_cred_sp_id,      sizeof s_cred_sp_id,      SPOTIFY_CLIENT_ID);
+    creds_get(CREDS_KEY_SP_SECRET,  s_cred_sp_secret,  sizeof s_cred_sp_secret,  SPOTIFY_CLIENT_SECRET);
+    creds_get(CREDS_KEY_SP_REFRESH, s_cred_sp_refresh, sizeof s_cred_sp_refresh, SPOTIFY_REFRESH_TOKEN);
+    spotify_init(s_cred_sp_id, s_cred_sp_secret, s_cred_sp_refresh);
 
     spotify_track_t info = {0};
     bool settle = false;
@@ -635,9 +654,12 @@ static void spotify_task(void *arg)
                     }
                     case SCMD_GET_ALBUM_CANDIDATES: {
                         static spotify_album_candidate_t sp[ALBUM_CANDIDATE_MAX];
+                        static char aerr[224];
                         int sc = 0;
-                        bool got = spotify_get_saved_albums(sp, ALBUM_CANDIDATE_MAX, &sc);
-                        ui_set_album_candidates(sp, got ? sc : 0, got);
+                        bool got = spotify_get_saved_albums(sp, ALBUM_CANDIDATE_MAX, &sc,
+                                                            aerr, sizeof aerr);
+                        ui_set_album_candidates(sp, got ? sc : 0,
+                            got ? NULL : (aerr[0] ? aerr : "Spotify request failed"));
                         ESP_LOGI(TAG, "album candidates: %d saved albums (ok=%d)", got ? sc : 0, got ? 1 : 0);
                         break;
                     }
@@ -765,7 +787,12 @@ void app_main(void)
     /* Let the ESP32-C6 WiFi slave boot its esp_hosted firmware before esp_wifi_init. */
     vTaskDelay(pdMS_TO_TICKS(3000));
 
-    if (app_core_wifi_connect(WIFI_SSID, WIFI_PASSWORD, WIFI_MAX_RETRY,
+    /* Effective WiFi credentials: Settings > SETUP override, else secrets.h.
+     * Static -- the WiFi stack may reference them beyond this call. */
+    static char s_cred_ssid[33], s_cred_pass[65];
+    creds_get(CREDS_KEY_WIFI_SSID, s_cred_ssid, sizeof s_cred_ssid, WIFI_SSID);
+    creds_get(CREDS_KEY_WIFI_PASS, s_cred_pass, sizeof s_cred_pass, WIFI_PASSWORD);
+    if (app_core_wifi_connect(s_cred_ssid, s_cred_pass, WIFI_MAX_RETRY,
                               on_wifi_first_connect) != ESP_OK) {
         /* Initial connect exhausted its fast retries. Don't abort: app_core_wifi
          * has armed the slow background reconnect timer, which will keep trying

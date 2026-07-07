@@ -7,7 +7,7 @@ client_id = input("Enter your Spotify Client ID: ").strip()
 client_secret = input("Enter your Spotify Client Secret: ").strip()
 
 redirect_uri = 'http://127.0.0.1:8888/callback'
-scope = 'user-modify-playback-state user-read-playback-state'
+scope = 'user-modify-playback-state user-read-playback-state user-read-currently-playing user-library-read'
 
 sp_oauth = SpotifyOAuth(client_id=client_id,
                         client_secret=client_secret,
@@ -16,6 +16,9 @@ sp_oauth = SpotifyOAuth(client_id=client_id,
 
 url = sp_oauth.get_authorize_url()
 print(f"\nOpening browser to authorize... If it doesn't open, go here:\n{url}\n")
+print("Scopes requested:", scope)
+print("Note: refresh-token scopes are fixed when authorised. If your old token")
+print("lacks user-library-read, mint and install a fresh token.")
 
 # This will automatically start a local server, open the browser, and catch the token!
 token_info = sp_oauth.get_access_token(as_dict=True)

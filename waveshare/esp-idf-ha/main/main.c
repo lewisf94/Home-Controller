@@ -46,6 +46,10 @@
 
 static const char *TAG = "main";
 
+#define CREDS_KEY_WIFI_SSID  "wifi_ssid"
+#define CREDS_KEY_WIFI_PASS  "wifi_pass"
+bool creds_get(const char *key, char *out, size_t out_len, const char *fallback);
+
 /* ── WiFi ──────────────────────────────────────────────────────────────────── */
 /* Connect (with resilient background reconnect after fast retries exhaust)
  * lives in app_core_wifi -- see waveshare/components/app_core/wifi.c. No
@@ -244,7 +248,12 @@ void app_main(void)
     bsp_display_backlight_on();
     ESP_LOGI(TAG, "display up");
 
-    if (app_core_wifi_connect(WIFI_SSID, WIFI_PASSWORD, WIFI_MAX_RETRY, NULL) != ESP_OK) {
+    /* Effective WiFi credentials: Settings > SETUP override, else secrets.h.
+     * Static -- the WiFi stack may reference them beyond this call. */
+    static char s_cred_ssid[33], s_cred_pass[65];
+    creds_get(CREDS_KEY_WIFI_SSID, s_cred_ssid, sizeof s_cred_ssid, WIFI_SSID);
+    creds_get(CREDS_KEY_WIFI_PASS, s_cred_pass, sizeof s_cred_pass, WIFI_PASSWORD);
+    if (app_core_wifi_connect(s_cred_ssid, s_cred_pass, WIFI_MAX_RETRY, NULL) != ESP_OK) {
         /* Initial connect exhausted its fast retries. Don't abort: app_core_wifi
          * has armed the slow background reconnect timer, which will keep trying
          * every 20 s and recover transparently once the AP is reachable. */

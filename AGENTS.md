@@ -303,11 +303,26 @@ What's in `ui.c` as committed:
   on this board: two draw units conflict with the BSP's PPA acceleration
   (`ppa_fill` overruns the pending-transaction queue → `ESP_ERROR_CHECK` abort).
   See the comment in `sdkconfig.defaults`.
-- Settings screen organised into **two tabs — DISPLAY and SOUND** (`SET_TAB_COUNT`,
-  `settings_page()`/`settings_header()` helpers). DISPLAY: APPEARANCE (dark/light)
-  / THEME / THEME ALBUM ART / COLOUR / BROWSER STYLE / FONT / SELECTION LINE /
-  BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND on-off / VOLUME / SOUND SET.
-  All NVS-persisted.
+- Settings screen organised into **three tabs — DISPLAY, SOUND and SETUP**
+  (`SET_TAB_COUNT`, `settings_page()`/`settings_header()` helpers). DISPLAY:
+  APPEARANCE (dark/light) / THEME / THEME ALBUM ART / COLOUR / BROWSER STYLE /
+  FONT / SELECTION LINE / BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND
+  on-off / VOLUME / SOUND SET. All NVS-persisted.
+- **SETUP tab — runtime credential entry** (`p4_shared/creds.c` + the
+  `settings_build_setup_page`/`open_cred_editor` block in `ui.c`): WIFI SSID /
+  WIFI PASSWORD (+ SPOTIFY CLIENT ID / CLIENT SECRET / REFRESH TOKEN on the
+  direct-Spotify build only — the HA build hides the trio via `P4_BACKEND_HA`,
+  defined by its top-level CMakeLists). Each row opens a full-screen
+  `lv_keyboard` + one-line textarea overlay on `lv_layer_top()` (created per
+  edit, deleted on close, so theme rebuilds never track it; forced
+  `lv_font_montserrat_20` because the PIXEL font's FA subset lacks some key
+  glyphs). Values persist to NVS namespace `creds` and are read ONCE at boot by
+  each build's `main.c` via `creds_get(key, buf, len, COMPILED_FALLBACK)` — an
+  NVS override beats the secrets.h value; saving an empty box erases the
+  override (revert to flashed). The page has a RESTART NOW key since nothing
+  re-reads creds live. SECURITY: stored secrets render only as "set (n
+  chars)", are never logged, and the editor pre-fills ONLY a stored override —
+  never a compiled secrets.h value.
 - **Four MODE options, each with a DARK/LIGHT face** (`MODE_BASIC / MODE_GLYPH /
   MODE_PIXEL / MODE_PAPER`, `MODE_COUNT=4`; `s_dark` toggle). (The on-screen
   Settings header reads **THEME**; the enum/NVS key stay `MODE_*` / `ui_mode`.) `k_mode_palettes
@@ -645,7 +660,14 @@ pools re-alloc when the count changes. Runtime albums have no embedded thumb
 (they render via the no-art letter-card path; zeroed tiles in the CF/theme
 pools). Candidate lists cross the backend→ui boundary through a void* seam
 with a byte-identical struct declared in ui.c / ha_client.c / spotify.h —
-change all three together (comment at each site).
+change all three together (comment at each site). Failures are surfaced ON
+SCREEN with the backend's actual reason (`ui_set_album_candidates`'s third
+param is now an err string, NULL = ok): Spotify 403 names the missing
+`user-library-read` scope (a refresh token's scopes are frozen at
+authorisation — mint a new one with `get_spotify_token.py` at the repo root,
+then Settings > SETUP or secrets.h), 401 says token rejected, HA browse
+failures quote HA's error message, and the HA no-albums dead end points at
+Music Assistant + the serial browse-tree log.
 
 ---
 

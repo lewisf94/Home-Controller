@@ -1026,12 +1026,19 @@ bool spotify_get_devices(spotify_device_t *out, int max, int *count)
     return (err == ESP_OK && status == 200);
 }
 
-bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *count)
+bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *count,
+                              char *err_out, size_t err_len)
 {
+    if (err_out && err_len) err_out[0] = '\0';
     if (count) *count = 0;
     if (!out || max <= 0) return false;
     if (max > 50) max = 50;   /* Spotify's page limit cap. */
-    if (!ensure_token()) return false;
+    if (!ensure_token()) {
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify sign-in failed - check the client id, "
+                              "client secret and refresh token");
+        return false;
+    }
 
     char url[96];
     snprintf(url, sizeof(url), "https://api.spotify.com/v1/me/albums?limit=%d", max);
@@ -1046,7 +1053,10 @@ bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *coun
         .timeout_ms        = 5000,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return false;
+    if (!client) {
+        if (err_out) snprintf(err_out, err_len, "Out of memory");
+        return false;
+    }
 
     char bearer[320];
     snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
@@ -1086,10 +1096,24 @@ bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *coun
         ESP_LOGW(TAG, "get_saved_albums got 401, invalidating cached token");
         s_token_expiry_us = 0;
         s_access_token[0] = '\0';
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify rejected the token (401) - check the "
+                              "client id, client secret and refresh token");
     } else if (status == 403) {
         ESP_LOGW(TAG, "get_saved_albums got 403 (refresh token likely lacks user-library-read)");
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify refused (403): the account's refresh token "
+                              "lacks the user-library-read scope. Mint a new one "
+                              "with get_spotify_token.py, then enter it in "
+                              "Settings > SETUP (or reflash secrets.h) and restart");
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "get_saved_albums err=%d status=%d", (int)err, status);
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify request failed - network error");
     } else {
         ESP_LOGW(TAG, "get_saved_albums err=%d status=%d", (int)err, status);
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify request failed (HTTP %d)", status);
     }
 
     free(resp.data);
