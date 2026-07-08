@@ -661,6 +661,30 @@ then Settings > SETUP or secrets.h), 401 says token rejected, HA browse
 failures quote HA's error message, and the HA no-albums dead end points at
 Music Assistant + the serial browse-tree log.
 
+**Search + ordering update (2026-07-08, live search-as-you-type):** the picker
+is now SEARCH-driven. The `+` screen's SEARCH button opens a full-screen
+`lv_keyboard` overlay (`on_album_search_open` in `p4_shared/ui.c`) that searches
+Spotify AS YOU TYPE — each keystroke arms a 450 ms debounce (`lv_timer`,
+`album_search_timer_cb`); on quiescence it posts
+`ui_request_search_album_candidates(query)` and results render live INSIDE the
+overlay (`s_album_search_results`, tappable to ADD) before the screen list
+mirrors them on close. `ui_set_album_candidates` renders through the shared
+`album_candidates_render(list, err)` into whichever list is active. Backends:
+the direct build gained `spotify_search_albums()` (`spotify.c`,
+`SCMD_SEARCH_ALBUMS`) hitting `/v1/search?type=album&q=` — which needs NO
+`user-library-read` scope, so it works with any token (the saved-library path
+stays as the empty-query fallback); the HA build already has a
+client-credentials search client in `ha_client.c` (needs Spotify CLIENT
+ID/SECRET, enterable via Settings > SETUP on both builds). Ordering: runtime
+albums no longer dangle at the end — `album_catalog.c` builds a display-order
+map (`rebuild_order`) that keeps the baked list in its gen_albums order and
+INSERTS each runtime album at its alphabetical slot (artist then title, articles
+ignored). Thumbnails follow that order via the new `album_catalog_thumb(pos)`
+(baked blob for baked slots, NULL -> letter card for runtime); every
+`album_thumb_data(i)` site in `ui.c` now calls it, so sorting never desyncs
+covers. Runtime NVS survives a normal `idf.py flash` (only `erase-flash` wipes
+it). Runtime cover fetch/decode is the next slice.
+
 ---
 
 ### RP2040 haptic knob co-MCU — `rp2040/` + `waveshare/esp-idf/main/knob*`

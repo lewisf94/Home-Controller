@@ -262,12 +262,14 @@ What's in `ui.c` as committed:
 - Full LVGL browser + now-playing + volume HUD + WiFi bars, laid out for 800×480.
 - Browser top-bar `+` screen for the first runtime album-add flow: direct
   Spotify fetches the user's saved albums (`/v1/me/albums`), while the HA build
-  asks the active media_player's media browser (`media_player/browse_media`) and
-  follows album-like folders until it finds playable Spotify albums. Both show
-  ADD/ADDED rows and append selected album metadata to an NVS runtime catalogue
-  layered after the compiled seed albums. Direct Spotify requires
-  `user-library-read`; HA depends on Music Assistant/media-player browse exposing
-  Spotify album IDs. No runtime thumbnail cache/search/remove/reorder yet.
+  discovers HA `media_player.*` entities and walks their media browsers
+  (`media_player/browse_media`) until it finds playable Spotify albums, so the
+  add flow is not tied to the currently-selected speaker being online. Both
+  show ADD/ADDED rows and append selected album metadata to an NVS runtime
+  catalogue layered after the compiled seed albums. Direct Spotify requires
+  `user-library-read`; HA depends on Music Assistant/media-player browse
+  exposing Spotify album IDs. No runtime thumbnail cache/search/remove/reorder
+  yet.
 - Three browser styles (Carousel / Focus / Cover Flow), NVS-persisted. Carousel/
   Focus transform the child `lv_image` (scale + recolor; no object-layer transforms
   — the only safe per-scroll transform path on this board; see CRITICAL NOTE).
@@ -648,10 +650,11 @@ serial diagnostics if the bulb still doesn't respond (decision table in
 a `+` top-bar button (`TUNE_ADDBTN_X`; takes the lights slot on the non-HA
 build) opens a picker that asks the backend for album candidates:
 direct-Spotify fetches the user's saved library (`/v1/me/albums`, needs the
-`user-library-read` scope on the refresh token), the HA build walks the active
-media_player's `media_player/browse_media` tree (depth ≤ 3, scored
-folder-follow heuristic — depends on Music Assistant exposing playable
-Spotify album ids). Rows are duplicate-aware ADD/ADDED; adding appends to a
+`user-library-read` scope on the refresh token), the HA build discovers HA
+`media_player.*` entities and walks their `media_player/browse_media` trees
+(depth ≤ 3 per source, scored folder-follow heuristic — depends on Music
+Assistant exposing playable Spotify album ids). Rows are duplicate-aware
+ADD/ADDED; adding appends to a
 small NVS-persisted runtime catalogue (`p4_shared/album_catalog.c`, 16 max,
 tab-separated blob under `albumcat/runtime`) layered after the compiled
 `albums.c` seed list — `album_catalog_count()/get()` replaced
@@ -666,8 +669,32 @@ param is now an err string, NULL = ok): Spotify 403 names the missing
 `user-library-read` scope (a refresh token's scopes are frozen at
 authorisation — mint a new one with `get_spotify_token.py` at the repo root,
 then Settings > SETUP or secrets.h), 401 says token rejected, HA browse
-failures quote HA's error message, and the HA no-albums dead end points at
-Music Assistant + the serial browse-tree log.
+failures on one source fall through to the next source, and the HA no-albums
+dead end points at Music Assistant + the serial browse-tree log.
+
+**Search + ordering update (2026-07-08, live search-as-you-type):** the picker
+is now SEARCH-driven. The `+` screen's SEARCH button opens a full-screen
+`lv_keyboard` overlay (`on_album_search_open` in `p4_shared/ui.c`) that searches
+Spotify AS YOU TYPE — each keystroke arms a 450 ms debounce (`lv_timer`,
+`album_search_timer_cb`); on quiescence it posts
+`ui_request_search_album_candidates(query)` and results render live INSIDE the
+overlay (`s_album_search_results`, tappable to ADD) before the screen list
+mirrors them on close. `ui_set_album_candidates` renders through the shared
+`album_candidates_render(list, err)` into whichever list is active. Backends:
+the direct build gained `spotify_search_albums()` (`spotify.c`,
+`SCMD_SEARCH_ALBUMS`) hitting `/v1/search?type=album&q=` — which needs NO
+`user-library-read` scope, so it works with any token (the saved-library path
+stays as the empty-query fallback); the HA build already has a
+client-credentials search client in `ha_client.c` (needs Spotify CLIENT
+ID/SECRET, enterable via Settings > SETUP on both builds). Ordering: runtime
+albums no longer dangle at the end — `album_catalog.c` builds a display-order
+map (`rebuild_order`) that keeps the baked list in its gen_albums order and
+INSERTS each runtime album at its alphabetical slot (artist then title, articles
+ignored). Thumbnails follow that order via the new `album_catalog_thumb(pos)`
+(baked blob for baked slots, NULL -> letter card for runtime); every
+`album_thumb_data(i)` site in `ui.c` now calls it, so sorting never desyncs
+covers. Runtime NVS survives a normal `idf.py flash` (only `erase-flash` wipes
+it). Runtime cover fetch/decode is the next slice.
 
 ---
 

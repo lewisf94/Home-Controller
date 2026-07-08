@@ -13,6 +13,8 @@ idf_component_register(
         esp_timer
         esp_websocket_client
         esp_http_client    # art download (HTTP GET to HA image proxy)
+        esp-tls            # Spotify HTTPS certificate bundle
+        mbedtls            # Spotify Basic auth base64 helper
         vfs
         joltwallet__littlefs
         bitbank2__jpegdec

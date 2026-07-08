@@ -87,6 +87,7 @@ static const char *TAG = "ui";
 #endif
 
 #define UI_ALBUM_CANDIDATE_MAX 16
+#define LIGHT_LIVE_SEND_MS 220
 #define CREDS_KEY_WIFI_SSID  "wifi_ssid"
 #define CREDS_KEY_WIFI_PASS  "wifi_pass"
 #define CREDS_KEY_SP_ID      "sp_id"
@@ -103,11 +104,14 @@ typedef struct {
 /* Local seams kept out of ui.h while the runtime catalogue is a prototype.
  * `err` NULL = success; else a short human reason shown on the add screen. */
 void ui_request_get_album_candidates(void);
+void ui_request_search_album_candidates(const char *query);
 void ui_set_album_candidates(const void *list, int count, const char *err);
+void ui_request_light_hue(const char *entity_id, int hue_deg, int sat_pct);
 bool creds_get_stored(const char *key, char *out, size_t out_len);
 bool creds_set(const char *key, const char *value);
 void album_catalog_init(void);
 const album_entry_t *album_catalog_get(size_t index);
+const uint16_t *album_catalog_thumb(size_t index);
 size_t album_catalog_count(void);
 bool album_catalog_contains_uri(const char *uri);
 bool album_catalog_add(const char *title, const char *artist, const char *uri);
@@ -558,8 +562,13 @@ static int         s_dev_entry_count = 0;
  * library. Rows are cached so the ADD button can persist the selected album. */
 static lv_obj_t             *s_screen_album_add = NULL;
 static lv_obj_t             *s_album_add_list   = NULL;
+static lv_obj_t             *s_album_search_overlay = NULL;
+static lv_obj_t             *s_album_search_ta = NULL;
+static lv_obj_t             *s_album_search_results = NULL; /* live results list inside the overlay; NULL when closed */
+static lv_timer_t           *s_album_search_timer = NULL;   /* type-to-search debounce (one fire per quiescence) */
 static ui_album_candidate_t  s_album_candidates[UI_ALBUM_CANDIDATE_MAX];
 static int                   s_album_candidate_count = 0;
+static char                  s_album_search_query[80] = "";
 
 /* Lights selector screen (HA build only; harmless no-op elsewhere -- see
  * ui_request_get_lights). Mirrors the devices selector exactly: s_light_entries
@@ -569,6 +578,21 @@ static lv_obj_t   *s_screen_lights     = NULL;
 static lv_obj_t   *s_light_list        = NULL;
 static ui_light_t  s_light_entries[MAX_LIGHTS];
 static int         s_light_entry_count = 0;
+static int         s_light_hue_deg[MAX_LIGHTS];
+static int         s_light_sat_pct[MAX_LIGHTS];
+static uint32_t    s_light_bri_tick[MAX_LIGHTS];
+static uint32_t    s_light_hue_tick[MAX_LIGHTS];
+static int         s_light_bri_sent[MAX_LIGHTS];
+static int         s_light_hue_sent[MAX_LIGHTS];
+static bool        s_light_bri_presets = false;
+static bool        s_light_hue_swatches = false;
+static lv_obj_t   *s_light_bri_slider_box[MAX_LIGHTS];
+static lv_obj_t   *s_light_bri_preset_box[MAX_LIGHTS];
+static lv_obj_t   *s_light_hue_slider_box[MAX_LIGHTS];
+static lv_obj_t   *s_light_hue_swatch_box[MAX_LIGHTS];
+static lv_obj_t   *s_light_hue_slider[MAX_LIGHTS];
+static lv_obj_t   *s_light_bri_mode_lbl[MAX_LIGHTS];
+static lv_obj_t   *s_light_hue_mode_lbl[MAX_LIGHTS];
 static lv_obj_t *s_line_toggle_btn = NULL;   /* Settings ON/OFF toggle for it */
 static lv_obj_t *s_line_toggle_lbl = NULL;
 static lv_obj_t *s_brightness_slider = NULL;   /* Settings backlight slider */
@@ -589,7 +613,8 @@ static uint8_t   s_set_tab = 0;                         /* active category page 
 
 /* SETUP tab: runtime credential overrides (creds.h). One row per field; the
  * value label never shows a stored secret, only "set (n chars)". The HA build
- * hides the Spotify trio (it has no Spotify backend). */
+ * also exposes Spotify credentials now: playback still goes through HA, but
+ * Add Albums uses Spotify search directly. */
 typedef struct {
     const char *key;      /* creds.h NVS key */
     const char *label;    /* row header text */
@@ -598,11 +623,9 @@ typedef struct {
 static const setup_field_t k_setup_fields[] = {
     { CREDS_KEY_WIFI_SSID,  "WIFI SSID",             false },
     { CREDS_KEY_WIFI_PASS,  "WIFI PASSWORD",         true  },
-#if !P4_BACKEND_HA
     { CREDS_KEY_SP_ID,      "SPOTIFY CLIENT ID",     true  },
     { CREDS_KEY_SP_SECRET,  "SPOTIFY CLIENT SECRET", true  },
     { CREDS_KEY_SP_REFRESH, "SPOTIFY REFRESH TOKEN", true  },
-#endif
 };
 #define SETUP_FIELD_COUNT ((int)(sizeof k_setup_fields / sizeof k_setup_fields[0]))
 static lv_obj_t *s_setup_val_lbls[8]  = {0};   /* value label per field */
@@ -774,11 +797,21 @@ static void build_devices_screen(void);
 static void on_open_album_add(lv_event_t *e);
 static void on_album_add_back(lv_event_t *e);
 static void on_album_candidate_add(lv_event_t *e);
+static void on_album_search_open(lv_event_t *e);
+static void on_album_search_kb_event(lv_event_t *e);
+static void album_candidates_render(lv_obj_t *list, const char *err);
 static void build_album_add_screen(void);
+#if P4_HAS_HA_LIGHTS
 static void on_open_lights(lv_event_t *e);
+#endif
 static void on_lights_back(lv_event_t *e);
 static void on_light_toggle(lv_event_t *e);
 static void on_light_brightness(lv_event_t *e);
+static void on_light_hue(lv_event_t *e);
+static void on_light_brightness_mode(lv_event_t *e);
+static void on_light_hue_mode(lv_event_t *e);
+static void on_light_brightness_preset(lv_event_t *e);
+static void on_light_hue_swatch(lv_event_t *e);
 static void build_lights_screen(void);
 static void on_transport_prev(lv_event_t *e);
 static void on_transport_toggle(lv_event_t *e);
@@ -1022,12 +1055,15 @@ static lv_obj_t *make_hint_pill(lv_obj_t *parent, const char *txt, lv_event_cb_t
     return pill;
 }
 
-/* Raw thumb source: the PSRAM copy when available, else the flash original. */
+/* Raw thumb source for display position `i`: the PSRAM copy when available,
+ * else the catalogue's ordered thumb (baked blob for baked albums, NULL for a
+ * runtime album with no cover yet -> letter card). Indexed by display position,
+ * so it stays aligned with album_catalog_get(i) after the sorted merge. */
 static const uint16_t *thumb_src(size_t i)
 {
     if (s_thumbs_psram && i < s_thumbs_psram_count)
         return s_thumbs_psram + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
-    return album_thumb_data(i);
+    return album_catalog_thumb(i);
 }
 
 /* Nearest-neighbour RGB565 resize (16.16 fixed-point stepping, no per-pixel
@@ -1162,7 +1198,7 @@ static void browser_resolve_card_count(void)
              album_catalog_count(), s_card_count, album_thumb_count(), (int)ALBUM_THUMB_W, (int)ALBUM_THUMB_H,
              k_browser_style_names[s_browser_style]);
     for (size_t __j = 0; __j < (s_card_count < 4 ? s_card_count : 4); __j++) {
-        const uint16_t *__t = album_thumb_data(__j);
+        const uint16_t *__t = album_catalog_thumb(__j);
         ESP_LOGD(TAG, "thumb[%zu]=%p", __j, (const void *)__t);
     }
 }
@@ -1189,7 +1225,7 @@ static void browser_alloc_thumb_pools(void)
         if (s_thumbs_psram) {
             for (size_t i = 0; i < s_card_count; i++) {
                 uint16_t *dst = s_thumbs_psram + i * ALBUM_THUMB_W * ALBUM_THUMB_H;
-                const uint16_t *t = album_thumb_data(i);
+                const uint16_t *t = album_catalog_thumb(i);
                 if (t) memcpy(dst, t, ALBUM_THUMB_BYTES);
                 else   memset(dst, 0, ALBUM_THUMB_BYTES);
             }
@@ -1284,7 +1320,7 @@ static void browser_build_cards(void)
 {
     for (size_t i = 0; i < s_card_count; i++) {
         const album_entry_t *a    = album_catalog_get(i);
-        const uint16_t      *thumb = album_thumb_data(i);
+        const uint16_t      *thumb = album_catalog_thumb(i);
 
         lv_obj_t *card = lv_obj_create(s_browser_scroller);
         lv_obj_set_size(card, cs(), cs());
@@ -1563,10 +1599,10 @@ static void browser_build_hint_pill(void)
     }
 }
 
-static void browser_build_top_buttons(void)
+static void build_top_nav_buttons(lv_obj_t *parent)
 {
-    /* Gear button (top-right) -> settings. Sits in the empty strip above the
-     * carousel so it never overlaps a card. A cog glyph (LV_SYMBOL_SETTINGS,
+    /* Gear button (top-right) -> settings. Sits in the empty top strip on the
+     * browser and now-playing screens. A cog glyph (LV_SYMBOL_SETTINGS,
      * 0xF013) -- the universal settings affordance, rendered via font_icon()
      * (not font_md()): PAPER's font_md is lv_font_mono_16, which does NOT
      * carry the symbol range, so the glyph fell back to a taller font whose
@@ -1577,7 +1613,7 @@ static void browser_build_top_buttons(void)
      * would strike through them at y0 -- start them at y8, inside the taller
      * header band (the rule prints at TUNE_PAPER_RULE_Y=46, below the icons). */
     int tb_y = k_tune_topbtn_y[s_mode];
-    lv_obj_t *gear = lv_button_create(s_screen_browser);
+    lv_obj_t *gear = lv_button_create(parent);
     /* TOPBTN_H=34, not 28: the montserrat_24 icon (line_height 31) clipped
      * in a 28px box even in the non-PAPER themes; 34 clears it everywhere. */
     lv_obj_set_size(gear, 44, TOPBTN_H);
@@ -1598,7 +1634,7 @@ static void browser_build_top_buttons(void)
 
     /* Devices button (left of the gear) -> the device selector. Same flat,
      * transparent-at-rest treatment as the gear. */
-    lv_obj_t *devbtn = lv_button_create(s_screen_browser);
+    lv_obj_t *devbtn = lv_button_create(parent);
     lv_obj_set_size(devbtn, 44, TOPBTN_H);
     lv_obj_align(devbtn, LV_ALIGN_TOP_RIGHT, TUNE_DEVBTN_X, tb_y);
     lv_obj_set_style_pad_all(devbtn, 0, 0);
@@ -1620,7 +1656,7 @@ static void browser_build_top_buttons(void)
 #if P4_HAS_HA_LIGHTS
     /* Lights button (left of devices) -> the HA lights selector. Same flat,
      * transparent-at-rest treatment as the other top-row tools. */
-    lv_obj_t *lightsbtn = lv_button_create(s_screen_browser);
+    lv_obj_t *lightsbtn = lv_button_create(parent);
     lv_obj_set_size(lightsbtn, 44, TOPBTN_H);
     lv_obj_align(lightsbtn, LV_ALIGN_TOP_RIGHT, TUNE_LIGHTSBTN_X, tb_y);
     lv_obj_set_style_pad_all(lightsbtn, 0, 0);
@@ -1640,7 +1676,7 @@ static void browser_build_top_buttons(void)
 
     /* Add-album button (left of lights/devices) -> saved-library album picker. Uses a
      * plain plus glyph so it renders in every compiled font/theme. */
-    lv_obj_t *addbtn = lv_button_create(s_screen_browser);
+    lv_obj_t *addbtn = lv_button_create(parent);
     lv_obj_set_size(addbtn, 44, TOPBTN_H);
     lv_obj_align(addbtn, LV_ALIGN_TOP_RIGHT,
                  P4_HAS_HA_LIGHTS ? TUNE_ADDBTN_X : TUNE_LIGHTSBTN_X,
@@ -1700,7 +1736,7 @@ static void build_browser_screen(void)
     browser_build_wifi_bars();
     browser_build_fps_label();
     browser_build_hint_pill();
-    browser_build_top_buttons();
+    build_top_nav_buttons(s_screen_browser);
 }
 
 /* build_np_screen helpers -- extracted 2026-07-05 for readability (pure
@@ -2099,6 +2135,7 @@ static void build_np_screen(void)
     np_build_chevrons();
     np_build_hud_and_toast();
     np_build_volume_fader();
+    build_top_nav_buttons(s_screen_np);
 }
 
 /* Highlight the active row by accent fill + black text (no checkmark -- the
@@ -4097,9 +4134,22 @@ static void build_album_add_screen(void)
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
     paper_title_chip(title);
 
+    lv_obj_t *search = lv_button_create(s_screen_album_add);
+    lv_obj_set_size(search, 170, 42);
+    lv_obj_align(search, LV_ALIGN_TOP_RIGHT, -12, 9);
+    style_key_btn(search);
+    style_button_press(search);
+    lv_obj_set_style_bg_color(search, lv_color_hex(accent_color()), 0);
+    lv_obj_add_event_cb(search, on_album_search_open, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sl = lv_label_create(search);
+    lv_label_set_text(sl, "SEARCH");
+    lv_obj_set_style_text_color(sl, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_text_font(sl, font_sm(), 0);
+    lv_obj_center(sl);
+
     s_album_add_list = lv_obj_create(s_screen_album_add);
-    lv_obj_set_size(s_album_add_list, 760, 384);
-    lv_obj_align(s_album_add_list, LV_ALIGN_TOP_MID, 0, 66);
+    lv_obj_set_size(s_album_add_list, 760, 368);
+    lv_obj_align(s_album_add_list, LV_ALIGN_TOP_MID, 0, 82);
     lv_obj_set_style_bg_opa(s_album_add_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_album_add_list, 0, 0);
     lv_obj_set_style_pad_all(s_album_add_list, 4, 0);
@@ -4122,9 +4172,10 @@ static void on_open_album_add(lv_event_t *e)
 {
     (void)e;
     if (!s_screen_album_add) return;
-    album_add_placeholder("Loading albums...");
+    s_album_search_results = NULL;   /* renders target the screen list here */
+    if (s_album_candidate_count > 0) album_candidates_render(s_album_add_list, NULL);
+    else album_add_placeholder("Tap SEARCH to find Spotify albums");
     lv_screen_load(s_screen_album_add);
-    ui_request_get_album_candidates();
 }
 
 static void on_album_add_back(lv_event_t *e)
@@ -4199,7 +4250,7 @@ static void build_lights_screen(void)
 
 #if P4_HAS_HA_LIGHTS
 /* Only the HA build creates the top-bar lights button that fires this (see
- * browser_build_top_buttons); guarded to match so the non-HA build doesn't
+ * build_top_nav_buttons); guarded to match so the non-HA build doesn't
  * carry an unused-function warning. */
 static void on_open_lights(lv_event_t *e)
 {
@@ -4231,19 +4282,360 @@ static void on_light_toggle(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= s_light_entry_count) return;
+    if (s_light_entries[i].brightness_pct == -2) {
+        ui_show_toast("Light unavailable in Home Assistant", 2500);
+        audio_play(AUDIO_SFX_BACK);
+        return;
+    }
     ESP_LOGI(TAG, "light toggle tap -> %s", s_light_entries[i].entity_id);
     ui_request_light_toggle(s_light_entries[i].entity_id);
     audio_play(AUDIO_SFX_SELECT);
+}
+
+static bool light_live_should_send(uint32_t *last_tick, int *last_value, int value, bool final)
+{
+    uint32_t now = lv_tick_get();
+    if (final || *last_value != value) {
+        if (final || *last_tick == 0 || lv_tick_elaps(*last_tick) >= LIGHT_LIVE_SEND_MS) {
+            *last_tick = now;
+            *last_value = value;
+            return true;
+        }
+    }
+    return false;
+}
+
+static lv_color_t light_hs_color(int hue_deg, int sat_pct)
+{
+    if (hue_deg < 0) hue_deg = 0;
+    hue_deg %= 360;
+    if (sat_pct < 0) sat_pct = 0;
+    if (sat_pct > 100) sat_pct = 100;
+    int sector = hue_deg / 60;
+    int rem = hue_deg % 60;
+    int v = 255;
+    int s = (sat_pct * 255) / 100;
+    int p = v * (255 - s) / 255;
+    int q = v * (255 - (s * rem / 60)) / 255;
+    int t = v * (255 - (s * (60 - rem) / 60)) / 255;
+    int r = v, g = p, b = p;
+    switch (sector) {
+    case 0: r = v; g = t; b = p; break;
+    case 1: r = q; g = v; b = p; break;
+    case 2: r = p; g = v; b = t; break;
+    case 3: r = p; g = q; b = v; break;
+    case 4: r = t; g = p; b = v; break;
+    default: r = v; g = p; b = q; break;
+    }
+    return lv_color_hex(((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
+}
+
+static lv_color_t light_hue_color(int hue_deg)
+{
+    return light_hs_color(hue_deg, 92);
+}
+
+static void style_light_slider(lv_obj_t *sl, lv_color_t fill)
+{
+    lv_obj_set_style_bg_color(sl, lv_color_hex(s_th->track), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sl, fill, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(sl, is_paper_theme() ? 0 : 10, LV_PART_MAIN);
+    lv_obj_set_style_radius(sl, is_paper_theme() ? 0 : 10, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_border_opa(sl, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(sl, 0, LV_PART_KNOB);
+    lv_obj_set_style_width(sl, 0, LV_PART_KNOB);
+    lv_obj_set_style_height(sl, 0, LV_PART_KNOB);
+}
+
+static const int k_light_bri_presets[] = { 25, 50, 75, 100 };
+typedef struct {
+    const char *name;
+    int hue;
+    int sat;
+} light_hue_preset_t;
+static const light_hue_preset_t k_light_hue_presets[] = {
+    { "W",   38,   8 },
+    { "R",    0,  92 },
+    { "O",   28,  92 },
+    { "Y",   52,  88 },
+    { "G",  120,  85 },
+    { "C",  185,  82 },
+    { "B",  235,  86 },
+    { "P",  285,  78 },
+};
+
+static lv_color_t light_swatch_text_color(int hue_deg, int sat_pct)
+{
+    if (sat_pct < 35) return lv_color_hex(0x111111);
+    int h = hue_deg % 360;
+    if (h < 0) h += 360;
+    if (h >= 32 && h <= 76) return lv_color_hex(0x111111);
+    return lv_color_hex(0xffffff);
+}
+
+static void light_sync_hue_slider(int i)
+{
+    if (i < 0 || i >= MAX_LIGHTS || !s_light_hue_slider[i]) return;
+    int hue = s_light_hue_deg[i] >= 0 ? s_light_hue_deg[i] : 0;
+    lv_slider_set_value(s_light_hue_slider[i], hue, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_light_hue_slider[i], light_hue_color(hue),
+                              LV_PART_INDICATOR);
+}
+
+static void set_light_control_visibility(void)
+{
+    for (int i = 0; i < MAX_LIGHTS; i++) {
+        if (s_light_bri_slider_box[i]) {
+            if (s_light_bri_presets) lv_obj_add_flag(s_light_bri_slider_box[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_remove_flag(s_light_bri_slider_box[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (s_light_bri_preset_box[i]) {
+            if (s_light_bri_presets) lv_obj_remove_flag(s_light_bri_preset_box[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(s_light_bri_preset_box[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (s_light_bri_mode_lbl[i])
+            lv_label_set_text(s_light_bri_mode_lbl[i], s_light_bri_presets ? "SLIDER" : "PRESETS");
+
+        if (s_light_hue_slider_box[i]) {
+            if (s_light_hue_swatches) lv_obj_add_flag(s_light_hue_slider_box[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_remove_flag(s_light_hue_slider_box[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (s_light_hue_swatch_box[i]) {
+            if (s_light_hue_swatches) lv_obj_remove_flag(s_light_hue_swatch_box[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(s_light_hue_swatch_box[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (s_light_hue_mode_lbl[i])
+            lv_label_set_text(s_light_hue_mode_lbl[i], s_light_hue_swatches ? "SLIDER" : "SWATCHES");
+    }
+}
+
+static void album_search_results_note(const char *text)
+{
+    if (!s_album_search_results) return;
+    lv_obj_clean(s_album_search_results);
+    s_album_candidate_count = 0;
+    lv_obj_t *lbl = lv_label_create(s_album_search_results);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_width(lbl, 720);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(lbl, font_md(), 0);
+}
+
+static void album_search_close(void)
+{
+    if (s_album_search_timer) {
+        lv_timer_delete(s_album_search_timer);
+        s_album_search_timer = NULL;
+    }
+    s_album_search_results = NULL;
+    if (s_album_search_overlay) {
+        lv_obj_delete(s_album_search_overlay);
+        s_album_search_overlay = NULL;
+        s_album_search_ta = NULL;
+    }
+    /* Mirror the last results onto the ADD ALBUMS screen behind the overlay. */
+    if (s_album_add_list) {
+        if (s_album_candidate_count > 0) album_candidates_render(s_album_add_list, NULL);
+        else album_add_placeholder("Tap SEARCH to find Spotify albums");
+    }
+}
+
+/* Debounce fire: one search for the textarea's current text. Each keystroke
+ * resets/resumes this timer (on_album_search_typing), so a search runs only
+ * after ~450 ms of no typing -- not once per key. */
+static void album_search_timer_cb(lv_timer_t *t)
+{
+    lv_timer_pause(t);
+    if (!s_album_search_ta) return;
+    const char *q = lv_textarea_get_text(s_album_search_ta);
+    snprintf(s_album_search_query, sizeof(s_album_search_query), "%.79s", q ? q : "");
+    if (!s_album_search_query[0]) {
+        album_search_results_note("Type an album or artist");
+        return;
+    }
+    album_search_results_note("Searching Spotify...");
+    ui_request_search_album_candidates(s_album_search_query);
+}
+
+static void on_album_search_typing(lv_event_t *e)
+{
+    (void)e;
+    if (!s_album_search_timer)
+        s_album_search_timer = lv_timer_create(album_search_timer_cb, 450, NULL);
+    else {
+        lv_timer_reset(s_album_search_timer);
+        lv_timer_resume(s_album_search_timer);
+    }
+}
+
+static void on_album_search_done(lv_event_t *e)
+{
+    (void)e;
+    album_search_close();
+    audio_play(AUDIO_SFX_BACK);
+}
+
+static void on_album_search_kb_event(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    /* Search runs automatically as you type; the keyboard check/close dismiss. */
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) on_album_search_done(e);
+}
+
+static void on_album_search_open(lv_event_t *e)
+{
+    (void)e;
+    album_search_close();
+
+    lv_obj_t *ov = lv_obj_create(lv_layer_top());
+    s_album_search_overlay = ov;
+    lv_obj_set_size(ov, SCREEN_W, SCREEN_H);
+    lv_obj_set_pos(ov, 0, 0);
+    lv_obj_set_style_bg_color(ov, lv_color_hex(s_th->bg), 0);
+    lv_obj_set_style_bg_opa(ov, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ov, 0, 0);
+    lv_obj_set_style_radius(ov, 0, 0);
+    lv_obj_set_style_pad_all(ov, 0, 0);
+    lv_obj_remove_flag(ov, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(ov);
+    lv_label_set_text(title, "SEARCH SPOTIFY");
+    lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
+    lv_obj_set_style_text_font(title, font_md(), 0);
+    lv_obj_set_style_text_letter_space(title, 2, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 16, 12);
+
+    lv_obj_t *done = lv_button_create(ov);
+    lv_obj_set_size(done, 120, 40);
+    lv_obj_align(done, LV_ALIGN_TOP_RIGHT, -12, 6);
+    style_key_btn(done);
+    lv_obj_set_style_bg_color(done, lv_color_hex(accent_color()), 0);
+    lv_obj_add_event_cb(done, on_album_search_done, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *dl = lv_label_create(done);
+    lv_label_set_text(dl, "DONE");
+    lv_obj_set_style_text_color(dl, lv_color_hex(is_paper_theme() ? s_th->bg : s_th->text), 0);
+    lv_obj_set_style_text_font(dl, font_sm(), 0);
+    lv_obj_center(dl);
+
+    /* Live results between the textarea and the keyboard. ui_set_album_candidates
+     * renders here (not the screen list) whenever s_album_search_results is set. */
+    s_album_search_results = lv_obj_create(ov);
+    lv_obj_set_size(s_album_search_results, 760, 196);
+    lv_obj_align(s_album_search_results, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_bg_opa(s_album_search_results, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_album_search_results, 0, 0);
+    lv_obj_set_style_pad_all(s_album_search_results, 4, 0);
+    lv_obj_set_style_pad_row(s_album_search_results, 8, 0);
+    lv_obj_set_flex_flow(s_album_search_results, LV_FLEX_FLOW_COLUMN);
+
+    s_album_search_ta = lv_textarea_create(ov);
+    lv_obj_set_size(s_album_search_ta, 760, 40);
+    lv_obj_align(s_album_search_ta, LV_ALIGN_TOP_MID, 0, 48);
+    lv_textarea_set_one_line(s_album_search_ta, true);
+    lv_textarea_set_placeholder_text(s_album_search_ta, "Album or artist");
+    lv_textarea_set_max_length(s_album_search_ta, sizeof(s_album_search_query) - 1);
+    lv_obj_set_style_text_font(s_album_search_ta, &lv_font_montserrat_20, 0);
+    lv_obj_add_event_cb(s_album_search_ta, on_album_search_typing, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_textarea_set_text(s_album_search_ta, s_album_search_query);
+
+    lv_obj_t *kb = lv_keyboard_create(ov);
+    lv_obj_set_size(kb, SCREEN_W, 188);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(kb, s_album_search_ta);
+    lv_obj_set_style_text_font(kb, &lv_font_montserrat_20, 0);
+    lv_obj_add_event_cb(kb, on_album_search_kb_event, LV_EVENT_ALL, NULL);
+
+    /* Initial content: prior results if any, else the type-to-search hint. A
+     * prefilled query fires VALUE_CHANGED above, which arms the debounce. */
+    if (s_album_candidate_count > 0) album_candidates_render(s_album_search_results, NULL);
+    else album_search_results_note("Type an album or artist");
+
+    audio_play(AUDIO_SFX_TICK);
 }
 
 static void on_light_brightness(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= s_light_entry_count) return;
+    if (s_light_entries[i].brightness_pct == -2) return;
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_VALUE_CHANGED && code != LV_EVENT_RELEASED) return;
     lv_obj_t *sl = lv_event_get_target(e);
     int pct = lv_slider_get_value(sl);
-    ui_request_light_brightness(s_light_entries[i].entity_id, pct);
+    bool final = (code == LV_EVENT_RELEASED);
+    if (light_live_should_send(&s_light_bri_tick[i], &s_light_bri_sent[i], pct, final)) {
+        ui_request_light_brightness(s_light_entries[i].entity_id, pct);
+        if (final) audio_play(AUDIO_SFX_TICK);
+    }
+}
+
+static void on_light_hue(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_light_entry_count) return;
+    if (s_light_entries[i].brightness_pct == -2) return;
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_VALUE_CHANGED && code != LV_EVENT_RELEASED) return;
+    lv_obj_t *sl = lv_event_get_target(e);
+    int hue = lv_slider_get_value(sl);
+    lv_obj_set_style_bg_color(sl, light_hue_color(hue), LV_PART_INDICATOR);
+    bool final = (code == LV_EVENT_RELEASED);
+    if (light_live_should_send(&s_light_hue_tick[i], &s_light_hue_sent[i], hue, final)) {
+        int sat = s_light_sat_pct[i] > 0 ? s_light_sat_pct[i] : 100;
+        ui_request_light_hue(s_light_entries[i].entity_id, hue, sat);
+        if (final) audio_play(AUDIO_SFX_TICK);
+    }
+}
+
+static void on_light_brightness_mode(lv_event_t *e)
+{
+    (void)e;
+    s_light_bri_presets = !s_light_bri_presets;
+    set_light_control_visibility();
     audio_play(AUDIO_SFX_TICK);
+}
+
+static void on_light_hue_mode(lv_event_t *e)
+{
+    (void)e;
+    s_light_hue_swatches = !s_light_hue_swatches;
+    for (int i = 0; i < s_light_entry_count; i++) light_sync_hue_slider(i);
+    set_light_control_visibility();
+    audio_play(AUDIO_SFX_TICK);
+}
+
+static void on_light_brightness_preset(lv_event_t *e)
+{
+    int data = (int)(intptr_t)lv_event_get_user_data(e);
+    int i = (data >> 16) & 0xff;
+    int pct = data & 0xffff;
+    if (i < 0 || i >= s_light_entry_count) return;
+    if (s_light_entries[i].brightness_pct == -2) return;
+    s_light_bri_sent[i] = pct;
+    s_light_bri_tick[i] = lv_tick_get();
+    ui_request_light_brightness(s_light_entries[i].entity_id, pct);
+    audio_play(AUDIO_SFX_SELECT);
+}
+
+static void on_light_hue_swatch(lv_event_t *e)
+{
+    int data = (int)(intptr_t)lv_event_get_user_data(e);
+    int i = (data >> 8) & 0xff;
+    int p = data & 0xff;
+    if (i < 0 || i >= s_light_entry_count) return;
+    if (p < 0 || p >= (int)(sizeof(k_light_hue_presets) / sizeof(k_light_hue_presets[0]))) return;
+    if (s_light_entries[i].brightness_pct == -2) return;
+    int hue = k_light_hue_presets[p].hue;
+    int sat = k_light_hue_presets[p].sat;
+    s_light_hue_deg[i] = hue;
+    s_light_sat_pct[i] = sat;
+    s_light_hue_sent[i] = hue;
+    s_light_hue_tick[i] = lv_tick_get();
+    light_sync_hue_slider(i);
+    ui_request_light_hue(s_light_entries[i].entity_id, hue, sat);
+    audio_play(AUDIO_SFX_SELECT);
 }
 
 static void on_transition_option(lv_event_t *e)
@@ -4866,6 +5258,8 @@ void ui_set_devices(const ui_device_t *list, int count)
 
             lv_obj_t *nm = lv_label_create(row);
             lv_label_set_text(nm, list[i].name);
+            lv_obj_set_width(nm, 690);
+            lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
             lv_obj_set_style_text_color(nm,
                 lv_color_hex(list[i].is_active ? accent_color() : s_th->text), 0);
             lv_obj_set_style_text_font(nm, font_md(), 0);
@@ -4873,6 +5267,8 @@ void ui_set_devices(const ui_device_t *list, int count)
 
             lv_obj_t *dt = lv_label_create(row);
             lv_label_set_text(dt, list[i].detail);
+            lv_obj_set_width(dt, 690);
+            lv_label_set_long_mode(dt, LV_LABEL_LONG_DOT);
             lv_obj_set_style_text_color(dt, lv_color_hex(s_th->text2), 0);
             lv_obj_set_style_text_font(dt, font_sm(), 0);
             lv_obj_align(dt, LV_ALIGN_LEFT_MID, 12, 14);
@@ -4880,6 +5276,74 @@ void ui_set_devices(const ui_device_t *list, int count)
         s_dev_entry_count = count;
     }
     bsp_display_unlock();
+}
+
+/* Render s_album_candidates[0..s_album_candidate_count) into `list` -- the
+ * search overlay's live list or the ADD ALBUMS screen list. Caller holds the
+ * display lock. A non-empty `err` (or zero candidates) shows the backend's
+ * reason instead of rows. Row index == s_album_candidates index, so the ADD
+ * button's user_data resolves the same from either list. */
+static void album_candidates_render(lv_obj_t *list, const char *err)
+{
+    if (!list) return;
+    lv_obj_clean(list);
+    if ((err && err[0]) || s_album_candidate_count == 0) {
+        /* Failure shows the backend's actual reason (403 scope, HA browse
+         * error, network...) instead of a blanket "unavailable". */
+        lv_obj_t *lbl = lv_label_create(list);
+        lv_label_set_text(lbl, (err && err[0]) ? err : "No albums returned");
+        lv_obj_set_width(lbl, 720);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+        lv_obj_set_style_text_font(lbl, font_md(), 0);
+        return;
+    }
+
+    for (int i = 0; i < s_album_candidate_count; i++) {
+        const ui_album_candidate_t *c = &s_album_candidates[i];
+        bool exists = album_catalog_contains_uri(c->uri);
+
+        lv_obj_t *row = lv_obj_create(list);
+        lv_obj_set_size(row, lv_pct(100), 74);
+        lv_obj_set_style_bg_color(row, lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(row, is_paper_theme() ? 3 : 6, 0);
+        lv_obj_set_style_border_width(row, is_paper_theme() ? 2 : 0, 0);
+        lv_obj_set_style_border_color(row, lv_color_hex(s_th->track), 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *title = lv_label_create(row);
+        lv_label_set_text(title, c->title);
+        lv_obj_set_width(title, 520);
+        lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_text_font(title, font_md(), 0);
+        lv_obj_align(title, LV_ALIGN_LEFT_MID, 14, -13);
+
+        lv_obj_t *artist = lv_label_create(row);
+        lv_label_set_text(artist, c->artist);
+        lv_obj_set_width(artist, 520);
+        lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_color(artist, lv_color_hex(s_th->text2), 0);
+        lv_obj_set_style_text_font(artist, font_sm(), 0);
+        lv_obj_align(artist, LV_ALIGN_LEFT_MID, 14, 17);
+
+        lv_obj_t *add = lv_button_create(row);
+        lv_obj_set_size(add, 112, 42);
+        lv_obj_align(add, LV_ALIGN_RIGHT_MID, -12, 0);
+        lv_obj_set_style_bg_color(add, lv_color_hex(exists ? s_th->track : accent_color()), 0);
+        style_key_btn(add);
+        if (exists) lv_obj_add_state(add, LV_STATE_DISABLED);
+        else lv_obj_add_event_cb(add, on_album_candidate_add, LV_EVENT_CLICKED,
+                                 (void *)(intptr_t)i);
+
+        lv_obj_t *al = lv_label_create(add);
+        lv_label_set_text(al, exists ? "ADDED" : "ADD");
+        lv_obj_set_style_text_color(al, lv_color_hex(is_paper_theme() ? s_th->bg : s_th->text), 0);
+        lv_obj_set_style_text_font(al, font_sm(), 0);
+        lv_obj_center(al);
+    }
 }
 
 void ui_set_album_candidates(const void *raw_list, int count, const char *err)
@@ -4893,72 +5357,17 @@ void ui_set_album_candidates(const void *raw_list, int count, const char *err)
         return;
     }
 
-    s_album_candidate_count = 0;
-    if (s_album_add_list) {
-        lv_obj_clean(s_album_add_list);
-        if ((err && err[0]) || count == 0) {
-            /* Failure shows the backend's actual reason (403 scope, HA browse
-             * error, network...) instead of a blanket "unavailable" -- the
-             * why used to be serial-only, which made this screen a dead end. */
-            lv_obj_t *lbl = lv_label_create(s_album_add_list);
-            lv_label_set_text(lbl, (err && err[0]) ? err : "No albums returned");
-            lv_obj_set_width(lbl, 720);
-            lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-            lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
-            lv_obj_set_style_text_font(lbl, font_md(), 0);
-        }
+    for (int i = 0; i < count; i++) s_album_candidates[i] = list[i];
+    s_album_candidate_count = count;
 
-        for (int i = 0; i < count; i++) {
-            s_album_candidates[i] = list[i];
-            bool exists = album_catalog_contains_uri(list[i].uri);
-
-            lv_obj_t *row = lv_obj_create(s_album_add_list);
-            lv_obj_set_size(row, lv_pct(100), 74);
-            lv_obj_set_style_bg_color(row, lv_color_hex(s_th->surface), 0);
-            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(row, is_paper_theme() ? 3 : 6, 0);
-            lv_obj_set_style_border_width(row, is_paper_theme() ? 2 : 0, 0);
-            lv_obj_set_style_border_color(row, lv_color_hex(s_th->track), 0);
-            lv_obj_set_style_pad_all(row, 0, 0);
-            lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-
-            lv_obj_t *title = lv_label_create(row);
-            lv_label_set_text(title, list[i].title);
-            lv_obj_set_width(title, 520);
-            lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-            lv_obj_set_style_text_color(title, lv_color_hex(s_th->text), 0);
-            lv_obj_set_style_text_font(title, font_md(), 0);
-            lv_obj_align(title, LV_ALIGN_LEFT_MID, 14, -13);
-
-            lv_obj_t *artist = lv_label_create(row);
-            lv_label_set_text(artist, list[i].artist);
-            lv_obj_set_width(artist, 520);
-            lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
-            lv_obj_set_style_text_color(artist, lv_color_hex(s_th->text2), 0);
-            lv_obj_set_style_text_font(artist, font_sm(), 0);
-            lv_obj_align(artist, LV_ALIGN_LEFT_MID, 14, 17);
-
-            lv_obj_t *add = lv_button_create(row);
-            lv_obj_set_size(add, 112, 42);
-            lv_obj_align(add, LV_ALIGN_RIGHT_MID, -12, 0);
-            lv_obj_set_style_bg_color(add, lv_color_hex(exists ? s_th->track : accent_color()), 0);
-            style_key_btn(add);
-            if (exists) lv_obj_add_state(add, LV_STATE_DISABLED);
-            else lv_obj_add_event_cb(add, on_album_candidate_add, LV_EVENT_CLICKED,
-                                     (void *)(intptr_t)i);
-
-            lv_obj_t *al = lv_label_create(add);
-            lv_label_set_text(al, exists ? "ADDED" : "ADD");
-            lv_obj_set_style_text_color(al, lv_color_hex(is_paper_theme() ? s_th->bg : s_th->text), 0);
-            lv_obj_set_style_text_font(al, font_sm(), 0);
-            lv_obj_center(al);
-        }
-        s_album_candidate_count = count;
-    }
+    /* Live search renders into the overlay list; otherwise the screen list. */
+    album_candidates_render(s_album_search_results ? s_album_search_results
+                                                   : s_album_add_list, err);
     bsp_display_unlock();
 }
 
-void ui_set_lights(const ui_light_t *list, int count)
+static void ui_set_lights_impl(const ui_light_t *list, const int *hues,
+                               const int *sats, int count)
 {
     if (count > MAX_LIGHTS) count = MAX_LIGHTS;
     if (count < 0) count = 0;
@@ -4969,6 +5378,13 @@ void ui_set_lights(const ui_light_t *list, int count)
     s_light_entry_count = 0;
     if (s_light_list) {
         lv_obj_clean(s_light_list);
+        memset(s_light_bri_slider_box, 0, sizeof(s_light_bri_slider_box));
+        memset(s_light_bri_preset_box, 0, sizeof(s_light_bri_preset_box));
+        memset(s_light_hue_slider_box, 0, sizeof(s_light_hue_slider_box));
+        memset(s_light_hue_swatch_box, 0, sizeof(s_light_hue_swatch_box));
+        memset(s_light_hue_slider, 0, sizeof(s_light_hue_slider));
+        memset(s_light_bri_mode_lbl, 0, sizeof(s_light_bri_mode_lbl));
+        memset(s_light_hue_mode_lbl, 0, sizeof(s_light_hue_mode_lbl));
         if (count == 0) {
             lv_obj_t *lbl = lv_label_create(s_light_list);
             lv_label_set_text(lbl, "No lights configured");
@@ -4977,7 +5393,19 @@ void ui_set_lights(const ui_light_t *list, int count)
         }
         for (int i = 0; i < count; i++) {
             s_light_entries[i] = list[i];
+            bool unavailable = (list[i].brightness_pct == -2);
             bool dimmable = (list[i].brightness_pct >= 0);
+            int hue = (hues && hues[i] >= 0) ? hues[i] : -1;
+            int sat = (sats && sats[i] > 0) ? sats[i] : 100;
+            bool colorable = (hue >= 0);
+            s_light_hue_deg[i] = hue;
+            s_light_sat_pct[i] = sat;
+            s_light_bri_tick[i] = 0;
+            s_light_hue_tick[i] = 0;
+            s_light_bri_sent[i] = list[i].brightness_pct;
+            s_light_hue_sent[i] = hue;
+            int sections = (dimmable ? 1 : 0) + (colorable ? 1 : 0);
+            int row_h = unavailable ? 68 : (sections > 0 ? (68 + sections * 76) : 74);
 
             /* A plain container, not a button: a light row needs TWO
              * independently-tappable controls (power toggle + brightness
@@ -4986,53 +5414,201 @@ void ui_set_lights(const ui_light_t *list, int count)
              * styles (radius/border), so it applies here exactly as it does
              * to the devices row. */
             lv_obj_t *row = lv_obj_create(s_light_list);
-            lv_obj_set_size(row, lv_pct(100), dimmable ? 76 : 56);
+            lv_obj_set_size(row, lv_pct(100), row_h);
             lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
             style_key_btn(row);
             lv_obj_set_style_bg_color(row, lv_color_hex(s_th->surface), 0);
             lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+            lv_obj_set_style_pad_all(row, 0, 0);
 
             lv_obj_t *nm = lv_label_create(row);
             lv_label_set_text(nm, list[i].name);
+            lv_obj_set_width(nm, 600);
+            lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
             lv_obj_set_style_text_color(nm,
-                lv_color_hex(list[i].is_on ? accent_color() : s_th->text), 0);
+                lv_color_hex(unavailable ? s_th->text2 :
+                             (list[i].is_on ? accent_color() : s_th->text)), 0);
             lv_obj_set_style_text_font(nm, font_md(), 0);
-            lv_obj_align(nm, LV_ALIGN_TOP_LEFT, 12, 8);
+            lv_obj_align(nm, LV_ALIGN_TOP_LEFT, 16, 12);
+
+            if (unavailable) {
+                lv_obj_t *status = lv_label_create(row);
+                lv_label_set_text(status, "UNAVAILABLE");
+                lv_obj_set_style_text_color(status, lv_color_hex(s_th->text2), 0);
+                lv_obj_set_style_text_font(status, font_sm(), 0);
+                lv_obj_align(status, LV_ALIGN_BOTTOM_LEFT, 12, -8);
+            }
 
             lv_obj_t *toggle = lv_button_create(row);
-            lv_obj_set_size(toggle, 56, 32);
-            lv_obj_align(toggle, LV_ALIGN_TOP_RIGHT, -8, 6);
+            lv_obj_set_size(toggle, 68, 44);
+            lv_obj_align(toggle, LV_ALIGN_TOP_RIGHT, -12, 8);
             style_key_btn(toggle);
             lv_obj_set_style_bg_color(toggle,
-                lv_color_hex(list[i].is_on ? accent_color() : s_th->bg), 0);
-            lv_obj_add_event_cb(toggle, on_light_toggle, LV_EVENT_CLICKED,
-                                (void *)(intptr_t)i);
+                lv_color_hex(unavailable ? s_th->track :
+                             (list[i].is_on ? accent_color() : s_th->bg)), 0);
+            if (unavailable) lv_obj_add_state(toggle, LV_STATE_DISABLED);
+            else lv_obj_add_event_cb(toggle, on_light_toggle, LV_EVENT_CLICKED,
+                                     (void *)(intptr_t)i);
             lv_obj_t *tlbl = lv_label_create(toggle);
             lv_label_set_text(tlbl, LV_SYMBOL_POWER);
             lv_obj_set_style_text_color(tlbl,
-                lv_color_hex(list[i].is_on ? s_th->bg : s_th->text2), 0);
+                lv_color_hex(unavailable ? s_th->dim :
+                             (list[i].is_on ? s_th->bg : s_th->text2)), 0);
             lv_obj_set_style_text_font(tlbl, font_icon(), 0);
             lv_obj_center(tlbl);
 
             if (dimmable) {
-                lv_obj_t *sl = lv_slider_create(row);
-                lv_obj_set_size(sl, lv_pct(90), 12);
-                lv_obj_align(sl, LV_ALIGN_BOTTOM_MID, 0, -8);
+                int y = 58;
+                lv_obj_t *bl = lv_label_create(row);
+                lv_label_set_text(bl, "BRIGHTNESS");
+                lv_obj_set_style_text_color(bl, lv_color_hex(s_th->text2), 0);
+                lv_obj_set_style_text_font(bl, font_sm(), 0);
+                lv_obj_align(bl, LV_ALIGN_TOP_LEFT, 16, y);
+
+                lv_obj_t *mode = lv_button_create(row);
+                lv_obj_set_size(mode, 154, 30);
+                lv_obj_align(mode, LV_ALIGN_TOP_RIGHT, -16, y - 4);
+                style_key_btn(mode);
+                lv_obj_set_style_bg_color(mode, lv_color_hex(s_th->bg), 0);
+                lv_obj_add_event_cb(mode, on_light_brightness_mode, LV_EVENT_CLICKED, NULL);
+                s_light_bri_mode_lbl[i] = lv_label_create(mode);
+                lv_obj_set_width(s_light_bri_mode_lbl[i], 138);
+                lv_obj_set_style_text_align(s_light_bri_mode_lbl[i], LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_style_text_color(s_light_bri_mode_lbl[i], lv_color_hex(s_th->text), 0);
+                lv_obj_set_style_text_font(s_light_bri_mode_lbl[i], font_sm(), 0);
+                lv_obj_center(s_light_bri_mode_lbl[i]);
+
+                lv_obj_t *box = lv_obj_create(row);
+                s_light_bri_slider_box[i] = box;
+                lv_obj_set_size(box, lv_pct(94), 42);
+                lv_obj_align(box, LV_ALIGN_TOP_MID, 0, y + 24);
+                lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(box, 0, 0);
+                lv_obj_set_style_pad_all(box, 0, 0);
+                lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+                lv_obj_t *sl = lv_slider_create(box);
+                lv_obj_set_size(sl, lv_pct(100), 38);
+                lv_obj_center(sl);
                 lv_slider_set_range(sl, 1, 100);
                 lv_slider_set_value(sl, list[i].brightness_pct, LV_ANIM_OFF);
-                lv_obj_set_style_bg_color(sl, lv_color_hex(s_th->track), LV_PART_MAIN);
-                lv_obj_set_style_bg_color(sl, lv_color_hex(accent_color()), LV_PART_INDICATOR);
-                lv_obj_set_style_bg_color(sl, lv_color_hex(accent_color()), LV_PART_KNOB);
-                lv_obj_set_style_radius(sl, is_paper_theme() ? 0 : 4, LV_PART_MAIN);
-                lv_obj_set_style_radius(sl, is_paper_theme() ? 0 : 4, LV_PART_INDICATOR);
-                if (is_paper_theme()) lv_obj_set_style_radius(sl, 0, LV_PART_KNOB);
+                style_light_slider(sl, lv_color_hex(accent_color()));
+                lv_obj_add_event_cb(sl, on_light_brightness, LV_EVENT_VALUE_CHANGED,
+                                    (void *)(intptr_t)i);
                 lv_obj_add_event_cb(sl, on_light_brightness, LV_EVENT_RELEASED,
                                     (void *)(intptr_t)i);
+
+                lv_obj_t *presets = lv_obj_create(row);
+                s_light_bri_preset_box[i] = presets;
+                lv_obj_set_size(presets, lv_pct(94), 42);
+                lv_obj_align(presets, LV_ALIGN_TOP_MID, 0, y + 24);
+                lv_obj_set_style_bg_opa(presets, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(presets, 0, 0);
+                lv_obj_set_style_pad_all(presets, 0, 0);
+                lv_obj_set_style_pad_column(presets, 8, 0);
+                lv_obj_set_flex_flow(presets, LV_FLEX_FLOW_ROW);
+                lv_obj_remove_flag(presets, LV_OBJ_FLAG_SCROLLABLE);
+                for (int p = 0; p < (int)(sizeof(k_light_bri_presets) / sizeof(k_light_bri_presets[0])); p++) {
+                    lv_obj_t *btn = lv_button_create(presets);
+                    lv_obj_set_size(btn, 116, 38);
+                    style_key_btn(btn);
+                    lv_obj_set_style_bg_color(btn, lv_color_hex(s_th->bg), 0);
+                    lv_obj_add_event_cb(btn, on_light_brightness_preset, LV_EVENT_CLICKED,
+                                        (void *)(intptr_t)((i << 16) | k_light_bri_presets[p]));
+                    char txt[8];
+                    snprintf(txt, sizeof(txt), "%d%%", k_light_bri_presets[p]);
+                    lv_obj_t *pl = lv_label_create(btn);
+                    lv_label_set_text(pl, txt);
+                    lv_obj_set_style_text_color(pl, lv_color_hex(s_th->text), 0);
+                    lv_obj_set_style_text_font(pl, font_sm(), 0);
+                    lv_obj_center(pl);
+                }
+            }
+            if (colorable) {
+                int y = dimmable ? 134 : 58;
+                lv_obj_t *hl = lv_label_create(row);
+                lv_label_set_text(hl, "HUE");
+                lv_obj_set_style_text_color(hl, lv_color_hex(s_th->text2), 0);
+                lv_obj_set_style_text_font(hl, font_sm(), 0);
+                lv_obj_align(hl, LV_ALIGN_TOP_LEFT, 16, y);
+
+                lv_obj_t *mode = lv_button_create(row);
+                lv_obj_set_size(mode, 154, 30);
+                lv_obj_align(mode, LV_ALIGN_TOP_RIGHT, -16, y - 4);
+                style_key_btn(mode);
+                lv_obj_set_style_bg_color(mode, lv_color_hex(s_th->bg), 0);
+                lv_obj_add_event_cb(mode, on_light_hue_mode, LV_EVENT_CLICKED, NULL);
+                s_light_hue_mode_lbl[i] = lv_label_create(mode);
+                lv_obj_set_width(s_light_hue_mode_lbl[i], 138);
+                lv_obj_set_style_text_align(s_light_hue_mode_lbl[i], LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_style_text_color(s_light_hue_mode_lbl[i], lv_color_hex(s_th->text), 0);
+                lv_obj_set_style_text_font(s_light_hue_mode_lbl[i], font_sm(), 0);
+                lv_obj_center(s_light_hue_mode_lbl[i]);
+
+                lv_obj_t *box = lv_obj_create(row);
+                s_light_hue_slider_box[i] = box;
+                lv_obj_set_size(box, lv_pct(94), 42);
+                lv_obj_align(box, LV_ALIGN_TOP_MID, 0, y + 24);
+                lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(box, 0, 0);
+                lv_obj_set_style_pad_all(box, 0, 0);
+                lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+                lv_obj_t *hs = lv_slider_create(box);
+                s_light_hue_slider[i] = hs;
+                lv_obj_set_size(hs, lv_pct(100), 38);
+                lv_obj_center(hs);
+                lv_slider_set_range(hs, 0, 359);
+                lv_slider_set_value(hs, hue, LV_ANIM_OFF);
+                style_light_slider(hs, light_hue_color(hue));
+                lv_obj_add_event_cb(hs, on_light_hue, LV_EVENT_VALUE_CHANGED,
+                                    (void *)(intptr_t)i);
+                lv_obj_add_event_cb(hs, on_light_hue, LV_EVENT_RELEASED,
+                                    (void *)(intptr_t)i);
+
+                lv_obj_t *swatches = lv_obj_create(row);
+                s_light_hue_swatch_box[i] = swatches;
+                lv_obj_set_size(swatches, lv_pct(94), 42);
+                lv_obj_align(swatches, LV_ALIGN_TOP_MID, 0, y + 24);
+                lv_obj_set_style_bg_opa(swatches, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(swatches, 0, 0);
+                lv_obj_set_style_pad_all(swatches, 0, 0);
+                lv_obj_set_style_pad_column(swatches, 4, 0);
+                lv_obj_set_flex_flow(swatches, LV_FLEX_FLOW_ROW);
+                lv_obj_remove_flag(swatches, LV_OBJ_FLAG_SCROLLABLE);
+                for (int p = 0; p < (int)(sizeof(k_light_hue_presets) / sizeof(k_light_hue_presets[0])); p++) {
+                    lv_obj_t *btn = lv_button_create(swatches);
+                    lv_obj_set_size(btn, 82, 38);
+                    style_key_btn(btn);
+                    lv_obj_set_style_bg_color(btn,
+                        light_hs_color(k_light_hue_presets[p].hue,
+                                       k_light_hue_presets[p].sat), 0);
+                    lv_obj_add_event_cb(btn, on_light_hue_swatch, LV_EVENT_CLICKED,
+                                        (void *)(intptr_t)((i << 8) | p));
+                    lv_obj_t *pl = lv_label_create(btn);
+                    lv_label_set_text(pl, k_light_hue_presets[p].name);
+                    lv_obj_set_style_text_color(pl,
+                        light_swatch_text_color(k_light_hue_presets[p].hue,
+                                                k_light_hue_presets[p].sat), 0);
+                    lv_obj_set_style_text_font(pl, font_sm(), 0);
+                    lv_obj_center(pl);
+                }
             }
         }
+        set_light_control_visibility();
         s_light_entry_count = count;
     }
     bsp_display_unlock();
+}
+
+void ui_set_lights(const ui_light_t *list, int count)
+{
+    ui_set_lights_impl(list, NULL, NULL, count);
+}
+
+void ui_set_lights_ext(const ui_light_t *list, const int *hues, const int *sats, int count)
+{
+    ui_set_lights_impl(list, hues, sats, count);
 }
 
 /* Single source of truth for every browser <-> now-playing switch. `to_np`

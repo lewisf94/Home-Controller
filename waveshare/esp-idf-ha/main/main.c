@@ -48,6 +48,18 @@ static const char *TAG = "main";
 
 #define CREDS_KEY_WIFI_SSID  "wifi_ssid"
 #define CREDS_KEY_WIFI_PASS  "wifi_pass"
+#define CREDS_KEY_SP_ID      "sp_id"
+#define CREDS_KEY_SP_SECRET  "sp_secret"
+#define CREDS_KEY_SP_REFRESH "sp_refresh"
+#ifndef SPOTIFY_CLIENT_ID
+#define SPOTIFY_CLIENT_ID ""
+#endif
+#ifndef SPOTIFY_CLIENT_SECRET
+#define SPOTIFY_CLIENT_SECRET ""
+#endif
+#ifndef SPOTIFY_REFRESH_TOKEN
+#define SPOTIFY_REFRESH_TOKEN ""
+#endif
 bool creds_get(const char *key, char *out, size_t out_len, const char *fallback);
 
 /* ── WiFi ──────────────────────────────────────────────────────────────────── */
@@ -68,10 +80,11 @@ typedef enum {
     HCMD_PLAY_ALBUM,
     HCMD_GET_DEVICES,       /* enumerate HA media_player entities */
     HCMD_TRANSFER,          /* switch the active media_player entity */
-    HCMD_GET_ALBUM_CANDIDATES, /* browse active media_player for albums */
+    HCMD_GET_ALBUM_CANDIDATES, /* discover HA media libraries for albums */
     HCMD_GET_LIGHTS,        /* enumerate HA light entities */
     HCMD_LIGHT_TOGGLE,      /* toggle one light on/off */
     HCMD_LIGHT_BRIGHTNESS,  /* set one light's brightness */
+    HCMD_LIGHT_HUE,         /* set one light's hue/saturation */
 } hcmd_type_t;
 
 typedef struct {
@@ -80,17 +93,23 @@ typedef struct {
         uint32_t seek_ms;
         int      volume_pct;
         char     album_uri[64];
+        char     album_query[80];
         char     device_id[64];
         char     light_id[96];   /* HCMD_LIGHT_TOGGLE -- matches ui_light_t.entity_id */
         struct {
             char entity_id[96];
             int  pct;
         } light_brightness;      /* HCMD_LIGHT_BRIGHTNESS */
+        struct {
+            char entity_id[96];
+            int  hue_deg;
+            int  sat_pct;
+        } light_hue;             /* HCMD_LIGHT_HUE */
     };
 } hcmd_t;
 
 static QueueHandle_t s_cmd_queue;
-#define CMD_QUEUE_DEPTH 8
+#define CMD_QUEUE_DEPTH 16
 
 /* ── ui_request_* callbacks (called from the LVGL task, post to ha_task) ─── */
 void ui_request_play(const char *uri)
@@ -115,6 +134,12 @@ void ui_request_get_devices(void)
     { hcmd_t c = {.type=HCMD_GET_DEVICES}; xQueueSend(s_cmd_queue,&c,0); }
 void ui_request_get_album_candidates(void)
     { hcmd_t c = {.type=HCMD_GET_ALBUM_CANDIDATES}; xQueueSend(s_cmd_queue,&c,0); }
+void ui_request_search_album_candidates(const char *query)
+{
+    hcmd_t c = { .type = HCMD_GET_ALBUM_CANDIDATES };
+    snprintf(c.album_query, sizeof c.album_query, "%s", query ? query : "");
+    xQueueSend(s_cmd_queue, &c, 0);
+}
 void ui_request_transfer(const char *device_id)
 {
     hcmd_t c = { .type = HCMD_TRANSFER };
@@ -137,6 +162,15 @@ void ui_request_light_brightness(const char *entity_id, int pct)
     snprintf(c.light_brightness.entity_id, sizeof c.light_brightness.entity_id,
              "%s", entity_id ? entity_id : "");
     c.light_brightness.pct = pct;
+    xQueueSend(s_cmd_queue, &c, 0);
+}
+void ui_request_light_hue(const char *entity_id, int hue_deg, int sat_pct)
+{
+    hcmd_t c = { .type = HCMD_LIGHT_HUE };
+    snprintf(c.light_hue.entity_id, sizeof c.light_hue.entity_id,
+             "%s", entity_id ? entity_id : "");
+    c.light_hue.hue_deg = hue_deg;
+    c.light_hue.sat_pct = sat_pct;
     xQueueSend(s_cmd_queue, &c, 0);
 }
 
@@ -185,6 +219,8 @@ static void ha_task(void *arg)
     char art_rel[256];
 
     for (;;) {
+        ha_client_tick();
+
         /* Check for a pending art URL from the HA event handler. */
         if (ha_take_pending_art(art_rel, sizeof art_rel)) {
             char art_url[320];
@@ -208,16 +244,20 @@ static void ha_task(void *arg)
             case HCMD_GET_DEVICES:  ha_request_devices();                break;
             case HCMD_TRANSFER:     ha_set_active_entity(cmd.device_id); break;
             case HCMD_GET_ALBUM_CANDIDATES:
-                ha_request_album_candidates();
+                ha_request_album_candidates(cmd.album_query);
                 break;
             case HCMD_GET_LIGHTS:   ha_request_lights();                break;
             case HCMD_LIGHT_TOGGLE:
                 refresh_lights_after_command(ha_light_toggle(cmd.light_id));
                 break;
             case HCMD_LIGHT_BRIGHTNESS:
-                refresh_lights_after_command(
-                    ha_light_set_brightness(cmd.light_brightness.entity_id,
-                                            cmd.light_brightness.pct));
+                ha_light_set_brightness(cmd.light_brightness.entity_id,
+                                        cmd.light_brightness.pct);
+                break;
+            case HCMD_LIGHT_HUE:
+                ha_light_set_hs(cmd.light_hue.entity_id,
+                                cmd.light_hue.hue_deg,
+                                cmd.light_hue.sat_pct);
                 break;
             default: break;
             }
@@ -251,8 +291,14 @@ void app_main(void)
     /* Effective WiFi credentials: Settings > SETUP override, else secrets.h.
      * Static -- the WiFi stack may reference them beyond this call. */
     static char s_cred_ssid[33], s_cred_pass[65];
+    static char s_cred_sp_id[160], s_cred_sp_secret[160], s_cred_sp_refresh[300];
     creds_get(CREDS_KEY_WIFI_SSID, s_cred_ssid, sizeof s_cred_ssid, WIFI_SSID);
     creds_get(CREDS_KEY_WIFI_PASS, s_cred_pass, sizeof s_cred_pass, WIFI_PASSWORD);
+    creds_get(CREDS_KEY_SP_ID, s_cred_sp_id, sizeof s_cred_sp_id, SPOTIFY_CLIENT_ID);
+    creds_get(CREDS_KEY_SP_SECRET, s_cred_sp_secret, sizeof s_cred_sp_secret,
+              SPOTIFY_CLIENT_SECRET);
+    creds_get(CREDS_KEY_SP_REFRESH, s_cred_sp_refresh, sizeof s_cred_sp_refresh,
+              SPOTIFY_REFRESH_TOKEN);
     if (app_core_wifi_connect(s_cred_ssid, s_cred_pass, WIFI_MAX_RETRY, NULL) != ESP_OK) {
         /* Initial connect exhausted its fast retries. Don't abort: app_core_wifi
          * has armed the slow background reconnect timer, which will keep trying
@@ -273,6 +319,7 @@ void app_main(void)
     bsp_display_unlock();
 
     ha_client_init(HA_HOST, HA_PORT, HA_TOKEN, HA_ENTITY);
+    ha_spotify_init(s_cred_sp_id, s_cred_sp_secret, s_cred_sp_refresh);
 
     s_cmd_queue = xQueueCreate(CMD_QUEUE_DEPTH, sizeof(hcmd_t));
     if (!s_cmd_queue) {
@@ -286,4 +333,5 @@ void app_main(void)
 #endif
 
     ESP_LOGI(TAG, "init done -- ha_task running");
+    ESP_LOGI(TAG, "feature marker: ha_devices_v2_lights_presets_v1 add_albums_spotify_search_v1");
 }

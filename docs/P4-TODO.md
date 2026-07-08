@@ -340,22 +340,29 @@ rather than trusting the old "~96 % full" figure. Flash is 32 MB (8 MB app + 4 M
   - First slice landed 2026-07-06 (BUILD-VERIFIED, not hardware-tested): the
     shared P4 UI has a top-bar `+` screen that asks the direct-Spotify backend
     for the first page of saved albums (`/v1/me/albums`) and the HA backend for
-    the active media player's media-browser albums (`media_player/browse_media`).
-    It displays duplicate-aware ADD/ADDED rows and appends selected album
-    metadata to a small NVS runtime catalogue layered after the compiled seed
-    albums. The knob config now reads the combined catalogue count too. Direct
-    Spotify requires `user-library-read`; HA depends on Music Assistant (or the
-    selected HA media_player) exposing playable Spotify albums in the media
-    browser.
+    HA media-player media-browser albums (`media_player/browse_media`) by
+    discovering all `media_player.*` entities and walking them until playable
+    Spotify albums are found. It displays duplicate-aware ADD/ADDED rows and
+    appends selected album metadata to a small NVS runtime catalogue layered
+    after the compiled seed albums. The knob config now reads the combined
+    catalogue count too. Direct
+    Spotify requires `user-library-read`; HA depends on Music Assistant exposing
+    playable Spotify albums in at least one HA media browser.
   - 2026-07-07: failures now explained ON SCREEN (403 missing-scope hint, HA
     browse error text, network); `get_spotify_token.py` (repo root) now
     requests `user-library-read` (scopes are frozen at authorisation time —
     the original playback-only token can NEVER read the library; mint + install
     a fresh one); Settings > SETUP lets a user enter WiFi + Spotify credentials
     on-device (NVS overrides secrets.h at boot, `p4_shared/creds.c`).
-  - Still open: free-text search (`/v1/search?type=album` on direct Spotify or
-    a Music Assistant/HA search API) and a controller-friendly text-entry flow
-    (the SETUP keyboard overlay is reusable for this).
+  - 2026-07-08: HA Add Albums no longer depends on Music Assistant exposing an
+    album library. The shared `+` screen now has a SEARCH overlay; the HA build
+    reads Spotify client id/secret from Settings > SETUP or flashed secrets.h,
+    gets a client-credentials token, and searches Spotify's public catalogue
+    with `/v1/search?type=album`. Empty/no-query requests keep the older HA
+    media-browser walk as a fallback. Direct-Spotify still uses saved albums
+    for now, with a compatibility adapter so the shared UI links.
+  - Still open: direct-Spotify free-text catalogue search, result cover-art
+    preview, and a richer controller-friendly text-entry/result filter flow.
   - Storage still open: downloaded/cached thumbnails in a data partition or
     LittleFS-style store. Runtime albums currently add metadata only, so they
     fall back to the no-art card paths instead of getting embedded thumbs.

@@ -1,9 +1,12 @@
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>   /* strcasecmp / strncasecmp */
 
 #include "albums.h"
+#include "album_thumbs.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -28,6 +31,59 @@ static runtime_album_t s_runtime[ALBUM_CATALOG_MAX_RUNTIME];
 static album_entry_t   s_runtime_entries[ALBUM_CATALOG_MAX_RUNTIME];
 static size_t          s_runtime_count = 0;
 static bool            s_loaded = false;
+
+/* Display order: the baked list stays in its (gen_albums-sorted) order and each
+ * runtime album is inserted at its alphabetical slot, so an added album no
+ * longer lands at the end. Display position -> a source ref (baked blob index
+ * or runtime index); album_catalog_get() and album_catalog_thumb() both index
+ * through this, which keeps thumbnails aligned to the sorted order. */
+#define ALBUM_CATALOG_ORDER_MAX 320
+typedef struct { bool runtime; uint16_t idx; } album_ref_t;
+static album_ref_t s_order[ALBUM_CATALOG_ORDER_MAX];
+static size_t      s_order_count = 0;
+
+static const char *skip_article(const char *s)
+{
+    if (!s) return "";
+    while (*s == ' ') s++;
+    if (strncasecmp(s, "the ", 4) == 0) return s + 4;
+    if (strncasecmp(s, "an ", 3) == 0)  return s + 3;
+    if (strncasecmp(s, "a ", 2) == 0)   return s + 2;
+    return s;
+}
+
+/* Sort key: artist (leading article ignored) then title -- matches
+ * scripts/gen_albums.py so runtime albums merge into the baked ordering. */
+static int cat_cmp_entry(const album_entry_t *a, const album_entry_t *b)
+{
+    int c = strcasecmp(skip_article(a->artist), skip_article(b->artist));
+    if (c) return c;
+    return strcasecmp(skip_article(a->title), skip_article(b->title));
+}
+
+static const album_entry_t *entry_of(album_ref_t r)
+{
+    return r.runtime ? &s_runtime_entries[r.idx] : albums_get(r.idx);
+}
+
+static void rebuild_order(void)
+{
+    s_order_count = 0;
+    size_t baked = albums_count();
+    for (size_t i = 0; i < baked && s_order_count < ALBUM_CATALOG_ORDER_MAX; i++)
+        s_order[s_order_count++] = (album_ref_t){ .runtime = false, .idx = (uint16_t)i };
+
+    for (size_t r = 0; r < s_runtime_count && s_order_count < ALBUM_CATALOG_ORDER_MAX; r++) {
+        const album_entry_t *re = &s_runtime_entries[r];
+        size_t pos = s_order_count;
+        for (size_t j = 0; j < s_order_count; j++) {
+            if (cat_cmp_entry(re, entry_of(s_order[j])) < 0) { pos = j; break; }
+        }
+        for (size_t k = s_order_count; k > pos; k--) s_order[k] = s_order[k - 1];
+        s_order[pos] = (album_ref_t){ .runtime = true, .idx = (uint16_t)r };
+        s_order_count++;
+    }
+}
 
 static void bind_runtime_entry(size_t i)
 {
@@ -134,7 +190,10 @@ static void load_runtime(void)
 
 void album_catalog_init(void)
 {
-    if (!s_loaded) load_runtime();
+    if (!s_loaded) {
+        load_runtime();
+        rebuild_order();
+    }
 }
 
 size_t album_catalog_baked_count(void)
@@ -145,17 +204,26 @@ size_t album_catalog_baked_count(void)
 size_t album_catalog_count(void)
 {
     album_catalog_init();
-    return albums_count() + s_runtime_count;
+    return s_order_count;
 }
 
 const album_entry_t *album_catalog_get(size_t index)
 {
     album_catalog_init();
-    size_t baked = albums_count();
-    if (index < baked) return albums_get(index);
-    index -= baked;
-    if (index >= s_runtime_count) return NULL;
-    return &s_runtime_entries[index];
+    if (index >= s_order_count) return NULL;
+    return entry_of(s_order[index]);
+}
+
+/* RGB565 thumbnail for display position `index`, or NULL for the letter-card
+ * fallback. Baked slots return the embedded blob; runtime albums have no
+ * embedded art yet (fetched covers land in a later change), so return NULL. */
+const uint16_t *album_catalog_thumb(size_t index)
+{
+    album_catalog_init();
+    if (index >= s_order_count) return NULL;
+    album_ref_t r = s_order[index];
+    if (r.runtime) return NULL;
+    return album_thumb_data(r.idx);
 }
 
 bool album_catalog_contains_uri(const char *uri)
@@ -195,6 +263,7 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri)
         s_runtime_count--;
         return false;
     }
+    rebuild_order();
     ESP_LOGI(TAG, "added runtime album: %s -- %s", r->artist, r->title);
     return true;
 }

@@ -1120,3 +1120,125 @@ bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *coun
     if (count) *count = n;
     return (err == ESP_OK && status == 200);
 }
+
+/* Percent-encode `src` into `out` (RFC 3986 unreserved kept). false on overflow. */
+static bool spotify_url_encode(char *out, size_t out_len, const char *src)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
+        unsigned char c = *p;
+        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') ||
+                          c == '-' || c == '_' || c == '.' || c == '~';
+        if (unreserved) {
+            if (o + 1 >= out_len) return false;
+            out[o++] = (char)c;
+        } else {
+            if (o + 3 >= out_len) return false;
+            out[o++] = '%';
+            out[o++] = hex[c >> 4];
+            out[o++] = hex[c & 0xF];
+        }
+    }
+    if (o >= out_len) return false;
+    out[o] = '\0';
+    return true;
+}
+
+bool spotify_search_albums(const char *query, spotify_album_candidate_t *out,
+                           int max, int *count, char *err_out, size_t err_len)
+{
+    if (err_out && err_len) err_out[0] = '\0';
+    if (count) *count = 0;
+    if (!out || max <= 0) return false;
+    if (!query || !query[0]) {
+        if (err_out) snprintf(err_out, err_len, "Enter an album or artist to search");
+        return false;
+    }
+    if (max > 50) max = 50;   /* Spotify's page limit cap. */
+    if (!ensure_token()) {
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify sign-in failed - check the client id, "
+                              "client secret and refresh token");
+        return false;
+    }
+
+    char q[256];
+    if (!spotify_url_encode(q, sizeof(q), query)) {
+        if (err_out) snprintf(err_out, err_len, "Search text is too long");
+        return false;
+    }
+
+    char url[384];
+    snprintf(url, sizeof(url),
+             "https://api.spotify.com/v1/search?q=%s&type=album&limit=%d", q, max);
+
+    resp_buf_t resp = {0};
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_GET,
+        .event_handler     = http_event_handler,
+        .user_data         = &resp,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 7000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        if (err_out) snprintf(err_out, err_len, "Out of memory");
+        return false;
+    }
+
+    char bearer[320];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", s_access_token);
+    esp_http_client_set_header(client, "Authorization", bearer);
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    int n = 0;
+    if (err == ESP_OK && status == 200 && resp.data) {
+        const char *albums = json_obj_get(resp.data, "albums");
+        const char *item = json_arr_first_obj(json_obj_get(albums, "items"));
+        while (item && n < max) {
+            spotify_album_candidate_t *a = &out[n];
+            memset(a, 0, sizeof(*a));
+            const char *v;
+            if ((v = json_obj_get(item, "name")))
+                json_copy_string(v, a->title, sizeof(a->title));
+            if ((v = json_obj_get(item, "uri")))
+                json_copy_string(v, a->uri, sizeof(a->uri));
+            const char *artist = json_arr_first_obj(json_obj_get(item, "artists"));
+            if (artist && (v = json_obj_get(artist, "name")))
+                json_copy_string(v, a->artist, sizeof(a->artist));
+            if (!a->artist[0])
+                snprintf(a->artist, sizeof(a->artist), "Unknown artist");
+            if (a->title[0] && strncmp(a->uri, "spotify:album:", 14) == 0)
+                n++;
+
+            const char *after = json_skip_value(item);
+            while (*after==' '||*after=='\t'||*after=='\n'||*after=='\r'||*after==',') after++;
+            item = (*after == '{') ? after : NULL;
+        }
+    } else if (status == 401) {
+        ESP_LOGW(TAG, "search_albums got 401, invalidating cached token");
+        s_token_expiry_us = 0;
+        s_access_token[0] = '\0';
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify rejected the token (401) - check the "
+                              "credentials in Settings > SETUP");
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "search_albums err=%d status=%d", (int)err, status);
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify search failed - network error");
+    } else {
+        ESP_LOGW(TAG, "search_albums err=%d status=%d", (int)err, status);
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify search failed (HTTP %d)", status);
+    }
+
+    free(resp.data);
+    if (count) *count = n;
+    return (err == ESP_OK && status == 200);
+}

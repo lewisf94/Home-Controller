@@ -99,3 +99,10 @@ typedef struct {
  * `err` (when non-NULL) with a short user-facing reason for the add screen. */
 bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *count,
                               char *err, size_t err_len);
+
+/* Album search (GET /v1/search?type=album&q=...). Uses the same user access
+ * token as everything else, but /v1/search needs NO user-library scope, so it
+ * works with any valid token -- unlike spotify_get_saved_albums. Returns true
+ * on HTTP 200; on failure fills `err` (when non-NULL) with a short reason. */
+bool spotify_search_albums(const char *query, spotify_album_candidate_t *out,
+                           int max, int *count, char *err, size_t err_len);

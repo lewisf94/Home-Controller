@@ -181,6 +181,7 @@ typedef enum {
     SCMD_SET_VOLUME,
     SCMD_GET_DEVICES,    /* fetch device list -> ui_set_devices */
     SCMD_GET_ALBUM_CANDIDATES, /* fetch saved-library albums -> ui_set_album_candidates */
+    SCMD_SEARCH_ALBUMS,  /* str = search text -> Spotify /v1/search -> ui_set_album_candidates */
     SCMD_TRANSFER,       /* str = Spotify device id to transfer playback to */
     SCMD_SELECT_SONOS,   /* str = Sonos LAN IP to drive over UPnP */
     SCMD_TOGGLE_SHUFFLE,
@@ -204,6 +205,7 @@ static const scmd_meta_t k_scmd_meta[] = {
     [SCMD_SET_VOLUME]     = { "set_volume",        false },
     [SCMD_GET_DEVICES]    = { "get_devices",       true  },
     [SCMD_GET_ALBUM_CANDIDATES] = { "get_album_candidates", true },
+    [SCMD_SEARCH_ALBUMS]  = { "search_albums",     true  },
     [SCMD_TRANSFER]       = { "transfer",          true  },
     [SCMD_SELECT_SONOS]   = { "select_sonos",      true  },
     [SCMD_TOGGLE_SHUFFLE] = { "toggle_shuffle",    false },
@@ -284,6 +286,11 @@ void ui_request_volume(int pct)        { _post_cmd(SCMD_SET_VOLUME,     (uint32_
 void ui_request_shuffle(void)          { _post_cmd(SCMD_TOGGLE_SHUFFLE, 0,             NULL); }
 void ui_request_get_devices(void)              { _post_cmd(SCMD_GET_DEVICES,   0, NULL); }
 void ui_request_get_album_candidates(void)     { _post_cmd(SCMD_GET_ALBUM_CANDIDATES, 0, NULL); }
+void ui_request_search_album_candidates(const char *query)
+{
+    if (query && query[0]) _post_cmd(SCMD_SEARCH_ALBUMS, 0, query);
+    else                   ui_request_get_album_candidates();
+}
 void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
 void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
 
@@ -295,6 +302,12 @@ void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0
 void ui_request_get_lights(void)                                 { }
 void ui_request_light_toggle(const char *entity_id)               { (void)entity_id; }
 void ui_request_light_brightness(const char *entity_id, int pct)  { (void)entity_id; (void)pct; }
+void ui_request_light_hue(const char *entity_id, int hue_deg, int sat_pct)
+{
+    (void)entity_id;
+    (void)hue_deg;
+    (void)sat_pct;
+}
 
 /* WiFi connect (with resilient background reconnect) and the connect chime
  * (first successful connection only, whether that's this call or a later
@@ -661,6 +674,17 @@ static void spotify_task(void *arg)
                         ui_set_album_candidates(sp, got ? sc : 0,
                             got ? NULL : (aerr[0] ? aerr : "Spotify request failed"));
                         ESP_LOGI(TAG, "album candidates: %d saved albums (ok=%d)", got ? sc : 0, got ? 1 : 0);
+                        break;
+                    }
+                    case SCMD_SEARCH_ALBUMS: {
+                        static spotify_album_candidate_t sp[ALBUM_CANDIDATE_MAX];
+                        static char aerr[224];
+                        int sc = 0;
+                        bool got = spotify_search_albums(cmd.str, sp, ALBUM_CANDIDATE_MAX,
+                                                         &sc, aerr, sizeof aerr);
+                        ui_set_album_candidates(got ? sp : NULL, got ? sc : 0,
+                            got ? (sc ? NULL : "No albums matched") : (aerr[0] ? aerr : "Spotify search failed"));
+                        ESP_LOGI(TAG, "album search \"%s\": %d results (ok=%d)", cmd.str, got ? sc : 0, got ? 1 : 0);
                         break;
                     }
                     case SCMD_TRANSFER:

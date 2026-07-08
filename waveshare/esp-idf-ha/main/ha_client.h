@@ -23,9 +23,20 @@
 void ha_client_init(const char *host, int port,
                     const char *token, const char *entity);
 
+/* Optional Spotify Web API credentials used by the HA build's Add Albums
+ * search. Pointers must stay valid for the program's lifetime. The refresh
+ * token is retained for future account-library flows; public album search only
+ * needs client_id + client_secret via Spotify's client-credentials flow. */
+void ha_spotify_init(const char *client_id, const char *client_secret,
+                     const char *refresh_token);
+
 /* Open the WebSocket and begin the auth + subscribe handshake. Non-blocking;
  * state arrives asynchronously via the event handler. */
 void ha_client_start(void);
+
+/* Periodic housekeeping from the HA task: catches album browse requests that
+ * HA never answers or whose response was too large to reassemble. */
+void ha_client_tick(void);
 
 /* Playback commands -- each builds a call_service frame and sends it.
  * Returns true if the WebSocket send succeeded (does not confirm HA executed it). */
@@ -45,11 +56,12 @@ bool ha_play_album(const char *spotify_uri);   /* "spotify:album:ID" */
 void ha_request_devices(void);
 void ha_set_active_entity(const char *entity_id);
 
-/* Album candidates for the shared Add Albums screen. The HA backend uses the
- * active media_player's media browser, so this depends on Music Assistant (or
- * the selected HA media_player) exposing browsable Spotify albums. Results are
- * pushed asynchronously to ui_set_album_candidates(). */
-void ha_request_album_candidates(void);
+/* Album candidates for the shared Add Albums screen. A non-empty query searches
+ * Spotify's catalogue directly. An empty query keeps the older HA media-browser
+ * discovery fallback, so catalogue adding is not tied to the currently selected
+ * speaker being online. Results are pushed asynchronously to
+ * ui_set_album_candidates(). */
+void ha_request_album_candidates(const char *query);
 
 /* Lights (HA build only). ha_request_lights() asks HA for all light.*
  * entities and pushes them to the UI via ui_set_lights(). Toggle and
@@ -60,6 +72,7 @@ void ha_request_album_candidates(void);
 void ha_request_lights(void);
 bool ha_light_toggle(const char *entity_id);
 bool ha_light_set_brightness(const char *entity_id, int pct);
+bool ha_light_set_hs(const char *entity_id, int hue_deg, int sat_pct);
 
 /* Album art: when a track change brings a new entity_picture, the event
  * handler stashes its relative URL. The ha task polls this (consume-once),

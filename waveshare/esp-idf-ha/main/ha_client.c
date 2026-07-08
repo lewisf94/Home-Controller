@@ -14,12 +14,16 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
+#include "mbedtls/base64.h"
 
 #include "player.h"    /* spotify_track_t -- backend-neutral contract from p4_shared */
 #include "ui.h"        /* ui_set_track_info */
@@ -33,11 +37,18 @@ static const char *s_token  = NULL;
 static char        s_entity_buf[96] = {0};
 static const char *s_entity = s_entity_buf;   /* points at the buffer; runtime-switchable */
 
+static const char *s_sp_client_id     = NULL;
+static const char *s_sp_client_secret = NULL;
+static const char *s_sp_refresh_token = NULL; /* retained for future saved-library fallback */
+static char        s_sp_access_token[256] = {0};
+static int64_t     s_sp_token_expiry_us = 0;
+
 static esp_websocket_client_handle_t s_ws = NULL;
 static int s_msg_id = 1;                 /* incrementing WS command id */
 static int s_states_req_id = 0;          /* id of our now-playing get_states request */
 static int s_devices_req_id = 0;         /* id of a device-list get_states request */
 static int s_lights_req_id = 0;          /* id of a light-list get_states request */
+static int s_album_entities_req_id = 0;  /* id of get_states for album-source discovery */
 static int s_album_browse_req_id = 0;    /* id of a media_player/browse_media request */
 static int s_album_browse_depth = 0;     /* follow at most a few folder layers */
 static int s_sub_id = 0;                 /* id of the active subscribe_trigger (for unsubscribe) */
@@ -53,20 +64,37 @@ static char s_art_loaded[256] = {0};     /* last URL we already fetched */
 /* Inbound frame reassembly (WS frames can arrive in chunks). */
 static char  *s_rx     = NULL;
 static size_t s_rx_cap = 0;
-#define RX_MAX_CAP (64 * 1024)
+static bool   s_rx_dropping_oversize = false;
+static bool   s_rx_drop_was_album = false;
+#define RX_MAX_CAP (256 * 1024)
 
 /* Must match ui.c's private ui_album_candidate_t layout. Kept local so the
  * shared public include/ folder does not need a private-folder include sync. */
 #define HA_ALBUM_CANDIDATE_MAX 16
 #define HA_ALBUM_BROWSE_MAX_DEPTH 3
+#define HA_ALBUM_BROWSE_ENTITY_MAX 16
 typedef struct {
     char title[80];
     char artist[56];
     char uri[64];
 } ha_album_candidate_t;
 
+static char s_album_browse_entities[HA_ALBUM_BROWSE_ENTITY_MAX][96];
+static int  s_album_browse_entity_count = 0;
+static int  s_album_browse_entity_next = 0;
+static char s_album_browse_item_id[160] = {0};
+static char s_album_browse_item_title[80] = {0};
+static char s_album_browse_item_artist[56] = {0};
+static int64_t s_album_pending_since_us = 0;
+#define HA_ALBUM_REQ_TIMEOUT_US (10LL * 1000LL * 1000LL)
+
 /* `err` NULL = success; else a short human reason shown on the add screen. */
 void ui_set_album_candidates(const void *list, int count, const char *err);
+void ui_show_toast(const char *msg, uint32_t ms_dur);
+void ui_set_lights_ext(const ui_light_t *list, const int *hues, const int *sats, int count);
+
+static bool media_player_is_unavailable(const char *obj);
+static bool media_player_is_renderer(const char *eid, const char *attrs);
 
 /* ── JSON scanner ────────────────────────────────────────────────────────── */
 static const char *json_skip_string(const char *p)
@@ -166,6 +194,22 @@ static bool json_obj_get_double(const char *obj, const char *key, double *out)
     return true;
 }
 
+static bool json_array_get_two_doubles(const char *arr, double *a, double *b)
+{
+    if (!arr || *arr != '[') return false;
+    const char *p = arr + 1;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == ']') return false;
+    *a = atof(p);
+    while (*p && *p != ',' && *p != ']') p++;
+    if (*p != ',') return false;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == ']') return false;
+    *b = atof(p);
+    return true;
+}
+
 /* ── Outbound (WebSocket sends) ──────────────────────────────────────────── */
 static bool ws_send(const char *json);
 
@@ -206,6 +250,14 @@ static const char *json_array_next_obj(const char *obj)
     const char *p = json_skip_value(obj);
     while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
     return (*p == '{') ? p : NULL;
+}
+
+static bool json_get_int(const char *json, const char *key, int *out)
+{
+    double v = 0;
+    if (!json_obj_get_double(json, key, &v)) return false;
+    *out = (int)v;
+    return true;
 }
 
 static void json_escape(char *out, size_t out_len, const char *src)
@@ -257,18 +309,30 @@ static bool to_spotify_album_uri(const char *media_id, char *out, size_t out_len
     if (p) {
         return spotify_album_uri_from_id(p + 16, out, out_len);
     }
+    p = strstr(media_id, "://album/");
+    if (p && ascii_contains_ci(media_id, "spotify")) {
+        return spotify_album_uri_from_id(p + 9, out, out_len);
+    }
     return false;
 }
 
-static bool send_album_browse(const char *media_id, const char *media_type, int depth)
+static void start_next_album_browse_entity(void);
+
+static bool send_album_browse_for_entity(const char *entity, const char *media_id,
+                                         const char *media_type, const char *title,
+                                         const char *artist, int depth)
 {
     char ent[128], id[192], typ[64], buf[560];
-    json_escape(ent, sizeof(ent), s_entity ? s_entity : "");
+    json_escape(ent, sizeof(ent), entity ? entity : "");
     json_escape(id, sizeof(id), media_id ? media_id : "");
     json_escape(typ, sizeof(typ), media_type ? media_type : "");
 
     s_album_browse_req_id = s_msg_id++;
     s_album_browse_depth = depth;
+    s_album_pending_since_us = esp_timer_get_time();
+    snprintf(s_album_browse_item_id, sizeof(s_album_browse_item_id), "%s", media_id ? media_id : "");
+    snprintf(s_album_browse_item_title, sizeof(s_album_browse_item_title), "%s", title ? title : "");
+    snprintf(s_album_browse_item_artist, sizeof(s_album_browse_item_artist), "%s", artist ? artist : "");
     if (id[0]) {
         snprintf(buf, sizeof(buf),
                  "{\"id\":%d,\"type\":\"media_player/browse_media\","
@@ -282,25 +346,49 @@ static bool send_album_browse(const char *media_id, const char *media_type, int 
                  s_album_browse_req_id, ent);
     }
 
-    ESP_LOGI(TAG, "browse albums depth=%d%s", depth, id[0] ? " (+media_id)" : "");
+    ESP_LOGI(TAG, "browse albums source=%s depth=%d%s",
+             entity ? entity : "", depth, id[0] ? " (+media_id)" : "");
+    if (id[0]) {
+        ESP_LOGI(TAG, "album browse item: title=%s artist=%s id=%s type=%s",
+                 s_album_browse_item_title[0] ? s_album_browse_item_title : "(none)",
+                 s_album_browse_item_artist[0] ? s_album_browse_item_artist : "(none)",
+                 s_album_browse_item_id,
+                 typ[0] ? typ : "(none)");
+    }
     if (!ws_send(buf)) {
         s_album_browse_req_id = 0;
+        s_album_pending_since_us = 0;
         ui_set_album_candidates(NULL, 0, "Home Assistant is not connected");
         return false;
     }
     return true;
 }
 
+static bool send_album_browse(const char *media_id, const char *media_type,
+                              const char *title, const char *artist, int depth)
+{
+    int active = s_album_browse_entity_next - 1;
+    const char *entity = (active >= 0 && active < s_album_browse_entity_count)
+        ? s_album_browse_entities[active]
+        : s_entity;
+    return send_album_browse_for_entity(entity, media_id, media_type, title, artist, depth);
+}
+
 typedef struct {
     char media_id[160];
     char media_type[48];
+    char title[80];
+    char artist[56];
     int score;
 } browse_follow_t;
 
 static void consider_album_follow(const char *child, browse_follow_t *best)
 {
-    char title[80] = {0}, media_class[40] = {0}, media_type[48] = {0}, media_id[160] = {0};
+    char title[80] = {0}, artist[56] = {0}, media_class[40] = {0}, media_type[48] = {0}, media_id[160] = {0};
     json_obj_get_str(child, "title", title, sizeof(title));
+    json_obj_get_str(child, "subtitle", artist, sizeof(artist));
+    if (!artist[0]) json_obj_get_str(child, "artist",  artist, sizeof(artist));
+    if (!artist[0]) json_obj_get_str(child, "creator", artist, sizeof(artist));
     json_obj_get_str(child, "media_class", media_class, sizeof(media_class));
     json_obj_get_str(child, "media_content_type", media_type, sizeof(media_type));
     json_obj_get_str(child, "media_content_id", media_id, sizeof(media_id));
@@ -328,6 +416,8 @@ static void consider_album_follow(const char *child, browse_follow_t *best)
         best->score = score;
         snprintf(best->media_id, sizeof(best->media_id), "%.159s", media_id);
         snprintf(best->media_type, sizeof(best->media_type), "%.47s", media_type);
+        snprintf(best->title, sizeof(best->title), "%.79s", title);
+        snprintf(best->artist, sizeof(best->artist), "%.55s", artist);
     }
 }
 
@@ -354,6 +444,121 @@ static bool album_candidate_from_child(const char *child, ha_album_candidate_t *
     return out->title[0] && out->uri[0];
 }
 
+static bool album_candidate_from_current_folder(const char *children, ha_album_candidate_t *out)
+{
+    if (!s_album_browse_item_id[0] || !s_album_browse_item_title[0]) return false;
+    memset(out, 0, sizeof(*out));
+    if (!to_spotify_album_uri(s_album_browse_item_id, out->uri, sizeof(out->uri))) return false;
+
+    bool has_spotify_track = false;
+    const char *child = json_array_first_obj(children);
+    while (child) {
+        char media_id[160] = {0}, media_class[40] = {0};
+        json_obj_get_str(child, "media_content_id", media_id, sizeof(media_id));
+        json_obj_get_str(child, "media_class", media_class, sizeof(media_class));
+        if (ascii_contains_ci(media_id, "spotify") &&
+            (ascii_contains_ci(media_id, "://track/") ||
+             ascii_contains_ci(media_id, ":track:") ||
+             ascii_contains_ci(media_class, "track"))) {
+            has_spotify_track = true;
+            break;
+        }
+        child = json_array_next_obj(child);
+    }
+    if (!has_spotify_track) return false;
+
+    snprintf(out->title, sizeof(out->title), "%.79s", s_album_browse_item_title);
+    snprintf(out->artist, sizeof(out->artist), "%.55s",
+             s_album_browse_item_artist[0] ? s_album_browse_item_artist : "Music Assistant");
+    return true;
+}
+
+static void log_album_child_sample(const char *children)
+{
+    const char *child = json_array_first_obj(children);
+    int i = 0;
+    while (child && i < 4) {
+        char title[64] = {0}, media_class[32] = {0}, media_type[40] = {0}, media_id[96] = {0};
+        json_obj_get_str(child, "title", title, sizeof(title));
+        json_obj_get_str(child, "media_class", media_class, sizeof(media_class));
+        json_obj_get_str(child, "media_content_type", media_type, sizeof(media_type));
+        json_obj_get_str(child, "media_content_id", media_id, sizeof(media_id));
+        ESP_LOGI(TAG, "album child[%d]: title=%s class=%s type=%s id=%s",
+                 i,
+                 title[0] ? title : "(none)",
+                 media_class[0] ? media_class : "(none)",
+                 media_type[0] ? media_type : "(none)",
+                 media_id[0] ? media_id : "(none)");
+        child = json_array_next_obj(child);
+        i++;
+    }
+}
+
+static void collect_album_browse_entities(const char *arr)
+{
+    s_album_browse_entity_count = 0;
+    s_album_browse_entity_next = 0;
+
+    if (arr && *arr == '[') {
+        const char *p = arr + 1;
+        while (*p && s_album_browse_entity_count < HA_ALBUM_BROWSE_ENTITY_MAX) {
+            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+            if (*p != '{') break;
+            const char *obj = p;
+            char eid[96];
+            if (json_obj_get_str(obj, "entity_id", eid, sizeof(eid)) &&
+                strncmp(eid, "media_player.", 13) == 0) {
+                if (!media_player_is_unavailable(obj)) {
+                    const char *attrs = json_obj_get(obj, "attributes");
+                    bool renderer = media_player_is_renderer(eid, attrs);
+                    int dst = s_album_browse_entity_count++;
+                    if (renderer && dst > 0) {
+                        memmove(&s_album_browse_entities[1],
+                                &s_album_browse_entities[0],
+                                (size_t)dst * sizeof(s_album_browse_entities[0]));
+                        dst = 0;
+                    }
+                    snprintf(s_album_browse_entities[dst],
+                             sizeof(s_album_browse_entities[0]), "%s", eid);
+                }
+            }
+            p = json_skip_value(p);
+        }
+    }
+
+    /* Prefer the currently-selected player if it exists, but do not depend on
+     * it. Add Albums is catalogue management, not playback-device management. */
+    for (int i = 1; i < s_album_browse_entity_count; i++) {
+        if (s_entity && strcmp(s_album_browse_entities[i], s_entity) == 0) {
+            char tmp[96];
+            snprintf(tmp, sizeof(tmp), "%s", s_album_browse_entities[0]);
+            snprintf(s_album_browse_entities[0], sizeof(s_album_browse_entities[0]),
+                     "%s", s_album_browse_entities[i]);
+            snprintf(s_album_browse_entities[i], sizeof(s_album_browse_entities[i]),
+                     "%s", tmp);
+            break;
+        }
+    }
+
+    ESP_LOGI(TAG, "album browse sources: %d media_player entities",
+             s_album_browse_entity_count);
+}
+
+static void start_next_album_browse_entity(void)
+{
+    s_album_browse_req_id = 0;
+    s_album_browse_depth = 0;
+    while (s_album_browse_entity_next < s_album_browse_entity_count) {
+        const char *entity = s_album_browse_entities[s_album_browse_entity_next++];
+        if (send_album_browse_for_entity(entity, NULL, NULL, NULL, NULL, 0)) return;
+    }
+    s_album_pending_since_us = 0;
+    ESP_LOGW(TAG, "album browse exhausted all HA media_player sources");
+    ui_set_album_candidates(NULL, 0,
+        "No Spotify albums found in HA media libraries - "
+        "check Music Assistant exposes albums");
+}
+
 static void handle_album_browse_result(const char *result)
 {
     static ha_album_candidate_t cands[HA_ALBUM_CANDIDATE_MAX];
@@ -377,15 +582,25 @@ static void handle_album_browse_result(const char *result)
         child = json_array_next_obj(child);
     }
 
+    if (n == 0 && album_candidate_from_current_folder(children, &cands[n])) {
+        ESP_LOGI(TAG, "album browse: current folder is album candidate id=%s title=%s",
+                 s_album_browse_item_id, cands[n].title);
+        n++;
+    }
+
     if (n > 0) {
         ESP_LOGI(TAG, "album browse: %d candidates", n);
+        log_album_child_sample(children);
         s_album_browse_req_id = 0;
+        s_album_pending_since_us = 0;
         ui_set_album_candidates(cands, n, NULL);
         return;
     }
 
     if (follow.score > 0 && s_album_browse_depth < HA_ALBUM_BROWSE_MAX_DEPTH) {
-        send_album_browse(follow.media_id, follow.media_type, s_album_browse_depth + 1);
+        send_album_browse(follow.media_id, follow.media_type,
+                          follow.title, follow.artist,
+                          s_album_browse_depth + 1);
         return;
     }
 
@@ -393,14 +608,13 @@ static void handle_album_browse_result(const char *result)
      * can be tuned against the real Music Assistant browse tree (its media_id
      * scheme varies by MA version -- see P4-TODO "album catalogue management"). */
     ESP_LOGW(TAG, "album browse: no playable Spotify albums found "
-                  "(depth=%d children=%d first_id=%s first_class=%s)",
+                  "(source=%d/%d depth=%d children=%d first_id=%s first_class=%s)",
+             s_album_browse_entity_next, s_album_browse_entity_count,
              s_album_browse_depth, seen,
              first_id[0] ? first_id : "(none)",
              first_class[0] ? first_class : "(none)");
-    s_album_browse_req_id = 0;
-    ui_set_album_candidates(NULL, 0,
-        "No Spotify albums found in this player's media browser - "
-        "check Music Assistant exposes them (serial log has the browse tree)");
+    log_album_child_sample(children);
+    start_next_album_browse_entity();
 }
 
 static bool ws_send(const char *json)
@@ -411,6 +625,285 @@ static bool ws_send(const char *json)
     }
     int ret = esp_websocket_client_send_text(s_ws, json, strlen(json), pdMS_TO_TICKS(2000));
     return (ret >= 0);
+}
+
+/* Spotify HTTPS helpers for Add Albums search. Kept in the HA backend because
+ * playback still goes through Home Assistant; only catalogue search talks
+ * directly to Spotify. */
+typedef struct {
+    char  *data;
+    size_t len;
+    size_t cap;
+} spotify_resp_buf_t;
+
+#define SPOTIFY_RESP_INITIAL_CAP 4096
+#define SPOTIFY_RESP_MAX_CAP     65536
+#define SPOTIFY_SEARCH_LIMIT_MAX 10
+
+static esp_err_t spotify_http_event_handler(esp_http_client_event_t *evt)
+{
+    if (evt->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
+    spotify_resp_buf_t *buf = (spotify_resp_buf_t *)evt->user_data;
+    if (!buf) return ESP_OK;
+
+    size_t need = buf->len + evt->data_len + 1;
+    if (need > buf->cap) {
+        size_t new_cap = buf->cap ? buf->cap : SPOTIFY_RESP_INITIAL_CAP;
+        while (new_cap < need) new_cap *= 2;
+        if (new_cap > SPOTIFY_RESP_MAX_CAP) {
+            ESP_LOGW(TAG, "spotify response too large (%u B cap)",
+                     (unsigned)SPOTIFY_RESP_MAX_CAP);
+            return ESP_FAIL;
+        }
+        char *grown = realloc(buf->data, new_cap);
+        if (!grown) return ESP_FAIL;
+        buf->data = grown;
+        buf->cap = new_cap;
+    }
+    memcpy(buf->data + buf->len, evt->data, evt->data_len);
+    buf->len += evt->data_len;
+    buf->data[buf->len] = '\0';
+    return ESP_OK;
+}
+
+static bool spotify_basic_auth_header(char *out, size_t out_len)
+{
+    if (!s_sp_client_id || !s_sp_client_id[0] ||
+        !s_sp_client_secret || !s_sp_client_secret[0]) {
+        return false;
+    }
+
+    char joined[320];
+    int n = snprintf(joined, sizeof(joined), "%s:%s",
+                     s_sp_client_id, s_sp_client_secret);
+    if (n <= 0 || n >= (int)sizeof(joined)) return false;
+
+    unsigned char b64[448];
+    size_t olen = 0;
+    if (mbedtls_base64_encode(b64, sizeof(b64), &olen,
+                              (const unsigned char *)joined, (size_t)n) != 0) {
+        return false;
+    }
+    int m = snprintf(out, out_len, "Basic %.*s", (int)olen, b64);
+    return (m > 0 && m < (int)out_len);
+}
+
+static bool spotify_client_token(char *err_out, size_t err_len)
+{
+    if (err_out && err_len) err_out[0] = '\0';
+    if (s_sp_access_token[0] && esp_timer_get_time() < s_sp_token_expiry_us)
+        return true;
+
+    char auth[560];
+    if (!spotify_basic_auth_header(auth, sizeof(auth))) {
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify credentials missing - check SETUP");
+        return false;
+    }
+
+    spotify_resp_buf_t resp = {0};
+    esp_http_client_config_t cfg = {
+        .url               = "https://accounts.spotify.com/api/token",
+        .method            = HTTP_METHOD_POST,
+        .event_handler     = spotify_http_event_handler,
+        .user_data         = &resp,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 6000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        if (err_out) snprintf(err_out, err_len, "Out of memory");
+        return false;
+    }
+
+    const char body[] = "grant_type=client_credentials";
+    esp_http_client_set_header(client, "Authorization", auth);
+    esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+    esp_http_client_set_post_field(client, body, (int)strlen(body));
+
+    bool ok = false;
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    if (err == ESP_OK && status == 200 && resp.data) {
+        char tok[256];
+        int exp = 0;
+        if (json_obj_get_str(resp.data, "access_token", tok, sizeof(tok)) &&
+            json_get_int(resp.data, "expires_in", &exp)) {
+            snprintf(s_sp_access_token, sizeof(s_sp_access_token), "%s", tok);
+            int64_t lifetime_us = (int64_t)exp * 1000000LL;
+            s_sp_token_expiry_us = esp_timer_get_time() + lifetime_us - 60LL * 1000000LL;
+            ESP_LOGI(TAG, "spotify search token refreshed (expires in %d s)", exp);
+            ok = true;
+        } else {
+            if (err_out) snprintf(err_out, err_len,
+                                  "Spotify token response was unreadable");
+        }
+    } else {
+        ESP_LOGW(TAG, "spotify token request failed (err=%d status=%d)",
+                 (int)err, status);
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify sign-in failed - check client id/secret");
+    }
+
+    esp_http_client_cleanup(client);
+    free(resp.data);
+    return ok;
+}
+
+static bool url_is_unreserved(unsigned char c)
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+           (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+           c == '.' || c == '~';
+}
+
+static bool url_encode(char *out, size_t out_len, const char *src)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    if (!out || out_len == 0) return false;
+    size_t i = 0;
+    for (const unsigned char *p = (const unsigned char *)(src ? src : ""); *p; p++) {
+        if (url_is_unreserved(*p)) {
+            if (i + 1 >= out_len) return false;
+            out[i++] = (char)*p;
+        } else if (*p == ' ') {
+            if (i + 3 >= out_len) return false;
+            out[i++] = '%'; out[i++] = '2'; out[i++] = '0';
+        } else {
+            if (i + 3 >= out_len) return false;
+            out[i++] = '%';
+            out[i++] = hex[*p >> 4];
+            out[i++] = hex[*p & 0x0F];
+        }
+    }
+    out[i] = '\0';
+    return true;
+}
+
+static bool search_query_trim_copy(char *out, size_t out_len, const char *src)
+{
+    if (!out || out_len == 0) return false;
+    out[0] = '\0';
+    if (!src) return false;
+
+    while (*src == ' ' || *src == '\t' || *src == '\n' || *src == '\r') src++;
+    size_t len = strlen(src);
+    while (len > 0) {
+        char c = src[len - 1];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+        len--;
+    }
+    if (len == 0) return false;
+    if (len >= out_len) len = out_len - 1;
+    memcpy(out, src, len);
+    out[len] = '\0';
+    return true;
+}
+
+static void spotify_response_error_message(const char *json, char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    const char *err = json_obj_get(json, "error");
+    if (err && *err == '{') {
+        json_obj_get_str(err, "message", out, out_len);
+    }
+}
+
+static bool spotify_search_albums(const char *query, ha_album_candidate_t *out,
+                                  int max, int *count, char *err_out,
+                                  size_t err_len)
+{
+    if (err_out && err_len) err_out[0] = '\0';
+    if (count) *count = 0;
+    if (!query || !query[0] || !out || max <= 0) return false;
+    if (max > SPOTIFY_SEARCH_LIMIT_MAX) max = SPOTIFY_SEARCH_LIMIT_MAX;
+
+    if (!spotify_client_token(err_out, err_len)) return false;
+
+    char trimmed[80];
+    if (!search_query_trim_copy(trimmed, sizeof(trimmed), query)) {
+        if (err_out) snprintf(err_out, err_len, "Enter an album or artist");
+        return false;
+    }
+
+    char q[260];
+    if (!url_encode(q, sizeof(q), trimmed)) {
+        if (err_out) snprintf(err_out, err_len, "Search text is too long");
+        return false;
+    }
+
+    char url[384];
+    snprintf(url, sizeof(url),
+             "https://api.spotify.com/v1/search?q=%s&type=album&limit=%d",
+             q, max);
+
+    spotify_resp_buf_t resp = {0};
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_GET,
+        .event_handler     = spotify_http_event_handler,
+        .user_data         = &resp,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 7000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        if (err_out) snprintf(err_out, err_len, "Out of memory");
+        return false;
+    }
+
+    char bearer[320];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", s_sp_access_token);
+    esp_http_client_set_header(client, "Authorization", bearer);
+
+    esp_err_t herr = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    int n = 0;
+    bool ok = false;
+    if (herr == ESP_OK && status == 200 && resp.data) {
+        const char *albums = json_obj_get(resp.data, "albums");
+        const char *item = json_array_first_obj(json_obj_get(albums, "items"));
+        while (item && n < max) {
+            ha_album_candidate_t *a = &out[n];
+            memset(a, 0, sizeof(*a));
+            const char *v;
+            if ((v = json_obj_get(item, "name")))
+                json_copy_string(v, a->title, sizeof(a->title));
+            if ((v = json_obj_get(item, "uri")))
+                json_copy_string(v, a->uri, sizeof(a->uri));
+            const char *artist = json_array_first_obj(json_obj_get(item, "artists"));
+            if (artist && (v = json_obj_get(artist, "name")))
+                json_copy_string(v, a->artist, sizeof(a->artist));
+            if (!a->artist[0])
+                snprintf(a->artist, sizeof(a->artist), "Unknown artist");
+            if (a->title[0] && strncmp(a->uri, "spotify:album:", 14) == 0)
+                n++;
+
+            item = json_array_next_obj(item);
+        }
+        ok = true;
+    } else if (status == 401) {
+        ESP_LOGW(TAG, "spotify album search got 401, invalidating search token");
+        s_sp_access_token[0] = '\0';
+        s_sp_token_expiry_us = 0;
+        if (err_out) snprintf(err_out, err_len,
+                              "Spotify rejected the search token");
+    } else {
+        char api_msg[96] = {0};
+        spotify_response_error_message(resp.data, api_msg, sizeof(api_msg));
+        ESP_LOGW(TAG, "spotify album search failed (err=%d status=%d msg=%s)",
+                 (int)herr, status, api_msg[0] ? api_msg : "-");
+        if (err_out) snprintf(err_out, err_len, "%s",
+                              api_msg[0] ? api_msg : "Spotify album search failed");
+    }
+
+    free(resp.data);
+    if (count) *count = n;
+    if (ok) ESP_LOGI(TAG, "spotify album search: %d results for \"%s\"", n, trimmed);
+    return ok;
 }
 
 static void send_auth(void)
@@ -459,8 +952,8 @@ static bool call_service_entity(const char *domain, const char *service,
                  "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"}}",
                  id, domain, service, entity_id ? entity_id : "");
     }
-    ESP_LOGI(TAG, "call_service %s.%s -> %s%s",
-             domain, service, entity_id ? entity_id : "",
+    ESP_LOGI(TAG, "call_service id=%d %s.%s -> %s%s",
+             id, domain, service, entity_id ? entity_id : "",
              (service_data && service_data[0]) ? " (+data)" : "");
     return ws_send(buf);
 }
@@ -531,6 +1024,17 @@ bool ha_light_set_brightness(const char *entity_id, int pct)
     if (pct > 100) pct = 100;
     char data[32];
     snprintf(data, sizeof(data), "\"brightness_pct\":%d", pct);
+    return call_service_entity("light", "turn_on", entity_id, data);
+}
+
+bool ha_light_set_hs(const char *entity_id, int hue_deg, int sat_pct)
+{
+    if (hue_deg < 0) hue_deg = 0;
+    hue_deg %= 360;
+    if (sat_pct < 1) sat_pct = 1;
+    if (sat_pct > 100) sat_pct = 100;
+    char data[48];
+    snprintf(data, sizeof(data), "\"hs_color\":[%d,%d]", hue_deg, sat_pct);
     return call_service_entity("light", "turn_on", entity_id, data);
 }
 
@@ -625,7 +1129,30 @@ static const char *find_entity_in_array(const char *arr)
  * ha_set_active_entity() resolves it back here. Written on the WS task (build),
  * read on the ha task (switch); the list is always built before it can be tapped. */
 static char s_dev_ids[MAX_DEVICES][96];
+static bool s_dev_playable[MAX_DEVICES];
 static int  s_dev_count = 0;
+
+static bool media_player_is_unavailable(const char *obj)
+{
+    char state[24] = {0};
+    json_obj_get_str(obj, "state", state, sizeof(state));
+    return strcmp(state, "unavailable") == 0;
+}
+
+static bool media_player_is_renderer(const char *eid, const char *attrs)
+{
+    char fname[64] = {0};
+    if (attrs) json_obj_get_str(attrs, "friendly_name", fname, sizeof(fname));
+    return ascii_contains_ci(eid, "media_renderer") ||
+           ascii_contains_ci(fname, "media renderer") ||
+           ascii_contains_ci(fname, "sonos");
+}
+
+static void media_player_state(const char *obj, char *out, size_t out_len)
+{
+    if (!json_obj_get_str(obj, "state", out, out_len))
+        snprintf(out, out_len, "unknown");
+}
 
 /* Build the device list from a get_states result array: every media_player
  * entity becomes one row (name = friendly_name, detail = entity_id tail so
@@ -634,6 +1161,7 @@ static void build_device_list(const char *arr)
 {
     static ui_device_t devs[MAX_DEVICES];   /* static: only ever touched on the WS task */
     int n = 0;
+    int skipped_unavailable = 0;
     if (arr && *arr == '[') {
         const char *p = arr + 1;
         while (*p && n < MAX_DEVICES) {
@@ -643,6 +1171,12 @@ static void build_device_list(const char *arr)
             char eid[96];
             if (json_obj_get_str(obj, "entity_id", eid, sizeof(eid)) &&
                 strncmp(eid, "media_player.", 13) == 0) {
+                if (media_player_is_unavailable(obj)) {
+                    ESP_LOGI(TAG, "device: %s state=unavailable (skipped)", eid);
+                    skipped_unavailable++;
+                    p = json_skip_value(p);
+                    continue;
+                }
                 ui_device_t *d = &devs[n];
                 memset(d, 0, sizeof(*d));
 
@@ -651,20 +1185,44 @@ static void build_device_list(const char *arr)
 
                 const char *attrs = json_obj_get(obj, "attributes");
                 char fname[64] = {0};
+                char state[24] = {0};
                 if (attrs) json_obj_get_str(attrs, "friendly_name", fname, sizeof(fname));
+                media_player_state(obj, state, sizeof(state));
+                bool renderer = media_player_is_renderer(eid, attrs);
                 snprintf(d->name, sizeof(d->name), "%.39s", fname[0] ? fname : eid + 13);
-                snprintf(d->detail, sizeof(d->detail), "%.23s", eid + 13);  /* tail disambiguates */
+                snprintf(d->detail, sizeof(d->detail), "%s %.14s",
+                         renderer ? "READY" : "OTHER", state);
 
                 d->is_active = (strcmp(eid, s_entity) == 0);
                 d->is_sonos  = false;   /* all HA entities switch via ui_request_transfer */
+                s_dev_playable[n] = renderer;
+                ESP_LOGI(TAG, "device[%d]: %s name='%s' state=%s kind=%s",
+                         n, eid, d->name, state, renderer ? "renderer" : "other");
                 n++;
             }
             p = json_skip_value(p);
         }
     }
     s_dev_count = n;
-    ESP_LOGI(TAG, "devices: %d media_player entities", n);
+    ESP_LOGI(TAG, "devices: %d available media_player entities (%d unavailable skipped)",
+             n, skipped_unavailable);
     ui_set_devices(devs, n);
+}
+
+static bool select_best_available_device(void)
+{
+    if (s_dev_count <= 0) return false;
+    int pick = 0;
+    for (int i = 0; i < s_dev_count; i++) {
+        if (s_dev_playable[i]) {
+            pick = i;
+            break;
+        }
+    }
+    if (!s_dev_ids[pick][0] || strcmp(s_dev_ids[pick], s_entity) == 0) return false;
+    ESP_LOGW(TAG, "active entity missing; auto-selecting %s", s_dev_ids[pick]);
+    ha_set_active_entity(s_dev_ids[pick]);
+    return true;
 }
 
 /* Build the lights list from a get_states result array: every light entity
@@ -674,7 +1232,10 @@ static void build_device_list(const char *arr)
 static void build_light_list(const char *arr)
 {
     static ui_light_t lights[MAX_LIGHTS];   /* static: only ever touched on the WS task */
+    static int hues[MAX_LIGHTS];
+    static int sats[MAX_LIGHTS];
     int n = 0;
+    int skipped_unavailable = 0;
     if (arr && *arr == '[') {
         const char *p = arr + 1;
         while (*p && n < MAX_LIGHTS) {
@@ -691,6 +1252,12 @@ static void build_light_list(const char *arr)
 
                 char state[16] = {0};
                 json_obj_get_str(obj, "state", state, sizeof(state));
+                if (strcmp(state, "unavailable") == 0) {
+                    ESP_LOGI(TAG, "light: %s state=unavailable (skipped)", eid);
+                    skipped_unavailable++;
+                    p = json_skip_value(p);
+                    continue;
+                }
                 l->is_on = (strcmp(state, "on") == 0);
 
                 const char *attrs = json_obj_get(obj, "attributes");
@@ -699,20 +1266,49 @@ static void build_light_list(const char *arr)
                 snprintf(l->name, sizeof(l->name), "%.39s", fname[0] ? fname : eid + 6);
 
                 /* HA reports brightness 0-255; a light usually omits the
-                 * attribute entirely while off, which correctly leaves this
-                 * at -1 (ui.c then hides the slider for that row). */
+                 * attribute entirely while off. If HA says the light supports
+                 * colour/brightness modes, keep controls visible anyway so a
+                 * preset tap can turn it on at the chosen level. */
                 l->brightness_pct = -1;
                 double bri = 0.0;
                 if (attrs && json_obj_get_double(attrs, "brightness", &bri))
                     l->brightness_pct = (int)(bri * 100.0 / 255.0 + 0.5);
 
+                hues[n] = -1;
+                sats[n] = 100;
+                const char *modes = attrs ? json_obj_get(attrs, "supported_color_modes") : NULL;
+                bool supports_level = modes && !ascii_contains_ci(modes, "onoff");
+                bool supports_colour = modes &&
+                    (ascii_contains_ci(modes, "hs") ||
+                     ascii_contains_ci(modes, "xy") ||
+                     ascii_contains_ci(modes, "rgb"));
+                if (l->brightness_pct < 0 && supports_level)
+                    l->brightness_pct = 100;
+                const char *hs = attrs ? json_obj_get(attrs, "hs_color") : NULL;
+                double hue = 0.0, sat = 0.0;
+                if (json_array_get_two_doubles(hs, &hue, &sat)) {
+                    if (hue < 0.0) hue = 0.0;
+                    if (hue > 359.0) hue = 359.0;
+                    if (sat < 1.0) sat = 1.0;
+                    if (sat > 100.0) sat = 100.0;
+                    hues[n] = (int)(hue + 0.5);
+                    sats[n] = (int)(sat + 0.5);
+                } else if (supports_colour) {
+                    hues[n] = 28;
+                    sats[n] = 66;
+                }
+
+                ESP_LOGI(TAG, "light: %s state=%s brightness=%d%% hue=%d sat=%d",
+                         eid, state[0] ? state : "(missing)", l->brightness_pct,
+                         hues[n], sats[n]);
                 n++;
             }
             p = json_skip_value(p);
         }
     }
-    ESP_LOGI(TAG, "lights: %d light entities", n);
-    ui_set_lights(lights, n);
+    ESP_LOGI(TAG, "lights: %d available light entities (%d unavailable skipped)",
+             n, skipped_unavailable);
+    ui_set_lights_ext(lights, hues, sats, n);
 }
 
 static void handle_message(const char *msg)
@@ -758,23 +1354,43 @@ static void handle_message(const char *msg)
             const char *arr = json_obj_get(msg, "result");
             const char *st  = find_entity_in_array(arr);
             if (st) apply_state_object(st);
-            else ESP_LOGW(TAG, "entity %s not found in get_states", s_entity);
+            else {
+                ESP_LOGW(TAG, "entity %s not found in get_states; open Devices and pick a valid media_player",
+                         s_entity ? s_entity : "");
+                build_device_list(arr);
+                if (!select_best_available_device())
+                    ui_show_toast("HA media player not found - open Devices", 3500);
+            }
         } else if (s_devices_req_id && id == s_devices_req_id) {
             build_device_list(json_obj_get(msg, "result"));
             s_devices_req_id = 0;
         } else if (s_lights_req_id && id == s_lights_req_id) {
             build_light_list(json_obj_get(msg, "result"));
             s_lights_req_id = 0;
+        } else if (s_album_entities_req_id && id == s_album_entities_req_id) {
+            s_album_entities_req_id = 0;
+            s_album_pending_since_us = 0;
+            if (failed) {
+                ui_set_album_candidates(NULL, 0,
+                    "Home Assistant could not list media players");
+            } else {
+                collect_album_browse_entities(json_obj_get(msg, "result"));
+                if (s_album_browse_entity_count == 0) {
+                    ui_set_album_candidates(NULL, 0,
+                        "No HA media_player entities found");
+                } else {
+                    start_next_album_browse_entity();
+                }
+            }
         } else if (s_album_browse_req_id && id == s_album_browse_req_id) {
             if (failed) {
-                s_album_browse_req_id = 0;
-                char why[192];
-                snprintf(why, sizeof(why), "Home Assistant refused the media "
-                         "browse: %s", err_msg);
-                ui_set_album_candidates(NULL, 0, why);
+                ESP_LOGW(TAG, "album browse source failed, trying next source: %s", err_msg);
+                start_next_album_browse_entity();
             } else {
                 handle_album_browse_result(json_obj_get(msg, "result"));
             }
+        } else if (!failed && id) {
+            ESP_LOGI(TAG, "result id=%d OK", id);
         }
     }
 }
@@ -793,6 +1409,8 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
         case WEBSOCKET_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "ws disconnected");
             s_states_req_id = 0;
+            s_album_entities_req_id = 0;
+            s_album_pending_since_us = 0;
             if (s_album_browse_req_id) {
                 s_album_browse_req_id = 0;
                 ui_set_album_candidates(NULL, 0, "Home Assistant disconnected");
@@ -801,11 +1419,39 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
         case WEBSOCKET_EVENT_DATA: {
             /* op_code 1 = text, 0 = continuation. Ignore ping/pong/binary/close. */
             if (d->op_code != 1 && d->op_code != 0) break;
-            if (d->payload_len <= 0 || d->payload_len > RX_MAX_CAP) break;
+            if (d->payload_len <= 0) break;
+            if (d->payload_len > RX_MAX_CAP) {
+                if (d->payload_offset == 0) {
+                    s_rx_dropping_oversize = true;
+                    s_rx_drop_was_album = (s_album_browse_req_id != 0);
+                    ESP_LOGW(TAG, "ws frame too large (%d B > %d B), dropping",
+                             d->payload_len, RX_MAX_CAP);
+                }
+                if (d->payload_offset + d->data_len >= d->payload_len) {
+                    bool was_album = s_rx_drop_was_album;
+                    s_rx_dropping_oversize = false;
+                    s_rx_drop_was_album = false;
+                    if (was_album && s_album_browse_req_id) {
+                        ESP_LOGW(TAG, "album browse response too large, trying next source");
+                        start_next_album_browse_entity();
+                    }
+                }
+                break;
+            }
+            if (d->payload_offset == 0) {
+                s_rx_dropping_oversize = false;
+                s_rx_drop_was_album = false;
+            } else if (s_rx_dropping_oversize) {
+                break;
+            }
 
             if ((size_t)d->payload_len + 1 > s_rx_cap) {
                 char *grown = realloc(s_rx, d->payload_len + 1);
-                if (!grown) break;
+                if (!grown) {
+                    ESP_LOGW(TAG, "ws rx realloc failed for %d B", d->payload_len + 1);
+                    if (s_album_browse_req_id) start_next_album_browse_entity();
+                    break;
+                }
                 s_rx = grown;
                 s_rx_cap = d->payload_len + 1;
             }
@@ -832,6 +1478,16 @@ void ha_client_init(const char *host, int port, const char *token, const char *e
     snprintf(s_entity_buf, sizeof(s_entity_buf), "%s", entity ? entity : "");
 }
 
+void ha_spotify_init(const char *client_id, const char *client_secret,
+                     const char *refresh_token)
+{
+    s_sp_client_id = client_id;
+    s_sp_client_secret = client_secret;
+    s_sp_refresh_token = refresh_token;
+    s_sp_access_token[0] = '\0';
+    s_sp_token_expiry_us = 0;
+}
+
 void ha_client_start(void)
 {
     char uri[160];
@@ -854,6 +1510,24 @@ void ha_client_start(void)
     ESP_LOGI(TAG, "ws started -> %s", uri);
 }
 
+void ha_client_tick(void)
+{
+    if (!s_album_pending_since_us) return;
+    int64_t now = esp_timer_get_time();
+    if (now - s_album_pending_since_us < HA_ALBUM_REQ_TIMEOUT_US) return;
+
+    if (s_album_entities_req_id) {
+        ESP_LOGW(TAG, "album source discovery timed out");
+        s_album_entities_req_id = 0;
+        s_album_pending_since_us = 0;
+        ui_set_album_candidates(NULL, 0,
+            "Home Assistant did not return media players");
+    } else if (s_album_browse_req_id) {
+        ESP_LOGW(TAG, "album browse timed out, trying next source");
+        start_next_album_browse_entity();
+    }
+}
+
 void ha_request_devices(void)
 {
     /* Re-pull every entity's state; the result handler filters media_player.* */
@@ -863,9 +1537,34 @@ void ha_request_devices(void)
     if (!ws_send(buf)) s_devices_req_id = 0;
 }
 
-void ha_request_album_candidates(void)
+void ha_request_album_candidates(const char *query)
 {
-    send_album_browse(NULL, NULL, 0);
+    if (query && query[0]) {
+        static ha_album_candidate_t cands[HA_ALBUM_CANDIDATE_MAX];
+        char err[160] = {0};
+        int n = 0;
+        bool ok = spotify_search_albums(query, cands, HA_ALBUM_CANDIDATE_MAX,
+                                        &n, err, sizeof(err));
+        ui_set_album_candidates(ok ? cands : NULL, ok ? n : 0,
+                                ok ? (n ? NULL : "No Spotify albums matched")
+                                   : (err[0] ? err : "Spotify album search failed"));
+        return;
+    }
+
+    s_album_browse_req_id = 0;
+    s_album_browse_depth = 0;
+    s_album_browse_entity_count = 0;
+    s_album_browse_entity_next = 0;
+
+    char buf[64];
+    s_album_entities_req_id = s_msg_id++;
+    s_album_pending_since_us = esp_timer_get_time();
+    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_album_entities_req_id);
+    if (!ws_send(buf)) {
+        s_album_entities_req_id = 0;
+        s_album_pending_since_us = 0;
+        ui_set_album_candidates(NULL, 0, "Home Assistant is not connected");
+    }
 }
 
 void ha_request_lights(void)
