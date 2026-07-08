@@ -1661,23 +1661,26 @@ static esp_err_t art_file_event(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-bool ha_download_to_file(const char *url, const char *path, size_t *out_len)
+bool ha_download_to_file(const char *url, const char *path, size_t *out_len,
+                         bool send_ha_auth)
 {
     FILE *f = fopen(path, "wb");
     if (!f) { ESP_LOGE(TAG, "open %s failed", path); return false; }
 
     esp_http_client_config_t cfg = {
-        .url           = url,
-        .event_handler = art_file_event,
-        .user_data     = f,
-        .timeout_ms    = 8000,
+        .url               = url,
+        .event_handler     = art_file_event,
+        .user_data         = f,
+        .crt_bundle_attach = esp_crt_bundle_attach,  /* enable https (Spotify covers) */
+        .timeout_ms        = 8000,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { fclose(f); return false; }
 
     /* HA's /api/media_player_proxy/ endpoints require authentication even on
-     * the local network. Without the Bearer token they return 401. */
-    if (s_token && s_token[0]) {
+     * the local network. Without the Bearer token they return 401. Only send it
+     * to HA-host URLs -- never to an external CDN (would leak the HA token). */
+    if (send_ha_auth && s_token && s_token[0]) {
         char bearer[320];
         snprintf(bearer, sizeof(bearer), "Bearer %s", s_token);
         esp_http_client_set_header(c, "Authorization", bearer);

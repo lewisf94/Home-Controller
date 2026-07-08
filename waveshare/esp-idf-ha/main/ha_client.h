@@ -83,5 +83,10 @@ bool ha_take_pending_art(char *rel_out, size_t out_len);
 /* Build absolute "http://<host>:<port><rel>" for an entity_picture path. */
 void ha_art_full_url(const char *rel, char *out, size_t out_len);
 
-/* GET `url` into a file (LittleFS). Returns true on HTTP 200. */
-bool ha_download_to_file(const char *url, const char *path, size_t *out_len);
+/* GET `url` into a file (LittleFS). Returns true on HTTP 200. Always attaches
+ * the TLS cert bundle so https URLs (e.g. Spotify cover art) work; set
+ * `send_ha_auth` true only for HA-host endpoints (media_player_proxy needs the
+ * Bearer token) -- false for external URLs so the HA token isn't leaked to a
+ * third party. */
+bool ha_download_to_file(const char *url, const char *path, size_t *out_len,
+                         bool send_ha_auth);

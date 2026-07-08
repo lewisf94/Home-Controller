@@ -235,7 +235,7 @@ static void fetch_runtime_covers(void)
         char url[128];
         if (!album_catalog_runtime_art_todo(i, url, sizeof url)) continue;
         size_t bytes = 0;
-        if (!ha_download_to_file(url, RT_ART_PATH, &bytes) || bytes == 0) {
+        if (!ha_download_to_file(url, RT_ART_PATH, &bytes, false) || bytes == 0) {
             ESP_LOGW(TAG, "runtime cover download failed (album %u)", (unsigned)i);
             continue;
         }
@@ -267,7 +267,7 @@ static void ha_task(void *arg)
             char art_url[320];
             ha_art_full_url(art_rel, art_url, sizeof art_url);
             size_t art_len = 0;
-            if (ha_download_to_file(art_url, ART_FILE_PATH, &art_len) && art_len > 0) {
+            if (ha_download_to_file(art_url, ART_FILE_PATH, &art_len, true) && art_len > 0) {
                 decode_art(ART_FILE_PATH);
             }
         }

@@ -1415,9 +1415,14 @@ static void browser_build_cards(void)
             lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
             s_card_imgs[i] = img;
         } else {
-            /* No embedded thumb (shouldn't happen with the generated
-             * blob, but fall back gracefully): coloured square with
-             * first-letter initial. */
+            /* No thumb (a runtime-added album whose cover hasn't been fetched
+             * yet): coloured square with first-letter initial. MUST clear
+             * s_card_imgs[i] -- the previous build may have put a (now-freed)
+             * image pointer in this slot, and after the sorted merge a letter
+             * card can land where a cover was. The CF hide loop and
+             * apply_card_transforms only NULL-check, so a stale non-NULL here is
+             * a use-after-free (crash). */
+            s_card_imgs[i] = NULL;
             lv_obj_set_style_bg_color(card, card_color(i), 0);
             lv_obj_t *letter = lv_label_create(card);
             char ini[2] = { a->title[0] ? a->title[0] : '?', '\0' };
