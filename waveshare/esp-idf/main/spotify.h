@@ -90,7 +90,8 @@ bool spotify_transfer_playback(const char *device_id);
 typedef struct {
     char title[80];
     char artist[56];
-    char uri[64];       /* spotify:album:... */
+    char uri[64];        /* spotify:album:... */
+    char image_url[100]; /* cover art URL (images[0]); "" if none */
 } spotify_album_candidate_t;
 
 /* First page of the user's saved albums. Requires the OAuth refresh token to

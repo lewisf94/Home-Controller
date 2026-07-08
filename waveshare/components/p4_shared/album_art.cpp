@@ -212,6 +212,39 @@ extern "C" bool album_art_decode(const uint8_t *jpeg, size_t jpeg_len,
     return ok;
 }
 
+extern "C" bool album_art_make_thumb_file(const char *path, uint16_t *out_rgb,
+                                          int out_w, int out_h)
+{
+    if (!path || !out_rgb || out_w <= 0 || out_h <= 0) return false;
+
+    /* Decode into a PSRAM scratch at up to 320x320 (a 640px Spotify cover
+     * decodes /2 -> 320; a 300px one full size), then nearest-neighbour resize
+     * down to the thumbnail size. */
+    const size_t scratch_max = 320 * 320;
+    uint16_t *scratch = static_cast<uint16_t *>(
+        heap_caps_malloc(scratch_max * sizeof(uint16_t), MALLOC_CAP_SPIRAM));
+    if (!scratch) {
+        ESP_LOGE(TAG, "thumb scratch alloc failed");
+        return false;
+    }
+
+    uint16_t sw = 0, sh = 0;
+    bool ok = album_art_decode_file(path, scratch, scratch_max, &sw, &sh);
+    if (ok && sw > 0 && sh > 0) {
+        for (int dy = 0; dy < out_h; dy++) {
+            int sy = (dy * sh) / out_h;
+            const uint16_t *srow = scratch + static_cast<size_t>(sy) * sw;
+            uint16_t *drow = out_rgb + static_cast<size_t>(dy) * out_w;
+            for (int dx = 0; dx < out_w; dx++)
+                drow[dx] = srow[(dx * sw) / out_w];
+        }
+    } else {
+        ok = false;
+    }
+    heap_caps_free(scratch);
+    return ok;
+}
+
 extern "C" bool album_art_decode_file(const char *path,
                                       uint16_t *out_rgb, size_t out_max_pixels,
                                       uint16_t *out_w, uint16_t *out_h)

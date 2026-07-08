@@ -99,12 +99,14 @@ typedef struct {
     char title[80];
     char artist[56];
     char uri[64];
+    char image_url[100];   /* Spotify cover URL; fetched into a thumb after ADD */
 } ui_album_candidate_t;
 
 /* Local seams kept out of ui.h while the runtime catalogue is a prototype.
  * `err` NULL = success; else a short human reason shown on the add screen. */
 void ui_request_get_album_candidates(void);
 void ui_request_search_album_candidates(const char *query);
+void ui_request_refresh_covers(void);
 void ui_set_album_candidates(const void *list, int count, const char *err);
 void ui_request_light_hue(const char *entity_id, int hue_deg, int sat_pct);
 bool creds_get_stored(const char *key, char *out, size_t out_len);
@@ -114,7 +116,8 @@ const album_entry_t *album_catalog_get(size_t index);
 const uint16_t *album_catalog_thumb(size_t index);
 size_t album_catalog_count(void);
 bool album_catalog_contains_uri(const char *uri);
-bool album_catalog_add(const char *title, const char *artist, const char *uri);
+bool album_catalog_add(const char *title, const char *artist, const char *uri,
+                       const char *image_url);
 
 /* Centre album is drawn at 286 px in ALL browser styles (matches Cover Flow's
  * 220px thumb x CF_CARD_SCALE 1.30). The flex scroller is sized to fit it. */
@@ -4189,7 +4192,7 @@ static void on_album_candidate_add(lv_event_t *e)
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= s_album_candidate_count) return;
     ui_album_candidate_t *c = &s_album_candidates[i];
-    bool added = album_catalog_add(c->title, c->artist, c->uri);
+    bool added = album_catalog_add(c->title, c->artist, c->uri, c->image_url);
     lv_obj_t *btn = lv_event_get_target(e);
     if (added || album_catalog_contains_uri(c->uri)) {
         lv_obj_add_state(btn, LV_STATE_DISABLED);
@@ -4199,6 +4202,7 @@ static void on_album_candidate_add(lv_event_t *e)
     if (added) {
         audio_play(AUDIO_SFX_SELECT);
         lv_async_call(rebuild_browser_cb, NULL);
+        ui_request_refresh_covers();   /* backend fetches the cover art off-thread */
     } else {
         audio_play(AUDIO_SFX_BACK);
     }
@@ -5363,6 +5367,17 @@ void ui_set_album_candidates(const void *raw_list, int count, const char *err)
     /* Live search renders into the overlay list; otherwise the screen list. */
     album_candidates_render(s_album_search_results ? s_album_search_results
                                                    : s_album_add_list, err);
+    bsp_display_unlock();
+}
+
+/* Backend calls this (from its own task) after fetching runtime album covers.
+ * Rebuilds the browser on the LVGL task so album_catalog_thumb() picks up the
+ * new art. Locks first, then defers the actual rebuild via lv_async_call so it
+ * runs on the LVGL task; a no-op if the browser hasn't been built yet. */
+void ui_notify_covers_updated(void)
+{
+    if (bsp_display_lock(200) != ESP_OK) return;
+    if (s_screen_browser) lv_async_call(rebuild_browser_cb, NULL);
     bsp_display_unlock();
 }
 

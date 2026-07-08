@@ -8,6 +8,7 @@
 #include "albums.h"
 #include "album_thumbs.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "nvs.h"
 
@@ -19,18 +20,29 @@ static const char *TAG = "album_catalog";
 #define R_TITLE_BYTES       80
 #define R_ARTIST_BYTES      56
 #define R_URI_BYTES         64
+#define R_URL_BYTES         100
 #define ALBUM_CATALOG_MAX_RUNTIME 16
 
 typedef struct {
     char title[R_TITLE_BYTES];
     char artist[R_ARTIST_BYTES];
     char uri[R_URI_BYTES];
+    char image_url[R_URL_BYTES];   /* Spotify cover URL; art fetched at runtime */
 } runtime_album_t;
 
 static runtime_album_t s_runtime[ALBUM_CATALOG_MAX_RUNTIME];
 static album_entry_t   s_runtime_entries[ALBUM_CATALOG_MAX_RUNTIME];
 static size_t          s_runtime_count = 0;
 static bool            s_loaded = false;
+
+/* Runtime album cover thumbnails (ALBUM_THUMB_W x H RGB565), fetched + decoded
+ * by the backend task (album_catalog_set_thumb) and read by the LVGL task
+ * (album_catalog_thumb). Volatile PSRAM: NVS can't hold ~96 KB blobs, so covers
+ * are re-fetched from image_url on each boot. A slot is only handed out once its
+ * filled flag is set (written last, after the pixels), so a partially-written
+ * slot is never read; each cover is fetched once and never rewritten. */
+static uint16_t *s_rt_thumbs = NULL;   /* MAX * ALBUM_THUMB_W * ALBUM_THUMB_H */
+static bool      s_rt_filled[ALBUM_CATALOG_MAX_RUNTIME] = { false };
 
 /* Display order: the baked list stays in its (gen_albums-sorted) order and each
  * runtime album is inserted at its alphabetical slot, so an added album no
@@ -113,8 +125,9 @@ static bool persist_runtime(void)
     static char buf[STORE_BYTES];
     size_t off = 0;
     for (size_t i = 0; i < s_runtime_count; i++) {
-        int n = snprintf(buf + off, sizeof(buf) - off, "%s\t%s\t%s\n",
-                         s_runtime[i].uri, s_runtime[i].title, s_runtime[i].artist);
+        int n = snprintf(buf + off, sizeof(buf) - off, "%s\t%s\t%s\t%s\n",
+                         s_runtime[i].uri, s_runtime[i].title, s_runtime[i].artist,
+                         s_runtime[i].image_url);
         if (n < 0 || (size_t)n >= sizeof(buf) - off) {
             ESP_LOGW(TAG, "runtime catalogue too large to persist");
             return false;
@@ -169,18 +182,21 @@ static void load_runtime(void)
             p = line + strlen(line);
         }
 
-        char *t1 = strchr(line, '\t');
+        char *t1 = strchr(line, '\t');       /* after uri */
         if (!t1) continue;
         *t1++ = '\0';
-        char *t2 = strchr(t1, '\t');
+        char *t2 = strchr(t1, '\t');         /* after title */
         if (!t2) continue;
         *t2++ = '\0';
+        char *t3 = strchr(t2, '\t');         /* after artist (image_url; may be absent in old 3-field rows) */
+        if (t3) *t3++ = '\0';
         if (strncmp(line, "spotify:album:", 14) != 0 || !t1[0]) continue;
 
         runtime_album_t *r = &s_runtime[s_runtime_count];
         copy_clean(r->uri, sizeof(r->uri), line);
         copy_clean(r->title, sizeof(r->title), t1);
         copy_clean(r->artist, sizeof(r->artist), t2[0] ? t2 : "Unknown artist");
+        copy_clean(r->image_url, sizeof(r->image_url), t3 ? t3 : "");
         bind_runtime_entry(s_runtime_count);
         s_runtime_count++;
     }
@@ -215,14 +231,19 @@ const album_entry_t *album_catalog_get(size_t index)
 }
 
 /* RGB565 thumbnail for display position `index`, or NULL for the letter-card
- * fallback. Baked slots return the embedded blob; runtime albums have no
- * embedded art yet (fetched covers land in a later change), so return NULL. */
+ * fallback. Baked slots return the embedded blob; runtime albums return their
+ * fetched cover once album_catalog_set_thumb() has filled the slot (NULL ->
+ * letter card until then). */
 const uint16_t *album_catalog_thumb(size_t index)
 {
     album_catalog_init();
     if (index >= s_order_count) return NULL;
     album_ref_t r = s_order[index];
-    if (r.runtime) return NULL;
+    if (r.runtime) {
+        if (s_rt_thumbs && r.idx < ALBUM_CATALOG_MAX_RUNTIME && s_rt_filled[r.idx])
+            return s_rt_thumbs + (size_t)r.idx * ALBUM_THUMB_W * ALBUM_THUMB_H;
+        return NULL;
+    }
     return album_thumb_data(r.idx);
 }
 
@@ -241,7 +262,8 @@ bool album_catalog_contains_uri(const char *uri)
     return false;
 }
 
-bool album_catalog_add(const char *title, const char *artist, const char *uri)
+bool album_catalog_add(const char *title, const char *artist, const char *uri,
+                       const char *image_url)
 {
     if (!uri || strncmp(uri, "spotify:album:", 14) != 0 || !title || !title[0])
         return false;
@@ -256,6 +278,8 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri)
     copy_clean(r->uri, sizeof(r->uri), uri);
     copy_clean(r->title, sizeof(r->title), title);
     copy_clean(r->artist, sizeof(r->artist), (artist && artist[0]) ? artist : "Unknown artist");
+    copy_clean(r->image_url, sizeof(r->image_url), image_url ? image_url : "");
+    s_rt_filled[s_runtime_count] = false;   /* cover fetched fresh for this slot */
     bind_runtime_entry(s_runtime_count);
     s_runtime_count++;
 
@@ -265,5 +289,46 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri)
     }
     rebuild_order();
     ESP_LOGI(TAG, "added runtime album: %s -- %s", r->artist, r->title);
+    return true;
+}
+
+size_t album_catalog_runtime_count(void)
+{
+    album_catalog_init();
+    return s_runtime_count;
+}
+
+/* For the backend cover fetcher: if runtime album `rt_idx` still needs art (has
+ * an image_url and no thumb yet), copy its URL into url_out and return true. */
+bool album_catalog_runtime_art_todo(size_t rt_idx, char *url_out, size_t url_len)
+{
+    album_catalog_init();
+    if (rt_idx >= s_runtime_count) return false;
+    if (rt_idx < ALBUM_CATALOG_MAX_RUNTIME && s_rt_filled[rt_idx]) return false;
+    if (!s_runtime[rt_idx].image_url[0]) return false;
+    if (url_out && url_len) snprintf(url_out, url_len, "%s", s_runtime[rt_idx].image_url);
+    return true;
+}
+
+/* Store a decoded ALBUM_THUMB_W x H RGB565 cover for runtime album `rt_idx`
+ * (called from the backend task). album_catalog_thumb() returns it on the next
+ * browser rebuild. The filled flag is set last, after the copy. */
+bool album_catalog_set_thumb(size_t rt_idx, const uint16_t *rgb)
+{
+    album_catalog_init();
+    if (rt_idx >= s_runtime_count || rt_idx >= ALBUM_CATALOG_MAX_RUNTIME || !rgb)
+        return false;
+    if (!s_rt_thumbs) {
+        s_rt_thumbs = heap_caps_malloc(
+            (size_t)ALBUM_CATALOG_MAX_RUNTIME * ALBUM_THUMB_W * ALBUM_THUMB_H * sizeof(uint16_t),
+            MALLOC_CAP_SPIRAM);
+        if (!s_rt_thumbs) {
+            ESP_LOGW(TAG, "runtime thumb pool alloc failed");
+            return false;
+        }
+    }
+    memcpy(s_rt_thumbs + (size_t)rt_idx * ALBUM_THUMB_W * ALBUM_THUMB_H,
+           rgb, (size_t)ALBUM_THUMB_W * ALBUM_THUMB_H * sizeof(uint16_t));
+    s_rt_filled[rt_idx] = true;
     return true;
 }

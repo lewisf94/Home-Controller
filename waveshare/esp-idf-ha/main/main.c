@@ -85,6 +85,7 @@ typedef enum {
     HCMD_LIGHT_TOGGLE,      /* toggle one light on/off */
     HCMD_LIGHT_BRIGHTNESS,  /* set one light's brightness */
     HCMD_LIGHT_HUE,         /* set one light's hue/saturation */
+    HCMD_REFRESH_COVERS,    /* fetch+decode covers for runtime-added albums */
 } hcmd_type_t;
 
 typedef struct {
@@ -140,6 +141,8 @@ void ui_request_search_album_candidates(const char *query)
     snprintf(c.album_query, sizeof c.album_query, "%s", query ? query : "");
     xQueueSend(s_cmd_queue, &c, 0);
 }
+void ui_request_refresh_covers(void)
+    { hcmd_t c = {.type=HCMD_REFRESH_COVERS}; xQueueSend(s_cmd_queue,&c,0); }
 void ui_request_transfer(const char *device_id)
 {
     hcmd_t c = { .type = HCMD_TRANSFER };
@@ -189,6 +192,15 @@ static lv_image_dsc_t  s_art_dsc = {0};
 #define ART_FILE_PATH "/littlefs/art.jpg"
 #define LIGHT_REFRESH_DELAY_MS 400
 
+/* Runtime album catalogue + cover fetch (p4_shared/album_catalog.c + ui.c). No
+ * shared header while the runtime catalogue is a prototype -- declared here. */
+#include "album_thumbs.h"          /* ALBUM_THUMB_W / _H / _BYTES */
+#define RT_ART_PATH "/littlefs/rtart.jpg"   /* transient scratch for cover fetch */
+size_t album_catalog_runtime_count(void);
+bool   album_catalog_runtime_art_todo(size_t rt_idx, char *url_out, size_t url_len);
+bool   album_catalog_set_thumb(size_t rt_idx, const uint16_t *rgb);
+void   ui_notify_covers_updated(void);
+
 static void refresh_lights_after_command(bool sent)
 {
     if (!sent) return;
@@ -206,6 +218,35 @@ static void decode_art(const char *path)
         return;
     }
     art_buffer_publish(&s_art, w, h);
+}
+
+/* Fetch + decode browser thumbnails for any runtime-added albums that don't
+ * have art yet (Spotify cover URLs from the search path). Runs on ha_task (net
+ * + JPEG decode). Triggered on first WiFi connect (boot) and after each ADD. */
+static void fetch_runtime_covers(void)
+{
+    size_t n = album_catalog_runtime_count();
+    if (n == 0) return;
+    uint16_t *thumb = heap_caps_malloc(ALBUM_THUMB_BYTES, MALLOC_CAP_SPIRAM);
+    if (!thumb) { ESP_LOGW(TAG, "cover thumb scratch alloc failed"); return; }
+
+    int fetched = 0;
+    for (size_t i = 0; i < n; i++) {
+        char url[128];
+        if (!album_catalog_runtime_art_todo(i, url, sizeof url)) continue;
+        size_t bytes = 0;
+        if (!ha_download_to_file(url, RT_ART_PATH, &bytes) || bytes == 0) {
+            ESP_LOGW(TAG, "runtime cover download failed (album %u)", (unsigned)i);
+            continue;
+        }
+        if (album_art_make_thumb_file(RT_ART_PATH, thumb, ALBUM_THUMB_W, ALBUM_THUMB_H) &&
+            album_catalog_set_thumb(i, thumb)) {
+            fetched++;
+            ESP_LOGI(TAG, "runtime cover fetched (album %u, %u bytes)", (unsigned)i, (unsigned)bytes);
+        }
+    }
+    heap_caps_free(thumb);
+    if (fetched > 0) ui_notify_covers_updated();
 }
 
 /* ── HA task ────────────────────────────────────────────────────────────────── */
@@ -258,6 +299,9 @@ static void ha_task(void *arg)
                 ha_light_set_hs(cmd.light_hue.entity_id,
                                 cmd.light_hue.hue_deg,
                                 cmd.light_hue.sat_pct);
+                break;
+            case HCMD_REFRESH_COVERS:
+                fetch_runtime_covers();
                 break;
             default: break;
             }
@@ -327,6 +371,10 @@ void app_main(void)
         return;   /* no mailbox -> nothing could drive playback; give up */
     }
     xTaskCreatePinnedToCore(ha_task, "ha_task", 8192, NULL, 5, NULL, 0);
+
+    /* Boot: fetch covers for any runtime-added albums (ha_task drains this once
+     * the network is up). */
+    ui_request_refresh_covers();
 
 #if KNOB_ENABLED
     knob_input_init();

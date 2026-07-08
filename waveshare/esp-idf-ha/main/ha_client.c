@@ -77,6 +77,7 @@ typedef struct {
     char title[80];
     char artist[56];
     char uri[64];
+    char image_url[100];   /* cover art URL (Spotify search only); "" otherwise */
 } ha_album_candidate_t;
 
 static char s_album_browse_entities[HA_ALBUM_BROWSE_ENTITY_MAX][96];
@@ -874,6 +875,9 @@ static bool spotify_search_albums(const char *query, ha_album_candidate_t *out,
                 json_copy_string(v, a->title, sizeof(a->title));
             if ((v = json_obj_get(item, "uri")))
                 json_copy_string(v, a->uri, sizeof(a->uri));
+            const char *img = json_array_first_obj(json_obj_get(item, "images"));
+            if (img && (v = json_obj_get(img, "url")))
+                json_copy_string(v, a->image_url, sizeof(a->image_url));
             const char *artist = json_array_first_obj(json_obj_get(item, "artists"));
             if (artist && (v = json_obj_get(artist, "name")))
                 json_copy_string(v, a->artist, sizeof(a->artist));

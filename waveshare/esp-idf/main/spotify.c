@@ -1079,6 +1079,9 @@ bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *coun
                     json_copy_string(v, a->title, sizeof(a->title));
                 if ((v = json_obj_get(album, "uri")))
                     json_copy_string(v, a->uri, sizeof(a->uri));
+                const char *img = json_arr_first_obj(json_obj_get(album, "images"));
+                if (img && (v = json_obj_get(img, "url")))
+                    json_copy_string(v, a->image_url, sizeof(a->image_url));
                 const char *artist = json_arr_first_obj(json_obj_get(album, "artists"));
                 if (artist && (v = json_obj_get(artist, "name")))
                     json_copy_string(v, a->artist, sizeof(a->artist));
@@ -1209,6 +1212,9 @@ bool spotify_search_albums(const char *query, spotify_album_candidate_t *out,
                 json_copy_string(v, a->title, sizeof(a->title));
             if ((v = json_obj_get(item, "uri")))
                 json_copy_string(v, a->uri, sizeof(a->uri));
+            const char *img = json_arr_first_obj(json_obj_get(item, "images"));
+            if (img && (v = json_obj_get(img, "url")))
+                json_copy_string(v, a->image_url, sizeof(a->image_url));
             const char *artist = json_arr_first_obj(json_obj_get(item, "artists"));
             if (artist && (v = json_obj_get(artist, "name")))
                 json_copy_string(v, a->artist, sizeof(a->artist));

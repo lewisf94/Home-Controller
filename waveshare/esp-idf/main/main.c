@@ -182,6 +182,7 @@ typedef enum {
     SCMD_GET_DEVICES,    /* fetch device list -> ui_set_devices */
     SCMD_GET_ALBUM_CANDIDATES, /* fetch saved-library albums -> ui_set_album_candidates */
     SCMD_SEARCH_ALBUMS,  /* str = search text -> Spotify /v1/search -> ui_set_album_candidates */
+    SCMD_REFRESH_COVERS, /* fetch+decode covers for runtime-added albums */
     SCMD_TRANSFER,       /* str = Spotify device id to transfer playback to */
     SCMD_SELECT_SONOS,   /* str = Sonos LAN IP to drive over UPnP */
     SCMD_TOGGLE_SHUFFLE,
@@ -206,6 +207,7 @@ static const scmd_meta_t k_scmd_meta[] = {
     [SCMD_GET_DEVICES]    = { "get_devices",       true  },
     [SCMD_GET_ALBUM_CANDIDATES] = { "get_album_candidates", true },
     [SCMD_SEARCH_ALBUMS]  = { "search_albums",     true  },
+    [SCMD_REFRESH_COVERS] = { "refresh_covers",    true  },
     [SCMD_TRANSFER]       = { "transfer",          true  },
     [SCMD_SELECT_SONOS]   = { "select_sonos",      true  },
     [SCMD_TOGGLE_SHUFFLE] = { "toggle_shuffle",    false },
@@ -218,6 +220,16 @@ static QueueHandle_t s_cmd_queue = NULL;
 
 /* `err` NULL = success; else a short human reason shown on the add screen. */
 void ui_set_album_candidates(const void *list, int count, const char *err);
+
+/* Runtime album catalogue + cover fetch (p4_shared/album_catalog.c + ui.c).
+ * No shared header while the runtime catalogue is a prototype -- declared here
+ * (mirrors the ui_set_album_candidates pattern above). */
+#include "album_thumbs.h"          /* ALBUM_THUMB_W / _H / _BYTES */
+size_t album_catalog_runtime_count(void);
+bool   album_catalog_runtime_art_todo(size_t rt_idx, char *url_out, size_t url_len);
+bool   album_catalog_set_thumb(size_t rt_idx, const uint16_t *rgb);
+void   ui_notify_covers_updated(void);
+#define RT_ART_PATH "/littlefs/rtart.jpg"   /* transient scratch for cover fetch */
 
 /* Now-playing art handed to the UI. Double-buffered in PSRAM: the Spotify task
  * decodes into the idle buffer, then ui_art_refresh swaps lv_image to it under
@@ -291,6 +303,7 @@ void ui_request_search_album_candidates(const char *query)
     if (query && query[0]) _post_cmd(SCMD_SEARCH_ALBUMS, 0, query);
     else                   ui_request_get_album_candidates();
 }
+void ui_request_refresh_covers(void)          { _post_cmd(SCMD_REFRESH_COVERS, 0, NULL); }
 void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
 void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
 
@@ -315,6 +328,9 @@ void ui_request_light_hue(const char *entity_id, int hue_deg, int sat_pct)
 static void on_wifi_first_connect(void)
 {
     audio_play(AUDIO_SFX_CONNECT);
+    /* Fetch covers for any runtime-added albums now the network is up (the
+     * queue exists by the time DHCP completes; _post_cmd no-ops if not). */
+    ui_request_refresh_covers();
 }
 
 /* Download the cover at `url`, decode it into the idle art buffer (PSRAM)
@@ -352,6 +368,35 @@ static int fetch_and_publish_art(const char *url)
              (unsigned)w, (unsigned)h, (unsigned)(w * h * 2));
     art_buffer_publish(&s_art, w, h);
     return 1;
+}
+
+/* Fetch + decode browser thumbnails for any runtime-added albums that don't
+ * have art yet. Runs on the Spotify task (network + JPEG decode, off the UI).
+ * Triggered on first WiFi connect (boot) and after each ADD. */
+static void fetch_runtime_covers(void)
+{
+    size_t n = album_catalog_runtime_count();
+    if (n == 0) return;
+    uint16_t *thumb = heap_caps_malloc(ALBUM_THUMB_BYTES, MALLOC_CAP_SPIRAM);
+    if (!thumb) { ESP_LOGW(TAG, "cover thumb scratch alloc failed"); return; }
+
+    int fetched = 0;
+    for (size_t i = 0; i < n; i++) {
+        char url[128];
+        if (!album_catalog_runtime_art_todo(i, url, sizeof url)) continue;
+        size_t bytes = 0;
+        if (!spotify_download_to_file(url, RT_ART_PATH, &bytes) || bytes == 0) {
+            ESP_LOGW(TAG, "runtime cover download failed (album %u)", (unsigned)i);
+            continue;
+        }
+        if (album_art_make_thumb_file(RT_ART_PATH, thumb, ALBUM_THUMB_W, ALBUM_THUMB_H) &&
+            album_catalog_set_thumb(i, thumb)) {
+            fetched++;
+            ESP_LOGI(TAG, "runtime cover fetched (album %u, %u bytes)", (unsigned)i, (unsigned)bytes);
+        }
+    }
+    heap_caps_free(thumb);
+    if (fetched > 0) ui_notify_covers_updated();
 }
 
 /* Gate the per-poll "now playing" INFO lines to actual state changes (track,
@@ -687,6 +732,9 @@ static void spotify_task(void *arg)
                         ESP_LOGI(TAG, "album search \"%s\": %d results (ok=%d)", cmd.str, got ? sc : 0, got ? 1 : 0);
                         break;
                     }
+                    case SCMD_REFRESH_COVERS:
+                        fetch_runtime_covers();
+                        break;
                     case SCMD_TRANSFER:
                         ok = spotify_transfer_playback(cmd.str);
                         if (ok) {
@@ -843,6 +891,10 @@ void app_main(void)
      * 10 KB stack: the TLS handshake (cert-bundle validation) over the esp_hosted
      * WiFi transport is stack-hungry. (The CYD board used 8 KB on native WiFi.) */
     xTaskCreate(spotify_task, "spotify", 10240, NULL, 5, NULL);
+
+    /* Boot: fetch covers for any runtime-added albums (spotify_task drains this
+     * once WiFi is up). The on_wifi_first_connect post covers a late connect. */
+    ui_request_refresh_covers();
 
     ESP_LOGI(TAG, "checkpoint 5: UI + art, Spotify task started");
 }

@@ -43,6 +43,14 @@ bool album_art_decode_file(const char *path,
                            uint16_t *out_rgb, size_t out_max_pixels,
                            uint16_t *out_w, uint16_t *out_h);
 
+/* Decode the JPEG file at `path` and nearest-neighbour resize it to exactly
+ * out_w x out_h RGB565 pixels in out_rgb (which must hold out_w*out_h u16).
+ * Used to build browser thumbnails for runtime-added albums. Goes via the file
+ * path for the same mozjpeg reason as album_art_decode_file. Returns true on
+ * success. */
+bool album_art_make_thumb_file(const char *path, uint16_t *out_rgb,
+                               int out_w, int out_h);
+
 #ifdef __cplusplus
 }
 #endif

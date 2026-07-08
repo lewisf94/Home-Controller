@@ -694,7 +694,29 @@ ignored). Thumbnails follow that order via the new `album_catalog_thumb(pos)`
 (baked blob for baked slots, NULL -> letter card for runtime); every
 `album_thumb_data(i)` site in `ui.c` now calls it, so sorting never desyncs
 covers. Runtime NVS survives a normal `idf.py flash` (only `erase-flash` wipes
-it). Runtime cover fetch/decode is the next slice.
+it).
+
+**Runtime album covers (2026-07-08):** added albums now show real cover art, not
+just letter cards. The candidate struct carries an `image_url[100]`
+(Spotify `images[0]`) captured by both search parsers and persisted as a 4th
+tab-separated field in the `albumcat/runtime` NVS blob. On ADD (and once at
+boot, and on a late WiFi connect) the UI posts `ui_request_refresh_covers()` ->
+`SCMD_/HCMD_REFRESH_COVERS`; the backend task runs `fetch_runtime_covers()`:
+download the cover to a scratch file (`spotify_download_to_file` /
+`ha_download_to_file`), `album_art_make_thumb_file()` (new in `album_art.cpp` --
+decode-to-file then nearest-resize to 220x220), and `album_catalog_set_thumb()`
+into a volatile PSRAM store (`s_rt_thumbs`, 16 slots, filled-flag set last). It
+then calls `ui_notify_covers_updated()` which (locked) `lv_async_call`s
+`rebuild_browser_cb` so the browser picks up the art. Covers are volatile
+(re-fetched from the persisted URL each boot; NVS can't hold ~96 KB blobs), so
+they appear a moment after boot/add. The candidate struct is still the byte-
+identical void* seam across ui.c / ha_client.c / spotify.h -- `image_url` was
+added to all three. NOTE (private-folder hygiene): the p4_shared extraction left
+stale shadowing header orphans (album_art.h, ui.h, album_thumbs.h, ...) in the
+PRIVATE `waveshare/esp-idf/main/` (sync only copies, never deletes) -- they
+shadow p4_shared/include via the `-I main` path and silently used stale decls
+until `album_art.h`'s new prototype exposed it. They were deleted from private;
+the direct build's `main/` should hold only `sonos.h` + `spotify.h`.
 
 ---
 
