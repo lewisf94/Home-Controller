@@ -14,8 +14,9 @@ items, see [`PENDING.md`](PENDING.md).
   tabbed Settings (DISPLAY: Appearance dark/light, Mode, Theme album art, Colour,
   Browser Style, Font, Selection Line, Brightness, FPS, Menu Transition; SOUND:
   on-off, Volume, Sound set); three browser styles (Carousel / Focus / Cover Flow,
-  the latter a PSRAM column rasteriser showing ~3 covers/side); runtime tiny_ttf
-  fonts with the kerning-cache crash fix; scrub thumb.
+  the latter a PSRAM column rasteriser showing ~3 covers/side); scrub thumb.
+  (Text rendering has since moved to compiled `lv_font_hc_*` fonts — runtime
+  tiny_ttf is retired/disabled.)
 - **Spotify TLS keep-alive on poll** — persistent `s_poll_client`, drops on
   transport error.
 - **Adaptive poll backoff** — 5 s playing, 15 s paused/idle.
@@ -119,10 +120,11 @@ items, see [`PENDING.md`](PENDING.md).
    -- fixed via a new `ui_get_centered_album_index()` getter + wiring both
    menus to their live values in `knob_input.c`. P4-side changes (`ui.c`,
    `ui.h`, `knob_input.c`) build-verified clean on both waveshare targets,
-   byte-identical binary size. The RP2040 fix (`motor_task.cpp`) could NOT be
-   compile-checked -- no PlatformIO in this environment -- read it carefully
-   and watch for build errors on the first `pio run`; KNOB-NOTES.md has a
-   specific first-flash sanity check (sweep Volume 0->100, no torque kick).
+   byte-identical binary size. UPDATE 2026-07-14: the RP2040 firmware now
+   COMPILES (first-ever `pio run` green, RAM/Flash 4.6%, flashable uf2) —
+   the "never compile-checked" risk is retired. KNOB-NOTES.md has the full
+   pre-hardware setup pass, wiring table, and first-flash bring-up order
+   (incl. the Volume 0->100 sweep torque-kick check).
 5. **CYD resurrection** — ON HOLD 2026-07-05 (Lewis: "ignore cyd stuff atm").
    Blocked on tooling anyway: this machine only has ESP-IDF 5.5.4 installed
    (used for waveshare); the CYD builds need 6.0 (`cyd/esp-idf/README.md` —
@@ -131,9 +133,10 @@ items, see [`PENDING.md`](PENDING.md).
    compile-verify both CYD-IDF builds (untested since the `cyd_shared`
    extraction) and port back the waveshare-only fixes (429 Retry-After
    holdoff, `RESP_INITIAL_CAP=16K`).
-6. **HA build: lights menu** — DONE 2026-07-05, BUILD-VERIFIED (both waveshare
-   targets, HA 14% / non-HA 13% app-partition free), NOT YET HARDWARE-TESTED.
-   A third top-bar icon (left of DEVICES) opens a scrollable `light.*` list:
+6. **HA build: lights menu** — DONE, HARDWARE-VERIFIED 2026-07-13 (now a page
+   in the main swipe stack, grown to colour/presets/temperature — see
+   CLAUDE.md's LIGHTS section; description below is the original first slice).
+   Originally a third top-bar icon opening a scrollable `light.*` list:
    power-icon toggle + a brightness slider (shown only when the entity reports
    `brightness`), release-gated so dragging doesn't flood HA. Fetched the same
    one-shot `get_states` way as DEVICES (`ha_request_lights()` /
@@ -287,7 +290,7 @@ Retired since this list was written:
 
 ---
 
-## Physical controls — RP2040 haptic knob (FIRMWARE DONE, hardware pending)
+## Physical controls — RP2040 haptic knob (FIRMWARE COMPILES, hardware pending)
 
 The Settings UI is touch-driven today; there's no MCP23017 on the waveshare. The
 custom **RP2040 smart-knob daughterboard** (FOC gimbal motor, strain-gauge press,
@@ -295,32 +298,39 @@ custom **RP2040 smart-knob daughterboard** (FOC gimbal motor, strain-gauge press
 input — full hardware design in [`DESIGN_NOTES.md`](DESIGN_NOTES.md), reference in
 `docs/smartknob-repo/`.
 
-**Firmware is committed and gated** (not yet wired/flashed — no PCB yet):
+**Firmware is committed, gated, and compiles** (2026-07-14 pre-hardware pass):
 - RP2040 firmware in [`../rp2040/`](../rp2040/): `motor_task` (SimpleFOC FOC +
   detent physics on core 1), `interface_task` (UART/sensors/LEDs on core 0).
-- P4-side driver in `waveshare/esp-idf/main/knob.c` + `knob_input.c`, behind
-  `#if KNOB_ENABLED` (default 0) — knob-less flashes are unaffected.
+  First-ever `pio run` is green (RAM 4.6% / Flash 4.6%); flashable
+  `rp2040/.pio/build/rp2040/firmware.uf2`.
+- P4-side driver in `waveshare/components/p4_shared/knob.c` + `knob_input.c`
+  (shared by BOTH builds), behind `#if KNOB_ENABLED` (default 0; enable with
+  `idf.py build -DKNOB_ENABLED=1` — plumbed through both main/CMakeLists, both
+  targets build green at `=1`). Knob-less flashes are unaffected. A dead-link
+  bench diagnostic logs "knob not acking" if the UART is miswired.
 - UART protocol (nanopb + CRC32 + COBS), pin map, and SimpleFOC/MT6701 facts all
-  documented in [`KNOB-NOTES.md`](KNOB-NOTES.md). The 2026-06-18 deep-research
-  pass verified all pin assignments and protocol details; one critical bug (UART
-  on the motor's GPIO0/1 PWM pins) was found and fixed.
+  documented in [`KNOB-NOTES.md`](KNOB-NOTES.md), plus the component-list
+  cross-check (MAX17048 is I2C 0x36, NOT 0x32) and the wiring/bring-up order.
 - `knob_input.c` calls only the `ui_*` seam (self-locks, audit A), so it's
-  backend-neutral and carries over to `waveshare/esp-idf-ha/` untouched.
+  backend-neutral and works with both waveshare builds.
 
-**Remaining (needs the PCB in hand):** flash with `KNOB_ENABLED=1`, calibrate the
-HX711 press threshold and motor pole pairs, verify the four-menu interaction model
-on device. Checklist in [`KNOB-NOTES.md`](KNOB-NOTES.md).
+**Remaining (needs the PCB in hand):** flash with `-DKNOB_ENABLED=1`, calibrate
+the HX711 press threshold and motor pole pairs, verify the four-menu interaction
+model on device. Bring-up order in [`KNOB-NOTES.md`](KNOB-NOTES.md); a partial
+bench test (UART + buttons + strain, no motor) is possible before the motor/
+TMC6300 arrive.
 
 ---
 
 ## Capacity ceiling
 
 `MAX_CARDS = 128` on waveshare (`ui.c`). Real limit: thumbnails are embedded in
-the 8 MB app partition at 220×220 (~95 KB each), and several fonts have been added
-since this note (PIXEL/GLYPH/PAPER/Arvo), so the app partition is the binding
-constraint — **RE-MEASURE the headroom (`idf.py size`)** before adding many albums
-rather than trusting the old "~96 % full" figure. Flash is 32 MB (8 MB app + 4 MB
-`storage`). Options when you hit it:
+the app partition at 220×220 (~95 KB each), plus the compiled fonts
+(PIXEL/GLYPH/PAPER/Arvo/hc), so the app partition is the binding constraint —
+**RE-MEASURE the headroom (`idf.py size`)** before adding many albums. Flash is
+32 MB, repartitioned 2026-07-13 for OTA: dual 10 MB app slots (`ota_0`/`ota_1`)
++ 4 MB `storage` + 256 KB `coredump`; current headroom ~25-30% free per slot.
+Options when you hit it:
 
 - **Grow the app partition** in `partitions.csv` (cleanest, ~85+ more albums
   possible). Raise `MAX_CARDS` alongside.
@@ -361,15 +371,16 @@ rather than trusting the old "~96 % full" figure. Flash is 32 MB (8 MB app + 4 M
     with `/v1/search?type=album`. Empty/no-query requests keep the older HA
     media-browser walk as a fallback. Direct-Spotify still uses saved albums
     for now, with a compatibility adapter so the shared UI links.
-  - Still open: direct-Spotify free-text catalogue search, result cover-art
-    preview, and a richer controller-friendly text-entry/result filter flow.
-  - Storage still open: downloaded/cached thumbnails in a data partition or
-    LittleFS-style store. Runtime albums currently add metadata only, so they
-    fall back to the no-art card paths instead of getting embedded thumbs.
+  - 2026-07-08/13 (RETIRES the old "metadata only / no art" caveat): live
+    search-as-you-type on BOTH builds (`spotify_search_albums()` on direct;
+    client-credentials search on HA); runtime albums sort alphabetically into
+    the browser (`album_catalog.c` display-order map); real cover art is
+    fetched + decoded to 220x220 thumbs, **cached in LittleFS by Spotify album
+    id** and restored into PSRAM at boot. Hardware-verified 2026-07-13.
   - UI/input still open: remove/reorder actions and clearer progress/error
     toasts for network failures.
-  - Capacity: depends on the runtime-thumb/data-partition decision above; avoid
-    growing `albums.c`/`album_thumbs.bin` for albums added on-device.
+  - Capacity: runtime albums cap at 16 (`album_catalog.c`); avoid growing
+    `albums.c`/`album_thumbs.bin` for albums added on-device.
 
 ---
 

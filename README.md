@@ -10,10 +10,15 @@ Handheld music controller with an album browser, now-playing screen, and hardwar
 
 | Build | Folder | Framework | Status |
 |---|---|---|---|
-| **Waveshare ESP32-P4** (direct Spotify + Sonos) | [`waveshare/esp-idf/`](waveshare/esp-idf/) | ESP-IDF 5.5 + LVGL 9.4 | **Lead build — hardware-verified end to end (2026-06-13).** cp1–3 (display, WiFi, Spotify) plus the full UI: Cover Flow, four dark/light themes, 24-swatch accents, Settings, Sonos, auto-dim. |
+| **Waveshare ESP32-P4 — Home Assistant** | [`waveshare/esp-idf-ha/`](waveshare/esp-idf-ha/) | ESP-IDF 5.5 + LVGL 9 | **Daily-driver flash — hardware-verified (2026-07-13).** HA WebSocket backend + Music Assistant: devices, lights (colour/presets), queue, on-device album add/search, native Sendspin playback through the board's own speaker, OTA updates, crash reporting. |
+| **Waveshare ESP32-P4** (direct Spotify + Sonos) | [`waveshare/esp-idf/`](waveshare/esp-idf/) | ESP-IDF 5.5 + LVGL 9 | **Hardware-verified end to end.** Same shared UI (Cover Flow, four dark/light themes, 24-swatch accents, Settings, sounds); talks straight to the Spotify Web API, drives Sonos over UPnP. |
 | **CYD ESP-IDF** (direct Spotify) | [`cyd/esp-idf/`](cyd/esp-idf/) | ESP-IDF 6.0 + LVGL 9 | Feature-complete + originally hardware-verified. Recent perf/reliability/UX batches committed, needs a CYD re-flash. |
 | **CYD ESP-IDF — Home Assistant** | [`cyd/esp-idf-ha/`](cyd/esp-idf-ha/) | ESP-IDF 6.0 + LVGL 9 | Shares UI/input/etc with the direct-Spotify CYD build. Backend replaced by a WebSocket HA client. Never hardware-tested. |
 | **CYD Arduino** | [`cyd/platformio/`](cyd/platformio/) | PlatformIO + Arduino | LVGL port committed; maintenance mode. Needs hardware re-verify. |
+
+The two Waveshare builds share all UI/audio/album/font code via
+[`waveshare/components/p4_shared/`](waveshare/components/) plus app scaffolding
+(WiFi reconnect, art buffers, crash reporting, OTA) in `app_core`.
 
 The two CYD IDF builds share UI/input/MCP/album-art/LittleFS code via the [`cyd/components/cyd_shared/`](cyd/components/cyd_shared/) ESP-IDF component. The Waveshare build has its own `ui.c` laid out for 800×480 and is not part of that shared component.
 
@@ -30,22 +35,31 @@ The two CYD IDF builds share UI/input/MCP/album-art/LittleFS code via the [`cyd/
 - **UX honesty** — toast on play failure, on-screen warning when album list exceeds cap, "nothing playing" initial state, volume HUD gated until first poll.
 - **Auto-snap browser** — opening the browser lands on the currently playing album with an accent border.
 
-**Waveshare ESP32-P4 (lead build) — additional features:**
+**Waveshare ESP32-P4 (lead builds) — additional features:**
 
-- **Touch-first UI** — GT911 capacitive touch, on-screen transport + volume controls, settings cog button. Long titles scroll horizontally (radio-style marquee); short ones stay centred.
+- **Touch-first UI** — GT911 capacitive touch; a vertical swipe stack of pages (**Albums / Now Playing / Queue / Lights (HA) / Settings**) with a right-edge rail indicator. On-screen transport, a volume fader with +/- step keys and a permanent volume readout. Long titles scroll horizontally (radio-style marquee); short ones stay centred.
 - **Three browser styles** — Carousel, Focus, iPod-style Cover Flow (true 3D perspective via PSRAM column rasteriser — trapezoid foreshortening, correct z-order, no LVGL transform paths). A centre-tap plays the centred album; an off-centre tap scrolls that cover in.
-- **Settings screen** — organised into **DISPLAY** and **SOUND** tabs. DISPLAY: Appearance (Dark/Light), Mode (BASIC/GLYPH/PIXEL/PAPER), Theme Album Art (on/off), Colour accent (8-hue × 3-variant 24-swatch grid), Browser Style, Font, Selection Line, Brightness, FPS, Menu Transition. SOUND: sound on/off, volume, sound set. All NVS-persisted.
+- **Settings screen** — organised into **DISPLAY**, **SOUND** and **SETUP** tabs. DISPLAY: Appearance (Dark/Light), Mode (BASIC/GLYPH/PIXEL/PAPER), Theme Album Art (on/off), Colour accent (8-hue × 3-variant 24-swatch grid), Browser Style, Font, Selection Line, Brightness, FPS, Menu Transition. SOUND: sound on/off, volume, sound set. SETUP: on-device WiFi/Spotify credential entry (NVS overrides the flashed secrets), firmware version + **UPDATE FIRMWARE** (OTA over WiFi from a URL). All NVS-persisted.
+- **Add albums from the device** — search Spotify as you type (or browse the saved library / HA media trees), tap to add; runtime albums persist in NVS, fetch their real cover art, and sort alphabetically into the browser. No laptop or reflash needed.
+- **Reliability** — crash coredump-to-flash with a decoded report on next boot, task-watchdog auto-reset, WebSocket heartbeat + auto-reconnect (HA), low-memory early warnings, dual-slot OTA partitions.
 - **Theme modes** — four design languages, each with a **dark and light face**: **BASIC** (clean charcoal / light), **GLYPH** (Nothing-OS-style — dot-matrix headings over clean type, hairline-outlined pills, ink instrument chrome), **PIXEL** (retro CRT — Press Start 2P pixel font, Bayer-dithered art), and **PAPER** (teletype / data-brutalist — cream + ink, mono fonts, 1-bit dithered art, printed-form frames, typewriter sounds). An 8-hue × 3-variant accent grid drives selection highlights and the progress bar.
 - **UI sound effects** — synthesised tones through the onboard ES8311 speaker (scroll / select / back / connect), selectable sound sets, adjustable volume. All off the render path on a dedicated audio task.
 - **Auto-dim / sleep** — backlight ramps to 30 % at 1 min idle, 10 % at 5 min, restores on touch.
 - **Sonos** — direct UPnP/SOAP control of a Sonos speaker on the LAN: transport, volume, and full album-start. Device selector merges Spotify Connect targets with configured Sonos speakers.
 - **Persistent TLS** — poll and command paths each reuse a keep-alive HTTP client to avoid per-call TLS handshakes.
-- **Haptic knob (firmware committed, hardware pending)** — driver for a custom RP2040 SmartKnob-style daughterboard (FOC gimbal motor, strain-gauge press, 4 MX buttons, LED ring, ambient + battery sensors) over UART. Context-aware detent profiles per menu (albums / volume / scrub). Gated behind `KNOB_ENABLED` (default off), so knob-less builds are unaffected. See [`docs/KNOB-NOTES.md`](docs/KNOB-NOTES.md).
+- **Haptic knob (firmware compiles, hardware pending)** — driver for a custom RP2040 SmartKnob-style daughterboard (FOC gimbal motor, strain-gauge press, 4 MX buttons, LED ring, ambient + battery sensors) over UART. Context-aware detent profiles per menu (albums / volume / scrub). RP2040 firmware builds green (`pio run`, flashable uf2); enable the P4 side with `idf.py build -DKNOB_ENABLED=1` (default off, knob-less builds unaffected). Wiring + bring-up order in [`docs/KNOB-NOTES.md`](docs/KNOB-NOTES.md).
 
 **CYD builds — additional features:**
 
 - **MCP23017 panel** — 4 push-buttons (SW1–SW4) + RE1 rotary encoder + push-switch via I2C, INTA on GPIO 35. Gray-code state machine, 30 ms debounce, consume-on-read event latches, re-probe every 5 s if missing at boot.
 - **Home Assistant variant** — WebSocket client to a Music Assistant `media_player` entity. Real-time push state (no polling), HA-proxied album art, works with any MA music source. See [`docs/HA-SETUP.md`](docs/HA-SETUP.md) for Pi 5 setup.
+
+**Waveshare HA build — additional features:**
+
+- **Devices** — output picker split into SPEAKERS and SPOTIFY CONNECT sections (Music Assistant players + Spotify Connect sources); transfer playback to a phone, Echo, or the controller's own speaker.
+- **Sendspin native playback** — the controller registers itself with Music Assistant as a network player and decodes FLAC/Opus/PCM through its ES8311 speaker.
+- **Lights** — full HA `light.*` control: toggle, brightness/colour scrubbing, presets, swatches, colour temperature.
+- **Queue** — upcoming-tracks list with add-album / search-songs / clear actions.
 
 ---
 
@@ -85,14 +99,17 @@ Full pin tables, I2C addresses, and architecture details: [`CLAUDE.md`](CLAUDE.m
 ```
 waveshare/
   components/
-    p4_shared/           Shared P4 component: ui.c, audio.c, albums.c,
-                         album_thumbs, fonts, knob protocol + headers
-  esp-idf/               Lead build — ESP32-P4, direct Spotify + Sonos
-    components/          Vendored Waveshare BSP
+    p4_shared/           Shared P4 component: ui.c, audio.c, albums.c, creds,
+                         runtime album catalogue, fonts, knob protocol + headers
+    app_core/            Shared scaffolding: WiFi reconnect, art buffers,
+                         crash-report/heap reliability, OTA updater
+    sendspin_player/     Music Assistant network-player (HA build only)
+  esp-idf/               ESP32-P4, direct Spotify + Sonos
+    components/          Vendored Waveshare BSP (+ nanopb, shared to HA build)
     main/                main.c, spotify.c, sonos.c (UI/albums come from p4_shared)
     include/             secrets.h.example
-  esp-idf-ha/            ESP32-P4 Home Assistant build (main.c, ha_client.c)
-    include/             secrets.h.example
+  esp-idf-ha/            ESP32-P4 Home Assistant build (main.c, ha_client.c) —
+    include/             the daily-driver flash; secrets.h.example
 
 cyd/
   components/
@@ -114,12 +131,15 @@ pcb/
 
 docs/
   ROADMAP.md             Per-phase plan + P4 + HA notes
-  KNOB-NOTES.md          RP2040 haptic-knob hardware + protocol reference
+  KNOB-NOTES.md          RP2040 haptic-knob hardware + protocol + bring-up guide
   HA-SETUP.md            Full Pi 5 / Home Assistant setup guide
+  P4-RELIABILITY.md      Memory budgets, reliability gates, soak acceptance test
+  QUEUE-DESIGN.md        Queue screen design notes
   TESTING.md             Hardware verification checklist (per build)
   PORT-NOTES.md          IDF port gotchas discovered on hardware
   P4-TODO.md             Waveshare-specific backlog
   PENDING.md             Rolling list of what's committed but not yet flashed
+  DESIGN_NOTES.md        Knob daughterboard hardware design decisions
   Datasheets/            Component datasheets
   Schematics/            Board schematics
   Symbols & Footprints/  KiCad symbols/footprints for custom parts
@@ -198,9 +218,9 @@ Detail in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 1. **Phase 1 — CYD Arduino bug fixes:** JPEG re-decode, encoder responsiveness, poll cadence. Done.
 2. **Phase 2 — CYD ESP-IDF port:** ESP-IDF 6.0 + LVGL 9. Feature-complete, hardware-verified.
-3. **Phase 3 — Home Assistant integration:** WebSocket client to HA on a Pi 5. CYD HA build exists (`cyd/esp-idf-ha/`), not yet hardware-tested.
-4. **Waveshare ESP32-P4:** Active lead build. cp1–3 hardware-verified; full UI + Sonos + settings committed, awaiting hardware verify. Next: PPA hardware acceleration, RAM art decode.
-5. **RP2040 haptic knob:** SmartKnob-style daughterboard for the P4. Firmware (`rp2040/`) + P4-side driver committed and gated behind `KNOB_ENABLED`; awaiting the PCB. See [`docs/KNOB-NOTES.md`](docs/KNOB-NOTES.md) and [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
+3. **Phase 3 — Home Assistant integration:** WebSocket client to HA on a Pi 5. Done on the Waveshare P4 (`waveshare/esp-idf-ha/` — the daily-driver flash, hardware-verified 2026-07-13); the CYD HA build exists (`cyd/esp-idf-ha/`) but is untested.
+4. **Waveshare ESP32-P4:** Both builds hardware-verified. Current focus: long-soak reliability (crash reporting, watchdog, heartbeat, memory budgets), OTA updates, on-device album management.
+5. **RP2040 haptic knob:** SmartKnob-style daughterboard for the P4. Firmware compiles (`rp2040/`, flashable uf2) + P4-side driver gated behind `KNOB_ENABLED` — both builds green at `=1`; awaiting the PCB + motor/driver parts. See [`docs/KNOB-NOTES.md`](docs/KNOB-NOTES.md) and [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
 6. **Custom PCB:** MCP23017 daughterboard KiCad project in [`pcb/`](pcb/).
 
 ---

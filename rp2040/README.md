@@ -38,6 +38,11 @@ pio run                 # build
 pio run -t upload       # flash via BOOTSEL (drag-drop .uf2 also works)
 ```
 
+**Compile status: GREEN** (first `pio run` 2026-07-14 — RAM 4.6%, Flash 4.6%;
+output at `.pio/build/rp2040/firmware.uf2`, drag-drop onto the BOOTSEL drive).
+On Windows PlatformIO lives at `~/.platformio` (`pio.exe` under
+`penv/Scripts`).
+
 nanopb is vendored at `lib/nanopb/` (not a registry dep). Generated protocol
 files live in `src/proto_gen/` (copies of `../proto/`).
 
@@ -50,5 +55,7 @@ that before changing pins. Key constraint: the motor 6-PWM pairs (GPIO0/1, 2/3,
 4/5) must stay on their PWM slices, and the UART is on UART1 (GPIO8/9), NOT UART0
 (whose default GPIO0/1 collide with the motor U-phase).
 
-The matching P4-side driver is `waveshare/esp-idf/main/knob.c` + `knob_input.c`,
-gated behind `KNOB_ENABLED`.
+The matching P4-side driver is `waveshare/components/p4_shared/knob.c` +
+`knob_input.c` (shared by both waveshare builds), gated behind `KNOB_ENABLED`
+(`idf.py build -DKNOB_ENABLED=1`). Wiring table + first-flash bring-up order:
+[`../docs/KNOB-NOTES.md`](../docs/KNOB-NOTES.md).

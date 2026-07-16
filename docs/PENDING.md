@@ -89,14 +89,14 @@ Deep-dive queue (one at a time, Lewis's request): **A concurrency — DONE (clea
 | Arch — `app_core` shared component | See "Deferred architecture work" #1 below. | `31eaf04` |
 | Refactor — `ui.c` screen-builder split (HARDWARE-VERIFIED) | `build_browser_screen`/`build_np_screen`/`build_settings_screen` split into 12/14/11 helpers, exact original call order + statics, byte-identical binary size. Lewis confirmed Browser/Now-Playing/Settings look correct in BASIC and PAPER, no draw-order regressions. | `489dd58` |
 | Fix — RP2040 knob angle-wrap + live-anchor | `_compute_torque()` now diffs against a persistent unwrapped-angle accumulator instead of the raw [0,2pi) sensor reading (was guaranteed to hit a torque discontinuity on Volume's 0-100 sweep); `knob_input.c`'s `_activate_menu()` anchors Albums/Now-Playing to the live centred-album-index/playback-position instead of 0. P4 side build-verified; RP2040 side (`motor_task.cpp`) could not be compiled here (no PlatformIO) -- read carefully on first `pio run`. | `1bd4fa7` |
-| Feature — HA build LIGHTS screen (BUILD-VERIFIED, not yet hardware-tested) | HA browser top-bar icon opens a scrollable `light.*` list (power toggle + release-gated brightness slider). Lives in shared `p4_shared/ui.c` like DEVICES, but the direct-Spotify build now compiles the top-bar Lights entry out (`P4_HAS_HA_LIGHTS` only set by the HA build) because it has no HA lights backend. `ha_client.c` gained `call_service_entity()` (targets an explicit entity, not just the active media_player), `build_light_list()`, and a second `s_lights_req_id` alongside the devices fetch. Both waveshare targets build clean (HA 14% / non-HA 13% free). Full detail in P4-TODO.md item 6. | pending commit |
+| Feature — HA build LIGHTS screen (BUILD-VERIFIED, not yet hardware-tested) | HA now exposes a LIGHTS page in the vertical main-page stack, with `light.*` rows for power, live brightness, hue/swatch/temperature colour control, and larger touch targets. Lives in shared `p4_shared/ui.c` like DEVICES, while the direct-Spotify build excludes the LIGHTS stack page (`P4_HAS_HA_LIGHTS` only set by the HA build) because it has no HA lights backend. `ha_client.c` gained `call_service_entity()` (targets an explicit entity, not just the active media_player), `build_light_list()`, and a second `s_lights_req_id` alongside the devices fetch. Latest waveshare clean builds: HA `0x6f8d80` / direct `0x6f4090` (both 13% free). Full detail in P4-TODO.md item 6. | pending commit |
 
 ### Waveshare — changed 2026-07-06 (Codex session)
 
 | Area | What landed | Commits |
 |---|---|---|
 | Fix — HA lights diagnostics + feedback refresh (BUILD-VERIFIED) | Part 0 of `docs/IMPLEMENTATION-PLAN-2026-07-05.md`: light power taps now log the entity id, HA `call_service` sends log domain/service/entity plus data presence, failed HA result frames log their error message, and light toggle/brightness commands re-fetch the light list after a 400 ms Matter round-trip delay so the screen reflects the actual accepted state. Both waveshare targets build clean (HA 14% / non-HA 13% free). Needs HA-build hardware test against a real light. | pending commit |
-| Feature — on-device Add Albums first slice (BUILD-VERIFIED, not yet hardware-tested) | Shared P4 UI now has a browser top-bar `+` screen that asks the direct-Spotify backend for saved albums (`/v1/me/albums`) and the HA backend to discover `media_player.*` entities and walk their browsable albums (`media_player/browse_media`), shows duplicate-aware ADD/ADDED rows, and appends selected album metadata to a small NVS runtime catalogue layered after the compiled seed albums. Browser and knob config read the combined catalogue. Direct Spotify requires `user-library-read`; HA depends on Music Assistant/media-player browse exposing playable Spotify album IDs. Runtime thumbnails, free-text search, and remove/reorder remain open. | `962a44f` |
+| Feature — on-device Add Albums first slice (BUILD-VERIFIED, not yet hardware-tested) | Shared P4 UI now has an Album Selection `ADD` screen that asks the direct-Spotify backend for saved albums (`/v1/me/albums`) and the HA backend to discover `media_player.*` entities and walk their browsable albums (`media_player/browse_media`), shows duplicate-aware ADD/ADDED rows, and appends selected album metadata to a small NVS runtime catalogue layered after the compiled seed albums. Browser and knob config read the combined catalogue. Direct Spotify requires `user-library-read`; HA depends on Music Assistant/media-player browse exposing playable Spotify album IDs. Runtime thumbnails, free-text search, and remove/reorder remain open. | `962a44f` |
 
 ### Waveshare — committed 2026-07-07 (Claude Code session)
 
@@ -111,6 +111,120 @@ Deep-dive queue (one at a time, Lewis's request): **A concurrency — DONE (clea
 | Area | What landed | Commits |
 |---|---|---|
 | Feature - HA Add Albums Spotify catalogue search (BUILD-VERIFIED, not yet hardware-tested) | The shared Add Albums screen now has a SEARCH overlay. In the HA build, searches use Spotify client id/secret from Settings > SETUP or flashed secrets.h, fetch a client-credentials token, call Spotify `/v1/search?type=album`, and show ADD/ADDED rows for any public Spotify album. Empty/no-query requests keep the old HA media-browser walk as a fallback. Spotify credential rows are now visible in HA SETUP because playback still goes through HA, but album search needs Spotify. 2026-07-08 follow-up: first hardware log showed HTTP 400 because Spotify's current Search API caps `limit` at 10; HA search now requests 10 max, trims whitespace, and surfaces Spotify's own error message. Latest HA build clean (`0x6f6c40`, 13% free); latest direct build from the shared-UI pass clean (`0x6f2a60`, 13% free). UX next: autocomplete-style suggestions while typing, backed by the same search endpoint with debounce. | pending commit |
+| Fix - Runtime album cover refresh active-screen crash (BUILD-VERIFIED, needs flash test) | 2026-07-08 hardware log froze after runtime album covers loaded: LVGL warned `the active screen was deleted`, then wedged in `lv_obj_get_screen(NULL)` under the task watchdog. Cause was `rebuild_browser_cb()` rebuilding the browser after runtime cover fetch/add-album changes, then deleting `old_browser` even when it was still the active screen. The helper now loads the new browser and resets the input device before deleting the old one. HA build clean (`0x6f7870`, 13% free); direct build clean (`0x6f3fb0`, 13% free). | pending commit |
+| UX/Fix - HA lights colour controls + runtime album art repair (BUILD-VERIFIED, needs flash test) | Lights rows now have more vertical spacing, larger full-width preset/swatch controls, a black brightness slider independent of the UI accent, hidden slider knobs, live brightness/hue/temperature scrubbing, a COLOUR mode switch cycling HUE/SWATCHES/TEMP, a continuous Kelvin temperature slider, and a 3000K warm swatch. HA lights that report colour support but omit `hs_color` while off now preserve the last UI hue instead of snapping the slider. Runtime-added HA albums without a saved cover URL now repair it from Spotify's album endpoint using the stored Spotify URI before downloading/decode, so albums added in earlier/current flashes can still gain art. Latest clean builds after the navigation pass: HA (`0x6f8d80`, 13% free); direct (`0x6f4090`, 13% free). | pending commit |
+| UX - Vertical main-page stack (BUILD-VERIFIED, needs flash test) | Main navigation is now ordered NOW PLAYING -> ALBUM SELECTION -> VOLUME -> LIGHTS (HA only) -> SETTINGS. Swipe up/down moves through the stack and a slim right-edge rail with chevrons/dots gives a persistent signifier and tap target. The old browser/now-playing top icon row is gone; Album Selection keeps a contextual `ADD` chip for runtime album adding, and Now Playing's device name opens the device picker. Direct Spotify excludes Lights from the stack. Clean builds: HA (`0x6f8d80`, 13% free); direct (`0x6f4090`, 13% free). | pending commit |
+| Fix - Runtime cover fetch SDIO RX assert (BUILD-VERIFIED, needs flash test) | 2026-07-09 HA hardware log crashed after four runtime cover downloads with `assert failed: sdio_rx_get_buffer sdio_drv.c:670 (*buf)`, inside the ESP-Hosted SDIO receive path. Runtime cover fetch now checks internal heap before starting, attempts only one missing cover per pass, waits 1.5 s, then requeues the next pass so startup/add-album cover repair cannot hammer the ESP32-C6 WiFi link with back-to-back HTTPS downloads and JPEG decodes. Applied to HA and direct Spotify builds. Clean builds: HA (`0x6f8e50`, 13% free); direct (`0x6f41d0`, 13% free). Flash-test: monitor should show one `runtime cover fetched` every ~1.5 s and no SDIO assert. | pending commit |
+| UX - Add Albums shortcut + album scrolling responsiveness (BUILD-VERIFIED, needs flash test) | Tapping Album Selection `ADD` now opens the Spotify search keyboard immediately instead of landing on the Add screen and requiring a second SEARCH tap. Album/now-playing title marquees were shortened from 150 s to 30 s per loop, and programmed album-card scrolls now use a 120 ms animation so encoder/button navigation feels less sluggish. Device picker Back now returns to Now Playing because the picker is launched from the Now Playing output/device label. Clean builds: HA (`0x6f8e40`, 13% free); direct (`0x6f41d0`, 13% free). | pending commit |
+| UX - Theme-specific Volume page + nav polish (BUILD-VERIFIED, needs flash test) | The Volume page is no longer the GLYPH dot grid for every theme. The control is centred vertically, while the meter style changes per theme: BASIC semi-circular tick gauge, GLYPH Nothing-style dot matrix, PIXEL chunky block meter, PAPER ruled printed segment ladder. Volume mode now has explicit `-` / `+` buttons for 5% increments without dragging. Follow-up UI polish in the same pass: Album Selection `ADD` is fixed to the header-row height, the right-side stack rail is narrower and pushed to the edge so it no longer covers PAPER now-playing/lights details, Settings' tab divider moved lower, visible Back buttons were removed from menu screens, OUTPUT now uses the PAPER left-field placement in every theme, and Lights colour mode is direct `HUE` / `SWATCH` / `TEMP` chips instead of a confusing cycle button. Clean builds: HA (`0x6f92d0`, 13% free); direct (`0x6f44e0`, 13% free). | pending commit |
+| Feature - HA native Sendspin player + Spotify Connect output rows (BUILD-VERIFIED, needs flash test) | HA build now starts a shared `sendspin_player` component named `Home Controller`, advertised as a mono 44.1/48 kHz 16-bit player for Music Assistant. Decoded PCM is written to the ES8311 bridge with independent playback volume/mute; UI sounds are suppressed during music and restored when streaming ends. HA device selection expands the HA Spotify account entity's `source_list` into `SPOTIFY CONNECT` rows and calls `media_player.select_source` so the controller can transfer playback to phone/laptop/Connect targets. Now-playing art fetch/cover repair moved off the HA command loop and play/pause updates optimistically so transport controls are less laggy while covers download. Clean builds 2026-07-10: HA (`0x74b830`, 9% free); direct (`0x6f4ac0`, 13% free). Flash-test: MA should discover `Home Controller`, expose it to HA, output picker should show it, Connect rows should appear when the HA Spotify integration is authenticated and the Spotify app is active on the target device. | pending commit |
+| Fix - HA device discovery never leaves `Scanning...` (needs flash test) | HA `get_states` snapshots can exceed the former 256 KB WebSocket cap on a larger installation. The receiver now permits up to 768 KB in PSRAM and reports disconnect, response failure, out-of-memory, oversize, or ten-second timeout directly in the Devices screen instead of leaving a permanent spinner. | pending commit |
+| Fix - HA authentication starvation + runtime-cover retry crash (needs flash test) | First log after Sendspin landed showed the HA TCP/WebSocket connection open but never reach `auth_required`/`authenticated`; Sendspin had started first and only 22 KB internal heap remained. HA now gets a five-second authentication window before Sendspin starts, small HA frames use the previously working normal allocator again, and Sendspin's wrapper loop stack lives in PSRAM. Runtime cover repair now requires authenticated HA plus 64 KB free/32 KB contiguous internal heap, and any TLS/decode failure backs off 30 seconds instead of retrying every 1.5 seconds until ESP-Hosted SDIO asserts. | pending commit |
+| Systemic P4 crash prevention (BUILD-VERIFIED; HARDWARE SOAK IN PROGRESS) | Root cause confirmed as internal/DMA SRAM exhaustion in ESP-Hosted's SDIO RX allocator, despite about 25 MB free PSRAM. HA/media/audio worker stacks and application queues now live explicitly in PSRAM; a shared failed-allocation/heap/task-HWM diagnostic guard is active; device/light/library discovery shares a typed, single-flight, memory-gated HA inventory cache; and `scripts/check_p4_reliability.py` enforces source/config and post-build flash budgets. First hardware run stayed alive but showed only ~19 KB internal and <1 KB DMA free after Sendspin connected, so mDNS's supported task/data allocations now move to PSRAM for the next measurement. Full rationale and soak gates are in `docs/P4-RELIABILITY.md`. | pending next flash + hardware soak |
+| Fix - renamed HA Spotify account + Connect rows (HARDWARE-VERIFIED 2026-07-13) | HA created the Spotify integration as `media_player.home_controller_2`, with `source_list: Home Controller, iPhone, Pamela's Echo, Pamela's Echo Dot`. Prefix-only `media_player.spotify*` detection misclassified it as generic HA, hiding every Connect source. Detection now accepts HA Spotify's stable capability signature (`source_list` plus SELECT_SOURCE-only feature mask 2048), while excluding Music Assistant entities. Hardware pass confirmed the renamed `media_player.home_controller_spotify` account was detected and iPhone appeared under SPOTIFY CONNECT. | pending commit |
+| Fix - Sendspin/HA startup SDIO RX-pool crash (needs flash test) | Follow-up hardware log reached `authenticated` but asserted in `sdio_rx_get_buffer`/`sdio_push_data_to_queue` immediately when Sendspin started, before HA's initial `get_states` frame completed. The fixed five-second fallback was the remaining race: on slower boots it also started Sendspin before auth. Sendspin now starts from `ha_task` only after the complete initial state response is parsed plus a one-second SDIO quiet period; it remains deferred if HA is not ready and starts automatically after a later successful reconnect. | pending commit |
+| Fix - HA full-state transfer SDIO burst (BUILD-VERIFIED, needs flash test) | 2026-07-11 log showed two remaining ESP-Hosted assertions: `sdio_rx_get_buffer` immediately after HA authentication, and `sdio_push_data_to_queue` after selecting Home Controller. The stale saved entity caused the first installation-wide `get_states` response to overlap a trigger subscription and a second snapshot; later output changes also requested another full snapshot while Sendspin was connected. HA now takes one startup snapshot only, resolves a stale default from that same response, and defers the small state-trigger subscription to the HA task. Changing Output only switches that trigger; it never pulls all HA states again. Clean HA build: `0x74d4c0`, 9% free. Flash-test: boot through Sendspin startup, then select Home Controller and a speaker repeatedly; neither SDIO assertion may recur. | pending commit |
+| UX - self-refreshing, de-duplicated Devices picker (HARDWARE-VERIFIED 2026-07-13) | Devices now re-requests HA state every five seconds while open, so speakers that become available appear without leaving/re-entering. An `EXIT` button returns to Now Playing. The HA list labels plain entities as `HOME ASSISTANT` rather than ambiguous `OTHER`, skips raw Sonos/DLNA media-renderer aliases, and collapses name variants such as `Living Room`, `Living Room Speaker`, and `Living Room - Sonos Play:5 Media Renderer` onto the Music Assistant player where present. Hardware pass confirmed speakers appeared without leaving the page, Home Controller appeared once, and exit/output selection returned to Now Playing. | pending commit |
+| UX - larger stack-navigation targets and Settings downward exit (HARDWARE-VERIFIED 2026-07-13) | The right rail keeps its compact dots but each target is now 46 by 52 px, reaches within four pixels of the right screen edge, and has wider vertical spacing. Settings now accepts a downward swipe as an exit to the preceding stack page, while retaining its horizontal exit and rail target. | pending commit |
+| Fix - light-settle refresh made crash-safe + optimistic toggle (2026-07-11, needs flash test) | External review flagged that the first settle fix bypassed the inventory cooldown with an immediate installation-wide `get_states` per toggle (re-creating the SDIO-burst crash mechanism during Sendspin playback) and blocked the HA command worker with a 400 ms `vTaskDelay`. Now: light commands arm a coalesced deadline serviced by `ha_client_tick()` ~0.7 s after the LAST command (a toggle run or brightness drag costs one snapshot), with a 5 s floor between forced snapshots, the stricter 64/32 KB internal reserve, and full suppression while music streams. The row flips optimistically on tap so the UI reads correctly before (or without) the confirming snapshot; the snapshot confirms/reverts. Brightness/hue commands arm the same settle. Devices screen no longer claims "not connected" when the real refusal reason is memory pressure or an in-flight snapshot. | pending commit |
+| Feature - Music Assistant Queue page (BUILD-VERIFIED, needs flash test) | The redundant full-screen Volume stop is now `QUEUE`; volume remains on Now Playing. Queue shows Music Assistant's current/upcoming items, refreshes while open, and offers `ADD ALBUM` (the existing album grid switches into append mode), `SEARCH SONGS` (direct Spotify catalogue track search through the configured client credentials), and `CLEAR`. Queue commands are deliberately available only with an active Music Assistant Output; Spotify Connect/plain HA outputs explain that distinction instead of silently failing. Direct-Spotify firmware keeps the page but explicitly states that Queue needs Home Assistant. Clean builds 2026-07-10: HA (`0x74d390`, 9% free); direct (`0x6f4df0`, 13% free). | pending commit |
+| Fix - SDIO RX crash root-caused to the 32 KB DMA reserve (2026-07-11, needs soak) | 2026-07-11 soak crashed again (`sdio_rx_get_buffer` assert, `ALLOC FAILED size=3584 caps=DMA\|INTERNAL`) DESPITE every discretionary guard correctly deferring (inventory + covers logged as deferred throughout). The log shows why: with UI + HA + Sendspin resident, DMA-capable memory idled at ~8.5 KB free / 8 KB largest even while "internal free" read 30 KB -- the difference is RTC/retention RAM the WiFi transport cannot DMA into, and IDF's exclusive DMA/internal reserve was at its 32 KB default, shared with every boot-time DMA alloc. Discretionary throttles cannot protect MANDATORY receive-path allocations; only the reserve can. `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` raised to 65536 in the HA build (small plain allocs spill to PSRAM instead) and gated in `check_p4_reliability.py`. Spotify Connect expansion HARDWARE-VERIFIED the same session: iPhone appeared as a source row and playback transferred to it. | pending commit |
+| UX - Devices picker split into SPEAKERS / SPOTIFY CONNECT sections (HARDWARE-VERIFIED 2026-07-13) | The picker mixed Music Assistant/Sonos outputs with the HA Spotify account row and its Connect sources -- two different systems in one list. `ui_set_devices` now groups them under small section headers (only when both groups exist, so the direct build and Spotify-less setups render unchanged), and the "Home Controller" pin applies within the SPEAKERS section only -- necessary because the Spotify account entity and its on-device Connect source can also be named "Home Controller" and were being dragged to the top. Hardware pass confirmed iPhone under SPOTIFY CONNECT and one Home Controller under SPEAKERS. | pending commit |
+| UX - now-playing + devices polish batch (2026-07-12, needs flash test) | Five fixes from a hardware session: (1) leaving the Devices screen now loads Now Playing instantly (flash), matching how it was entered, instead of an animated slide; applies to both the EXIT button and a device tap. (2) The now-playing volume fader moved left (TUNE_FADER_X 708->628) with dedicated +/- step buttons (VOL_STEP_PCT) in a column to its right, aligned to the fader ends. (3) PAPER now-playing fader field relabelled LEVEL -> VOLUME (TUNE_LEVEL_W widened for the longer word). (4) Progress bar no longer bounces just after pressing pause: a PLAYPAUSE_GUARD_MS=2000 optimistic guard ignores in-flight states carrying the stale play flag (and freezes the playhead) until the expected state confirms, mirroring the existing seek guard. (5) Devices list de-confused: the Spotify ACCOUNT entity is no longer rendered as a row (it rejects play_media/media_play_pause with supported_features=2048, duplicated the "Home Controller" name, and could show red next to an active source) -- it stays internal for select_source/state; and a Connect source that duplicates a speaker already listed (this device's own "Home Controller") is suppressed, so "Home Controller" appears once under SPEAKERS and external targets (phone, Echo) stay under SPOTIFY CONNECT. | pending commit |
+| Fix - auth_invalid during HA startup left the connection dead forever (2026-07-12 log, needs flash test) | Booting the controller alongside HA reproduced a hard failure: HA's WebSocket accepted the connection but its auth subsystem was still starting, answered `auth_invalid` to a VALID token, and closed the socket cleanly. `esp_websocket_client` only auto-reconnects from ABNORMAL disconnects, and the handler had no `WEBSOCKET_EVENT_CLOSED` case, so the client sat dead until power cycle ("tried to get to devices for 5 mins, nothing"). A second boot showed the other shape: 10 s to even receive `auth_required`, then the socket died silently mid-handshake with no event at all. Now: CLOSED gets the same session teardown as DISCONNECTED plus a deferred client stop/start from `ha_client_tick()` (5 s delay; never from the WS task itself, which would deadlock); `auth_invalid` is never fatal (arms the same restart) and sets a flag so the Devices screen says "rejected the access token -- retrying (check Settings > SETUP)"; and a 30 s connected-but-unauthenticated watchdog forces a fresh connect when the handshake hangs. A genuinely bad token now cycles visibly instead of failing silently. | pending commit |
+| Fix - on-device speaker vanished as a "duplicate" of the Spotify account (2026-07-11 log, needs flash test) | Hardware log showed `media_player.home_controller duplicate of media_player.home_controller_spotify skipped`: the name-dedup (meant to collapse Sonos renderer aliases onto MA players) let the Spotify ACCOUNT entity absorb the real Music Assistant speaker of the same name, so the device's own Sendspin output could not be selected in the picker. `device_duplicate_index` now never matches against Spotify-tagged rows (accounts are not output aliases; the UI renders them in a separate section anyway). Same-session soak PASSED the crash scenario: with the 64 KB reserve, dma_largest never fell below ~39 KB through a Connect transfer, ~33 rapid volume calls, art decode, and repeated inventory refreshes -- zero ALLOC FAILED/SDIO errors. On-device Sendspin FLAC streaming stress still pending. | pending commit |
+| UX/Fix - single top volume readout, durable runtime covers, and Unicode metadata (build-verified; needs flash) | The duplicate `VOLUME NN%` footer is removed; the percentage/mute state now lives in the fader's top icon/field label. Runtime thumbs use one PSRAM slot per populated album and are cached as 220x220 RGB565 files in LittleFS by Spotify album id; newest additions fetch first, and Spotify cover work no longer incorrectly requires HA authentication when its existing 64/32 KB memory and no-music gates pass. Shared JSON decoding now handles `\uXXXX`/surrogate pairs, and compiled hc fonts cover Latin-1/Extended-A plus typographic punctuation in every theme without re-enabling crash-prone tiny_ttf; Fcukers' title is restored to `Ö` in the Waveshare catalogue. Both P4 targets pass the post-build reliability gate: direct `7,470,080 B` with `28.8%` app headroom, HA `7,835,648 B` with `25.3%`; both bootloaders retain `624 B`. | pending hardware test + commit |
+
+### Waveshare - partial hardware pass 2026-07-13
+
+- Confirmed on the current HA flash: renamed Spotify-account detection; iPhone
+  under SPOTIFY CONNECT; one Home Controller under SPEAKERS; live Devices-page
+  speaker refresh; Devices exit/output selection returning to Now Playing;
+  larger stack navigation; Settings downward exit; and basic Queue, Lights,
+  Add Albums, navigation, and volume operation.
+- Serial evidence: HA recovered and authenticated after being unavailable for
+  about 14 minutes without a controller reboot; Sendspin started only after
+  authentication and completed its server handshake. No allocation failure,
+  SDIO assert, watchdog, or panic appeared in the captured log.
+- Memory after HA inventory and Connect-source expansion reached approximately
+  47 KB internal free, 39 KB DMA free, and a 32 KB largest DMA block. This is a
+  major improvement over the pre-reserve sub-1-KB failure state, but the log
+  still reports `LOW INTERNAL RESERVE`; the long playback/idle soak remains a
+  release gate.
+- Still pending explicit hardware checks: music decoded through the built-in
+  speaker; Queue add/search/clear mutations; Lights controls stressed during
+  music and inventory refresh; repair of an older runtime album with missing
+  art; and the 60-minute interactive plus eight-hour playback/idle soak.
+
+### RP2040 knob - pre-hardware setup pass, 2026-07-14 (Claude Code session)
+
+Preparation for wiring the daughterboard; full detail + wiring + bring-up
+order in `docs/KNOB-NOTES.md` ("Pre-hardware setup pass"). Highlights:
+
+- **RP2040 firmware compiled for the first time ever** (PlatformIO found at
+  `~/.platformio`): SUCCESS, RAM 4.6% / Flash 4.6%, `firmware.uf2` produced.
+  Two dead library pins in `platformio.ini` fixed (VEML7700 name, MAX1704X
+  version that never existed).
+- Fixed the HA build's latent knob compile error (`knob_input_init()` ->
+  `knob_input_start()`); `KNOB_ENABLED` now plumbed through both builds'
+  CMake so `idf.py build -DKNOB_ENABLED=1` really works (sticky cache -- turn
+  off with `=0`). Both P4 targets build green at `=1` and were restored to `=0`.
+- knob.c gained a dead-link bench diagnostic ("knob not acking" after ~2 s)
+  and the ToKnob size-guard review minor was resolved (impossible -- callback
+  fields -- documented worst-case bound instead).
+- Component-list cross-check done (KNOB-NOTES): one list error found --
+  **MAX17048 is I2C 0x36, not 0x32**; plus the HX711 RATE-pin-HIGH PCB note.
+- **Hardware-verify pending:** the whole knob stack (UART link, buttons,
+  strain, motor detents) -- blocked on the daughterboard being wired; motor +
+  TMC6300 + MAX17048 not yet ordered. A partial bench test (UART + buttons +
+  strain, no motor) is possible now -- see the bring-up order in KNOB-NOTES.
+
+### Waveshare - reliability + OTA batch, BUILD-VERIFIED 2026-07-13 (Claude Code session)
+
+Both targets build clean (HA `0x758580`, 27% free; direct `0x6ff160`, 30% free)
+and pass `check_p4_reliability.py --post-build`. **REPARTITIONS THE FLASH** --
+one deliberate reflash, see the flash note below. NOT yet on hardware.
+
+- **Flash / partition change (do once, carefully).** `partitions.csv` on both
+  builds moved from a single 8 MB `factory` app to **dual 10 MB OTA slots
+  (`ota_0`/`ota_1`) + `otadata` + a 256 KB `coredump` slot**. `nvs` stays at
+  `0x9000`, so **Settings > SETUP credentials survive** the reflash. The app now
+  runs from `ota_0` at `0x20000`; `idf.py flash` also writes `ota_data_initial.bin`
+  (points the bootloader at `ota_0`), so first boot is clean. If it ever won't
+  boot after the repartition: `idf.py erase-flash` then reflash and re-enter creds.
+- **Crash-report-on-boot** (`app_core/reliability.c` `app_core_reliability_boot_report`,
+  called from `_init`): logs the previous `esp_reset_reason()` and, when a flash
+  coredump exists, the crashing task + PC, then erases it. `sdkconfig.defaults`:
+  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH` + ELF/CRC32. **Verify:** force a crash
+  (or read the log after the next real one) and confirm the boot line names the
+  task + PC; `addr2line -e build/<app>.elf 0x<pc>` resolves it.
+- **Task-watchdog auto-reset**: `CONFIG_ESP_TASK_WDT_PANIC=y`, 20 s idle-starve
+  timeout. A wedged render/task now reboots (and writes a coredump) instead of
+  freezing. **Verify:** normal use shows no spurious resets under heavy Cover
+  Flow scrolling; if any appear, raise `CONFIG_ESP_TASK_WDT_TIMEOUT_S`.
+- **HA link heartbeat** (`ha_client.c` `HA_PING_IDLE_US`/`HA_PONG_TIMEOUT_US`):
+  after 30 s idle sends `{"type":"ping"}`; no reply in 10 s -> reconnect. Recovers
+  a half-open socket (router NAT drop / HA restart with no clean FIN) while idle.
+  **Verify:** leave it idle, drop and restore WiFi/HA, confirm it recovers without
+  a poke or reboot.
+- **Progress bar on local (MA/Sendspin) playback** (`ha_client.c`
+  `apply_state_object`): HA's `media_position` is a snapshot, so re-basing every
+  poll snapped the bar backwards; now a monotonic reference is kept and only
+  re-based on a real move (seek/track-change/refresh), advancing live like the
+  direct build. **Verify:** the NP bar advances smoothly during MA/Sendspin
+  playback and doesn't jump on each 5 s poll.
+- **OTA over WiFi** (`app_core/ota.c`, Settings > SETUP `UPDATE FIRMWARE` +
+  `FIRMWARE URL` field + running-version label; seam `ui_request_ota()` /
+  `ui_set_ota_status()`, `HCMD_OTA`/`SCMD_OTA`). `esp_https_ota`, cert-bundle
+  verified, streams into the inactive slot and reboots. **Verify:** host a `.bin`
+  (HA `www/`, a GitHub release, or a LAN HTTP server), set FIRMWARE URL, tap
+  UPDATE FIRMWARE, confirm the progress modal, reboot into the new image, and that
+  SETUP creds persisted across the OTA. **NOTE:** OTA is only useful from the NEXT
+  flash onward (this build is USB-flashed); it can't retro-apply to itself.
+- Gate additions (`check_p4_reliability.py`): app-slot size 8 MB -> 10 MB;
+  requires coredump-to-flash, WDT panic, the coredump/OTA partitions, `nvs@0x9000`,
+  the boot crash report, and `app_core_ota_start`. Low-heap warning was already
+  present (`app_core_reliability_tick`); Queue is already HA-wired (`get_queue`).
 
 ### RP2040 haptic knob — committed/researched 2026-06-18 (Claude Code session)
 
@@ -242,7 +356,28 @@ added to the BL pin first (currently driven HIGH at boot, no PWM). That's
 
 **Trigger:** after CYD verification clears.
 
-### 3. Optional architecture cleanups (low priority)
+### 3. Lights: replace settle snapshots with a state subscription (from 2026-07-11 review)
+
+The robust design the interim settle refresh approximates: `subscribe_trigger`
+(or `subscribe_events` filtered) on the discovered `light.*` entities so HA
+pushes each light's real state after a command — confirming/reverting the
+optimistic row without ever issuing an installation-wide `get_states` to
+settle one bulb. Keep a coalesced fallback snapshot only if no event arrives
+within a few seconds, still suppressed during Sendspin playback. The plan-mode
+file from 2026-07-05 (Part 1.2) already sketches the subscription lifecycle
+(entity-list subscribe, unsubscribe on refetch, re-subscribe after reconnect,
+`ui_update_light()` in-place row update).
+
+**Also from that review:** `scripts/check_p4_reliability.py` is configuration
+linting, not behavioural proof — one allowed `get_states` call site can still
+execute arbitrarily often. The inventory scheduler (cooldown, single-flight,
+forced-floor, low-memory deferral, streaming suppression, repeated light
+commands) wants host-side unit tests, e.g. the scheduler extracted into a
+testable unit with fake clock/budget/socket.
+
+**Trigger:** after the current interim design passes its hardware soak.
+
+### 4. Optional architecture cleanups (low priority)
 
 - Rename `spotify_track_t` → `track_info_t` (the type still bears the
   Spotify name even though the header is `player.h`). Touches every backend

@@ -105,17 +105,48 @@ repository first.
 
 ---
 
-## Part 4 — Native Spotify integration (alternative to / alongside MA)
+## Part 4 — Native Spotify integration and Spotify Connect targets
 
-If you want the native Spotify integration for play/pause/next/prev/volume
-(without Music Assistant album playback), or alongside MA:
+The controller uses the native HA Spotify integration to list and transfer to
+Spotify Connect targets such as a phone, laptop, or Spotify speaker. Music
+Assistant remains responsible for the Home Controller's native Sendspin player
+and for normal player management.
 
-1. Settings → Devices & Services → **+ Add Integration** → search **Spotify**.
+1. In the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard),
+   open the app whose Client ID and Client Secret you will give to HA. Add this
+   exact Redirect URI and save it:
+   ```
+   https://my.home-assistant.io/redirect/oauth
+   ```
+   If My Home Assistant is disabled, use
+   `https://<your-ha-url>/auth/external/callback` instead; it must exactly match
+   the URL shown by HA during authorisation.
 
-2. Authenticate via OAuth in the popup. HA stores the tokens and refreshes
-   them automatically — the firmware never needs to deal with OAuth.
+2. Settings → Devices & Services → **+ Add Integration** → search **Spotify**.
+   Enter that Spotify app's Client ID and Client Secret, then complete the OAuth
+   popup. Spotify Premium is required.
 
-3. The entity created is typically `media_player.spotify_<your_username>`.
+3. HA stores the tokens and refreshes them automatically — the firmware never
+   needs to handle Spotify OAuth. The entity created is typically
+   `media_player.spotify_<your_username>`.
+
+4. Its `source_list` contains Spotify Connect devices currently visible to
+   Spotify. The controller expands those into rows labelled **SPOTIFY CONNECT**.
+   A phone normally appears only while the Spotify app has been opened recently;
+   Spotify does not expose sleeping/inactive phones as targets.
+
+### Spotify Connect plugin versus controller output selection
+
+Music Assistant's **Spotify Connect** plugin is useful for making a Music
+Assistant player appear inside the Spotify phone app. Configure it with the
+native MA player named **Home Controller** to send music from Spotify to the
+device speaker.
+
+That plugin does not provide the controller's list of other Spotify Connect
+devices. For that, keep the native HA Spotify integration from this section
+authenticated. After flashing, tap the output name on Now Playing: the list
+shows Music Assistant players, the Spotify account, and its current Spotify
+Connect sources separately.
 
 > **Note:** With the native integration, tapping an album in the browser sends
 > `music_assistant.play_media` which will fail if MA is not installed. You can
@@ -296,6 +327,17 @@ troubleshooting section below.
 - [ ] Volume HUD appears on encoder turn; "MUTED" shows on RE1 push
 - [ ] WiFi bars update in the top-left corner
 
+### Waveshare Sendspin check
+
+- [ ] Music Assistant discovers **Home Controller** as a Sendspin player.
+- [ ] If discovery has not appeared after a minute, add it manually in Music
+  Assistant using `ws://<controller-ip>:8928/sendspin`.
+- [ ] Expose that MA player to Home Assistant so it appears in the controller's
+  output list. Selecting it routes MA -> Sendspin -> the built-in ES8311 speaker.
+- [ ] Open Spotify on the phone before opening the controller's output picker;
+  the phone should then appear as a **SPOTIFY CONNECT** row once HA Spotify is
+  authenticated.
+
 ---
 
 ## Troubleshooting
@@ -312,6 +354,15 @@ HA may be restarting or the entity is misconfigured. Check the HA log
 The entity ID in `HA_ENTITY` doesn't match any entity in HA. Go to
 Developer Tools → States and check the exact string, including underscores
 and case. Restart HA after adding a new integration if the entity is new.
+
+### Devices stays on `Scanning...` or reports an error
+The current firmware times out after ten seconds and reports whether HA
+disconnected, did not respond, or sent a state snapshot too large for the
+device. Check the serial log for `ha: device discovery`, `ws disconnected`, or
+`ws frame too large`. Confirm the long-lived token has not been revoked and
+that the HA Spotify integration and Music Assistant integration have completed
+their setup. The controller lists only available `media_player.*` entities;
+unavailable entities are deliberately skipped.
 
 ### Now-playing screen shows nothing / "Nothing playing"
 The entity exists but has state `idle` or `unavailable`. Play something in
@@ -364,8 +415,11 @@ ESP32 ──HTTP (port 8123, album art)──► Pi 5 (HA OS)
 Pi 5  ──HTTPS──────────────────────► Spotify / Music providers
 ```
 
-The ESP32 never calls Spotify directly in this build. Spotify tokens, OAuth,
-and CDN calls are all handled by HA/MA on the Pi. This means:
+Playback control and Spotify Connect output switching stay local through HA and
+Music Assistant. The one exception is the Add Albums search: it uses Spotify
+client credentials to search Spotify's public album catalogue directly from the
+controller, because HA/MA libraries need not contain every Spotify album. This
+means:
 
 - The device works even if Spotify changes its API.
 - Volume control works on mobile (HA routes it correctly).

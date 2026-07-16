@@ -23,6 +23,16 @@ build). He works
 locally in VS Code with Codex and intermittently uses Codex on the
 web. This file is the source of truth across sessions.
 
+### P4 reliability gate
+
+Before either Waveshare P4 build, activate ESP-IDF 5.5.4 and run
+`python scripts/check_p4_reliability.py both`; after building, run it again with
+`--post-build`. Internal/DMA-capable SRAM, not total PSRAM, is the critical
+ESP-Hosted resource. Application-owned workers/queues must use PSRAM-capable
+FreeRTOS creation APIs; installation-wide HA snapshots must remain cached,
+single-flight, rate-limited, and memory-gated. The budgets, feature checklist,
+and hardware soak acceptance test are in `docs/P4-RELIABILITY.md`.
+
 ---
 
 ## Hardware
@@ -260,16 +270,6 @@ tabbed Settings all run on device.
 
 What's in `ui.c` as committed:
 - Full LVGL browser + now-playing + volume HUD + WiFi bars, laid out for 800×480.
-- Browser top-bar `+` screen for the first runtime album-add flow: direct
-  Spotify fetches the user's saved albums (`/v1/me/albums`), while the HA build
-  discovers HA `media_player.*` entities and walks their media browsers
-  (`media_player/browse_media`) until it finds playable Spotify albums, so the
-  add flow is not tied to the currently-selected speaker being online. Both
-  show ADD/ADDED rows and append selected album metadata to an NVS runtime
-  catalogue layered after the compiled seed albums. Direct Spotify requires
-  `user-library-read`; HA depends on Music Assistant/media-player browse
-  exposing Spotify album IDs. No runtime thumbnail cache/search/remove/reorder
-  yet.
 - Three browser styles (Carousel / Focus / Cover Flow), NVS-persisted. Carousel/
   Focus transform the child `lv_image` (scale + recolor; no object-layer transforms
   — the only safe per-scroll transform path on this board; see CRITICAL NOTE).
@@ -429,10 +429,14 @@ What's in `ui.c` as committed:
   applied as a perceptual **square-law** gain. SOUND on-off + VOLUME + SET all
   NVS-persisted.
 - **FONT setting** — Settings → FONT: SANS (Montserrat) or SLAB (Arvo Bold, OFL,
-  Google Fonts, embedded). NVS-persisted. All title/artist/settings labels route
+  Google Fonts, compiled). NVS-persisted. All title/artist/settings labels route
   through `font_lg()`/`font_md()` which check `s_font_choice`. PIXEL overrides to
-  Press Start 2P, GLYPH to its fixed dot-heading/Montserrat pairing and PAPER to
-  the unscii mono font, regardless of FONT setting.
+  Press Start 2P, GLYPH to its fixed dot-heading pairing and PAPER to the unscii
+  mono font, regardless of FONT setting. The default body/heading faces are the
+  compiled **`lv_font_hc_20/24/28`** fonts (baked by `scripts/gen_lvgl_font.py`,
+  covering ASCII + Latin-1/Extended-A + common typographic punctuation), so
+  accented metadata renders in every theme; `text_codec.c` decodes JSON
+  `\uXXXX`/surrogate pairs before LVGL receives metadata.
 - **Title marquee** — long browser/now-playing titles scroll horizontally
   (`LV_LABEL_LONG_SCROLL_CIRCULAR`) instead of ellipsising; titles that fit stay
   centred. Speed is a fixed `lv_obj_set_style_anim_duration` (ms) set **before**
@@ -443,9 +447,33 @@ What's in `ui.c` as committed:
 - **Cover Flow tap fix** — a tap within `CENTRE_TAP_TOL` px of screen-centre plays
   the centred album (touch X via `lv_indev_get_point`); a tap further out scrolls
   that card toward the centre instead of mis-firing the wrong album.
-- **Crash fix:** `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, 128)` on
-  all font instances. LVGL 9.4 kerning cache (upstream #6304) corrupts the heap
-  under sustained scrolling; KERNING_NONE bypasses the cache entirely.
+- **Main-page swipe stack (2026-07-12/13 UX batch)** — vertical-swipe order
+  **ALBUMS / NOW PLAYING / QUEUE / LIGHTS (HA only) / SETTINGS** (`main_page_t`;
+  boot lands on NOW PLAYING). A slim right-edge rail with chevrons/dots is the
+  persistent signifier/tap target on every page. **The old browser top icon row
+  is GONE**: Add Albums is now a contextual `ADD` chip on the Albums page
+  (`build_album_add_chip`), and the device picker opens by tapping the device
+  name on Now Playing. The **QUEUE screen** shows the upcoming tracks
+  (HA/Music Assistant `get_queue`; 5 s refresh while open) with ADD ALBUM /
+  SEARCH SONGS / CLEAR actions; on the direct-Spotify build it explains
+  "Queue needs Home Assistant". Now-playing was re-laid-out: **volume fader +
+  `+`/`-` step keys on the LEFT of the art** (`TUNE_FADER_X`), **OUTPUT
+  (device) on the right**, and a **permanent "VOLUME NN%" readout** at the
+  fader's foot (the old pop-up HUD is gone). The Volume page control is themed
+  per MODE (GLYPH dot instrument, BASIC tick gauge, PIXEL blocks, PAPER ruled
+  segments) with `-`/`+` 5% step keys. The devices picker splits rows into
+  **SPEAKERS / SPOTIFY CONNECT** sections, hides HA's Spotify *account* entity
+  (it's a source-selector, not an output — selecting a Connect row calls
+  `media_player.select_source` on it), and exits back to now-playing with an
+  instant `lv_screen_load`. Play/pause taps use an optimistic icon guard
+  (`PLAYPAUSE_GUARD_MS`) that pins only the ICON — never progress — until the
+  server confirms. Runtime-added album thumbs are now **cached in LittleFS by
+  Spotify album id** and restored into PSRAM at boot (no re-download each
+  boot); cover repair can fill art for older URI-only rows.
+- **Text crash prevention:** runtime tiny_ttf is DISABLED (`CONFIG_LV_USE_TINY_TTF`
+  unset — its stb rasteriser path is unstable on this P4, and LVGL's kerning
+  cache corrupted the heap before that). All metadata renders through compiled
+  fonts only (`lv_font_hc_*` + the theme fonts).
 - **Album-art decode in internal SRAM** — the ~19 KB `JPEGIMAGE` working struct is
   allocated with `heap_caps_calloc(..., MALLOC_CAP_INTERNAL)` not plain `calloc`
   (which lands it in PSRAM). In PSRAM it caused an intermittent store fault in
@@ -462,8 +490,9 @@ CRITICAL constraints on this board (never regress):
   `lv_obj_set_style_image_recolor_opa` instead — no layer is created.
 - **Do NOT enable `LV_USE_MATRIX` / `LV_DRAW_TRANSFORM_USE_MATRIX`.** The SW
   blender produces negative X coordinates → store/load fault (crash).
-- **Do NOT use plain `lv_tiny_ttf_create_data`.** Always use
-  `lv_tiny_ttf_create_data_ex(..., LV_FONT_KERNING_NONE, ...)`.
+- **Do NOT re-enable runtime tiny_ttf.** Its P4 rasteriser path crashes; extend
+  or regenerate the compiled `lv_font_hc_*` subset (`scripts/gen_lvgl_font.py`)
+  for additional metadata scripts instead.
 
 Deferred work (do after hardware is confirmed stable):
 - **RAM art decode — GATED on validating `JPEG_openRAM` on hardware first.** The
@@ -513,6 +542,35 @@ command wakes the task early so controls stay responsive (`main.c`). The poll
 also holds itself off on a Spotify 429, honouring Retry-After (default 30 s,
 cap 900 s).
 
+Reliability + OTA batch — DONE, BUILD-VERIFIED 2026-07-13 (do not re-list as
+TODOs; needs a hardware flash — see `docs/PENDING.md`):
+- **Dual-app OTA partition table** (`partitions.csv`, both builds): single 8 MB
+  `factory` -> `ota_0`/`ota_1` (10 MB each) + `otadata` + a 256 KB `coredump`
+  slot. `nvs` deliberately stays at `0x9000` so SETUP creds survive the reflash;
+  app runs from `ota_0` (`0x20000`). **This is a one-time repartition flash.**
+- **OTA over WiFi** — `waveshare/components/app_core/ota.c`
+  (`app_core_ota_start()`, `esp_https_ota`, cert-bundle verified, streams to the
+  inactive slot + reboots). UI: Settings > SETUP `UPDATE FIRMWARE` button +
+  `FIRMWARE URL` cred (`CREDS_KEY_OTA_URL`) + running-version label. Seam
+  `ui_request_ota()` (poster in each `main.c`, `HCMD_OTA`/`SCMD_OTA`) +
+  `ui_set_ota_status()` (shared full-screen modal in `ui.c`).
+- **Crash-report-on-boot** — `app_core/reliability.c`
+  `app_core_reliability_boot_report()` (called from `_init`): logs the previous
+  `esp_reset_reason()` + the coredump task/PC, then erases the dump.
+  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH` (ELF/CRC32) in both `sdkconfig.defaults`.
+- **Task-watchdog auto-reset** — `CONFIG_ESP_TASK_WDT_PANIC=y`, 20 s: a wedged
+  render/task reboots (and writes a coredump) instead of freezing. Bump
+  `CONFIG_ESP_TASK_WDT_TIMEOUT_S` if a long legit op ever trips it.
+- **HA link heartbeat** — `ha_client.c` idle WS ping (`HA_PING_IDLE_US` 30 s) +
+  pong watchdog (`HA_PONG_TIMEOUT_US` 10 s) -> reconnect, so a half-open socket
+  recovers while idle without a poke.
+- **HA progress live-position fix** — `apply_state_object` keeps a monotonic
+  reference for `media_position` (a snapshot, not a live counter) and only
+  re-bases on a real move, so the NP bar advances during MA/Sendspin playback
+  instead of snapping back each poll.
+- Low-heap early warning (`app_core_reliability_tick`, 30 s / <48 KB floors) and
+  the Queue screen (`get_queue`, HA) were already built — verified, not redone.
+
 Key differences from the CYD IDF build:
 - **Toolchain ESP-IDF 5.5.x** (NOT 5.4, NOT 6.0): the vendored BSP needs the
   `usb` component (gone in 6.0) and its `esp_lvgl_adapter` needs IDF ≥5.5.
@@ -554,9 +612,15 @@ lives here. Mirrors the `cyd/components/cyd_shared/` pattern. Both
 `list(APPEND EXTRA_COMPONENT_DIRS ../components)` in their top-level
 `CMakeLists.txt`.
 
-Files in `p4_shared/`: `ui.c`, `audio.c`, `albums.c`, `album_catalog.c`,
+Files in `p4_shared/`: `ui.c`, `audio.c`, `albums.c`, `album_catalog.c`
+(NVS runtime album catalogue), `creds.c` (Settings > SETUP credential
+overrides), `text_codec.c` (JSON `\uXXXX` unicode-escape decode),
 `album_thumbs.c`, `album_art.cpp`, `littlefs.c`, `knob.c`, `knob_input.c`,
-`home_controller.pb.c`, all eight font `.c` files, three TTF embed files.
+`home_controller.pb.c`, eleven compiled font `.c` files
+(`lv_font_hc_20/24/28`, `arvo_24/28`, `dot_24`, `dot_sym_24`, `mono_16/24`,
+`pixel_16/24`), three TTF embed files, and `audio_stream_bridge.h`
+(root-level: `audio_stream_is_active()` for holding heavy work off during
+Sendspin playback).
 
 Headers in `p4_shared/include/`: `ui.h`, `audio.h`, `albums.h`,
 `album_thumbs.h`, `album_art.h`, `littlefs.h`, `knob.h`, `knob_input.h`,
@@ -577,7 +641,11 @@ directly; `spotify.h` re-exports it so existing call sites stay unchanged.
 App-scaffolding shared by both waveshare `main.c`s, found via the same
 `EXTRA_COMPONENT_DIRS` as `p4_shared` — no CMakeLists.txt wiring needed
 beyond each build's `main/CMakeLists.txt` listing `app_core` in
-`PRIV_REQUIRES`. Two files:
+`PRIV_REQUIRES`. Four source files — `wifi.c`, `art_buffer.c`, plus the
+2026-07-13 reliability batch's `reliability.c` (boot crash report, heap
+checkpoints/floors, failed-alloc hook, network-budget gate) and `ota.c`
+(`app_core_ota_start()`, esp_https_ota into the inactive slot — see the
+"Reliability + OTA batch" list above):
 - **`wifi.c` / `app_core_wifi.h`** — `app_core_wifi_connect(ssid, password,
   max_retry, on_first_connect)`: STA connect + event handler + the 20 s
   background reconnect timer (armed once fast retries exhaust, so a router
@@ -601,12 +669,27 @@ mean editing the hot dispatch switch in both `spotify_task` and `ha_task`
 for little value), and anything CYD (both CYD-IDF builds are unverified
 since the `cyd_shared` extraction — see docs/PENDING.md).
 
-### ESP32-P4 HA variant — stub exists, NOT hardware-tested — `waveshare/esp-idf-ha/`
+### ESP32-P4 HA variant — HARDWARE-VERIFIED, the daily-driver flash — `waveshare/esp-idf-ha/`
 
 Backend swapped to `ha_client.c` (Home Assistant WebSocket). The shared
 `p4_shared` component carries all UI/audio/album code; only `main.c` and
 `ha_client.c/h` are per-build. Vendored BSP shared from
-`waveshare/esp-idf/components/` via `EXTRA_COMPONENT_DIRS`.
+`waveshare/esp-idf/components/` via `EXTRA_COMPONENT_DIRS`. Verified on
+hardware 2026-07-13: devices (SPEAKERS + SPOTIFY CONNECT sections, renamed
+Spotify-account detection), transfer to phone/Echo targets, lights, queue,
+add-albums, and local playback through the board's own speaker.
+
+**Sendspin native playback** (`waveshare/components/sendspin_player/`, HA
+build only — the direct build excludes it via `EXCLUDE_COMPONENTS` in its
+top-level CMakeLists): the controller registers itself with Music Assistant
+as a network player (`media_player.home_controller`) over mDNS + a local
+WebSocket, decoding FLAC/Opus/PCM through the ES8311 speaker.
+`p4_shared/audio_stream_bridge.h` exposes `audio_stream_is_active()` so
+heavy background work (cover fetches, inventory snapshots) holds off while
+music is streaming. Its WS/mDNS startup is deferred until ~1 s after HA's
+initial get_states parse so the two never fight over the SDIO RX pool
+(`ha_task`). sendspin-cpp 0.6.1 needs one warning demoted on GCC 14
+(`-Wno-error=maybe-uninitialized`, top-level CMakeLists).
 
 To build: copy `include/secrets.h` from the non-HA private build and replace
 `SPOTIFY_*`/`SONOS_*` with `HA_HOST`/`HA_PORT`/`HA_TOKEN`/`HA_ENTITY` (see
@@ -617,27 +700,28 @@ The `ha_client.c` is adapted from `cyd/esp-idf-ha/`; the only change is
 `#include "player.h"` instead of `"spotify.h"`. The WebSocket dep is
 `esp_websocket_client` (listed in `main/idf_component.yml`).
 
-**LIGHTS screen (BUILD-VERIFIED, not yet hardware-tested)** — a third top-bar
-icon on the browser (left of DEVICES, `TUNE_LIGHTSBTN_X` in `ui_tune.h`) opens
+**LIGHTS screen (hardware-verified 2026-07-13)** — a page in the main swipe
+stack (originally a top-bar icon; that row is gone — see the swipe-stack note
+in the ui.c feature list). It shows
 a scrollable list of HA `light.*` entities: tap the power icon to toggle,
-drag the brightness slider (only shown when the entity reports a `brightness`
-attribute) to dim, released via `LV_EVENT_RELEASED` so a drag doesn't flood HA
-with intermediate values. Fetched with the same one-shot `get_states` pattern
+drag the brightness/colour controls for live scrubbing, use PRESETS /
+SWATCHES / TEMP modes for fixed levels, colour swatches, and Kelvin colour
+temperature; commands are released via `LV_EVENT_RELEASED` so a drag doesn't
+flood HA with intermediate values. Fetched with the same one-shot `get_states` pattern
 as DEVICES (`ha_request_lights()`/`build_light_list()` filter for the
 `light.` prefix; a second `s_lights_req_id` distinguishes the response from a
 concurrent devices fetch) -- there is no live push subscription, so the list
 is a snapshot re-fetched every time the screen opens. Toggle/brightness are
-direct `call_service` calls against the tapped light's own entity_id, added via
-a new `call_service_entity()` (the original `call_service()` is now a thin
-wrapper that targets the active media_player, `s_entity`, unchanged for every
-existing call site). The screen, `ui_light_t`, and all three
+direct `call_service` calls (toggle / brightness / colour) against the tapped
+light's own entity_id via `call_service_entity()` (the original
+`call_service()` is now a thin wrapper that targets the active media_player,
+`s_entity`, unchanged for every existing call site). The screen, `ui_light_t`, and all three
 `ui_request_light_*()`/`ui_set_lights()` seam functions live in the SHARED
-`p4_shared/ui.c` (like DEVICES); the non-HA `waveshare/esp-idf` build compiles
-the screen too but its top-bar entry button is compiled out — the HA build's
-top-level `CMakeLists.txt` defines `P4_HAS_HA_LIGHTS=1` on the `p4_shared`
-library and `browser_build_top_buttons()` only creates the lights button under
-that flag (the non-HA seam functions stay as documented no-ops, so the screen
-is harmless dead code there). Diagnostics (2026-07-06, Codex session): light
+`p4_shared/ui.c` (like DEVICES); the non-HA `waveshare/esp-idf` build has no
+lights backend, so the HA build's top-level `CMakeLists.txt` defines
+`P4_HAS_HA_LIGHTS=1` on the `p4_shared` library and the LIGHTS page only
+exists in the swipe stack under that flag (the non-HA seam functions stay as
+documented no-ops). Diagnostics (2026-07-06, Codex session): light
 taps log the entity id, every `call_service` logs domain/service/entity, failed
 HA `result` frames log their error message, and toggle/brightness commands
 re-fetch the light list after a 400 ms Matter round-trip so the row reflects
@@ -646,15 +730,15 @@ flash+verify**: toggle/brightness against a real HA light, reading the new
 serial diagnostics if the bulb still doesn't respond (decision table in
 `docs/IMPLEMENTATION-PLAN-2026-07-05.md` Part 0).
 
-**ADD ALBUMS screen (first slice, BUILD-VERIFIED, not yet hardware-tested)** —
-a `+` top-bar button (`TUNE_ADDBTN_X`; takes the lights slot on the non-HA
-build) opens a picker that asks the backend for album candidates:
+**ADD ALBUMS screen (hardware-verified 2026-07-13)** —
+opened from the contextual `ADD` chip on the Albums page (originally a `+`
+top-bar button; that row is gone). The picker asks the backend for album candidates:
 direct-Spotify fetches the user's saved library (`/v1/me/albums`, needs the
 `user-library-read` scope on the refresh token), the HA build discovers HA
 `media_player.*` entities and walks their `media_player/browse_media` trees
-(depth ≤ 3 per source, scored folder-follow heuristic — depends on Music
-Assistant exposing playable Spotify album ids). Rows are duplicate-aware
-ADD/ADDED; adding appends to a
+(depth ≤ 3 per source, scored folder-follow heuristic; failures on one source
+fall through to the next — depends on Music Assistant exposing playable
+Spotify album ids). Rows are duplicate-aware ADD/ADDED; adding appends to a
 small NVS-persisted runtime catalogue (`p4_shared/album_catalog.c`, 16 max,
 tab-separated blob under `albumcat/runtime`) layered after the compiled
 `albums.c` seed list — `album_catalog_count()/get()` replaced
@@ -669,8 +753,8 @@ param is now an err string, NULL = ok): Spotify 403 names the missing
 `user-library-read` scope (a refresh token's scopes are frozen at
 authorisation — mint a new one with `get_spotify_token.py` at the repo root,
 then Settings > SETUP or secrets.h), 401 says token rejected, HA browse
-failures on one source fall through to the next source, and the HA no-albums
-dead end points at Music Assistant + the serial browse-tree log.
+failures quote HA's error message, and the HA no-albums dead end points at
+Music Assistant + the serial browse-tree log.
 
 **Search + ordering update (2026-07-08, live search-as-you-type):** the picker
 is now SEARCH-driven. The `+` screen's SEARCH button opens a full-screen
@@ -720,16 +804,26 @@ the direct build's `main/` should hold only `sonos.h` + `spotify.h`.
 
 ---
 
-### RP2040 haptic knob co-MCU — `rp2040/` + `waveshare/esp-idf/main/knob*`
+### RP2040 haptic knob co-MCU — `rp2040/` + `p4_shared/knob.c`/`knob_input.c`
 
 The custom RP2040 daughterboard is a SmartKnob-style haptic input device that
 connects to the P4 via UART. All FOC, strain-gauge, and LED logic runs on the
 RP2040; the P4 sends haptic config packets, the RP2040 sends back position and
-button events. See `docs/KNOB-NOTES.md` for the full hardware reference.
+button events. See `docs/KNOB-NOTES.md` for the full hardware reference,
+component cross-check, wiring table, and first-flash bring-up order.
 
-**Gated:** `#if KNOB_ENABLED` in `waveshare/esp-idf/main/main.c` (default 0).
-P4 builds without the knob hardware are completely unaffected — no UART
-configured, no GPIO touched.
+**Gated:** `#if KNOB_ENABLED` (default 0) in BOTH builds' `main.c`, and since
+2026-07-14 plumbed through both `main/CMakeLists.txt` so
+`idf.py build -DKNOB_ENABLED=1` enables it from the command line (STICKY in
+the CMake cache — turn off with `-DKNOB_ENABLED=0`, not by omitting the flag).
+Both targets build green at `=1`. P4 builds without the knob hardware are
+completely unaffected — no UART configured, no GPIO touched.
+
+**RP2040 firmware compile status (2026-07-14): COMPILES.** First-ever
+`pio run` is green (RAM 4.6%, Flash 4.6%); flashable
+`rp2040/.pio/build/rp2040/firmware.uf2`. PlatformIO lives at `~/.platformio`
+(`pio.exe` under `penv/Scripts`); two registry pins in `platformio.ini` were
+fixed to get there (VEML7700 library name, MAX1704X version).
 
 #### RP2040 pin assignments (FINAL — do not change without reading rationale)
 
@@ -742,7 +836,7 @@ configured, no GPIO touched.
 | HX711 strain gauge | DOUT=10, CLK=11 | Bit-bang |
 | MX buttons SW1–SW4 | GPIO12–15 | INPUT_PULLUP, active-low |
 | SK6812 ring / button LEDs | GPIO20 / GPIO21 | NeoPixel GRBW |
-| I2C1 VEML7700 + MAX17048 | SDA=26, SCL=27 | Wire1 |
+| I2C1 VEML7700 + MAX17048 | SDA=26, SCL=27 | Wire1. Addresses: VEML7700 0x10, MAX17048 **0x36** (NOT 0x32 — a components-list error caught 2026-07-14) |
 
 #### ESP32-P4 UART pins (verified from schematic, 2026-06-18)
 
@@ -841,9 +935,10 @@ Full detail in `docs/ROADMAP.md`. Three phases:
 ESP32-P4 migration: ACTIVE — `waveshare/esp-idf/` (direct Spotify, ESP-IDF 5.5)
 is hardware-verified end to end: checkpoints 1–3 (display, WiFi, Spotify) plus
 the full UI (cp4+) — Cover Flow, the four dark/light MODE themes, the accent
-grid, and the tiny_ttf kerning crash fix. The next step is RAM art decode (PPA
-rotation is already enabled by the vendored BSP). A future
-`waveshare/esp-idf-ha/` carries the Phase 3 HA client over untouched.
+grid, and compiled-font text rendering. `waveshare/esp-idf-ha/` (the HA
+backend variant) is now the daily-driver flash: devices/lights/queue/add-albums
+run against Home Assistant + Music Assistant, with the device's own speaker as
+a native Sendspin player.
 
 ---
 
@@ -891,12 +986,6 @@ rotation is already enabled by the vendored BSP). A future
   covers → albums.c → thumbs). Flags: `--no-covers`, `--no-generate`,
   `--no-embed` opt out of individual stages. (`embed_albums_idf.py` still runs
   standalone if you only added a cover by hand.)
-- **P4 also has runtime-added albums.** `album_catalog.c` wraps generated
-  `albums.c` with a small NVS-backed runtime metadata list used by the shared P4
-  browser and knob config. It is append-only for now (max 16 runtime albums) and
-  stores metadata only; thumbnails still come from the compiled seed blob, so
-  runtime albums intentionally fall back to no-art/letter-card paths until a
-  runtime thumbnail cache lands.
 - **Browser thumbnails stay aligned via the same source.** `album_thumbs.bin` is
   indexed *positionally* by album order, so it must match `albums.c`.
   `scripts/embed_albums_idf.py` imports the sorted list from `gen_albums.py` and
@@ -936,7 +1025,7 @@ rotation is already enabled by the vendored BSP). A future
   If commits are already made with the wrong author, rewrite them with:
   `git rebase <last-good-sha> --exec "git commit --amend --reset-author --no-edit"`
   then force-push.
-- **Do NOT include the `https://Codex.ai/code/session_…` footer** in commit
+- **Do NOT include the `https://claude.ai/code/session_…` footer** in commit
   messages
 - **Always push directly to `main`** — never create a branch. The default is
   always `git push -u origin main`. Do not create a branch even if asked
@@ -1015,7 +1104,8 @@ git log --oneline -10          # recent history
   DARK/LIGHT face (BASIC/GLYPH/PIXEL/PAPER + an APPEARANCE dark/light toggle) and
   a THEME ALBUM ART on/off toggle, charcoal palette, flat buttons, an 8-hue ×
   3-variant (24-swatch) colour accent grid, all layout/colour values exposed in
-  `components/p4_shared/include/ui_tune.h`, tiny_ttf kerning crash fix, PIXEL retro theme
+  `components/p4_shared/include/ui_tune.h`, compiled-font text rendering (runtime
+  tiny_ttf retired — see the Text crash prevention note), PIXEL retro theme
   (1bpp Press Start 2P font, Bayer-dithered pixelated art/thumbnails, dark-CRT
   palette), the **GLYPH Nothing-OS-light theme** (light grey + ink, dot-matrix
   headings over clean small type, hairline outline pills with solid-ink selection,
@@ -1051,8 +1141,8 @@ git log --oneline -10          # recent history
     physical-input task must post to `s_cmd_queue`, not mutate that state directly.
     (PPA rotation, TLS keep-alive and adaptive poll backoff are done.)
   - **CRITICAL constraints (do not regress):** no object-level transform_scale/opa
-    on cards; no LV_USE_MATRIX; always use lv_tiny_ttf_create_data_ex with
-    LV_FONT_KERNING_NONE. See the Architecture section for full rationale.
+    on cards; no LV_USE_MATRIX; do not re-enable runtime tiny_ttf (compiled
+    `lv_font_hc_*` fonts only). See the Architecture section for full rationale.
 
 - **PlatformIO LVGL port — committed but NOT YET HARDWARE-TESTED (needs Lewis to
   check on device).** The Arduino build was rewritten from TFT_eSPI direct-draw

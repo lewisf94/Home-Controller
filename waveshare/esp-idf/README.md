@@ -3,8 +3,9 @@
 Music Controller on the **Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3** (ESP32-P4
 RISC-V, 4.3" 480×800 IPS, **ST7701** MIPI-DSI, **GT911** touch, WiFi6/BLE5 via an
 onboard **ESP32-C6** over SDIO, PSRAM, 32 MB flash). Talks **directly to the
-Spotify Web API**. A future `waveshare/esp-idf-ha/` will swap the backend to
-Home Assistant, exactly like the CYD split.
+Spotify Web API**. The sibling `waveshare/esp-idf-ha/` build swaps the backend to
+Home Assistant + Music Assistant and is the daily-driver flash; both builds share
+all UI/audio/album code via `waveshare/components/p4_shared/`.
 
 > **New to the project (or to embedded C)?** Read
 > [`../../docs/CODE-TOUR.md`](../../docs/CODE-TOUR.md) first — a plain-language
@@ -17,17 +18,21 @@ Home Assistant, exactly like the CYD split.
 > (cp2), and the Spotify task refreshes the OAuth token (cached in NVS),
 > validates the TLS cert bundle, and polls `/me/player` every 5 s (adaptive
 > 15 s when paused) over a persistent keep-alive connection — boot log shows
-> `now playing: <artist> -- <title>`. The UI (`ui.c`) is committed in full:
-> browser + now-playing + Settings screen in two tabs — **DISPLAY** (Appearance
+> `now playing: <artist> -- <title>`. The UI (shared `p4_shared/ui.c`) is
+> committed in full:
+> the main swipe stack (Albums / Now Playing / Queue / Settings) + Settings in
+> three tabs — **DISPLAY** (Appearance
 > dark/light / Mode / Theme album art / Colour accent / Browser Style / Font /
-> Selection Line / Brightness / FPS / Menu Transition) and **SOUND** (on-off /
-> Volume / Sound set), all NVS-persisted — three browser styles (Carousel /
+> Selection Line / Brightness / FPS / Menu Transition), **SOUND** (on-off /
+> Volume / Sound set) and **SETUP** (on-device credentials, firmware version +
+> OTA update), all NVS-persisted — three browser styles (Carousel /
 > Focus / Cover Flow), four MODE options each with a DARK/LIGHT face
 > (**BASIC** / **GLYPH** Nothing-light dot theme / **PIXEL** retro / **PAPER**
 > teletype), an 8-hue × 3-variant (24-swatch) colour accent grid, a THEME ALBUM
-> ART on/off toggle, all layout/colour knobs exposed in `main/ui_tune.h`,
+> ART on/off toggle, all layout/colour knobs exposed in
+> `../components/p4_shared/include/ui_tune.h`,
 > synthesised UI sound effects (ES8311 speaker), scrolling long titles,
-> charcoal palette, flat buttons, tiny_ttf kerning crash fix, auto-snap-to-
+> charcoal palette, flat buttons, compiled-font text rendering, auto-snap-to-
 > playing-album with accent border, OFFLINE indicator, generic toast for
 > play-failures, on-screen `MAX_CARDS` warning, auto-dim/sleep, and a Sonos
 > integration (direct UPnP control + album-start + device selector). **All of
@@ -202,34 +207,44 @@ PPA rotation and adaptive poll backoff are already done (do not re-list as TODOs
 See [`../../docs/P4-TODO.md`](../../docs/P4-TODO.md) for the rolling backlog
 and [`../../docs/PENDING.md`](../../docs/PENDING.md) for the verify-pending list.
 
-## Haptic knob (optional, gated — firmware committed, hardware pending)
+## Haptic knob (optional, gated — firmware compiles, hardware pending)
 
 This build has a driver for the custom **RP2040 SmartKnob-style daughterboard**
 (FOC gimbal motor, strain-gauge press, 4 MX buttons, LED ring, ambient + battery
-sensors), connected over UART. The RP2040 firmware lives in [`../../rp2040/`](../../rp2040/);
-the P4-side files here are:
+sensors), connected over UART. The RP2040 firmware lives in
+[`../../rp2040/`](../../rp2040/) and **compiles** (first `pio run` green
+2026-07-14; flashable `rp2040/.pio/build/rp2040/firmware.uf2`). The P4-side
+files are shared by both waveshare builds:
 
-- `main/knob.c/.h` — UART link driver (nanopb + CRC32 + COBS framing, ACK/retry).
-- `main/knob_input.c/.h` — context-aware mapper: turns knob position/button events
-  into `ui_request_*()` calls (backend-neutral, so it works in the future HA build
-  too). Four menus: Now Playing (scrub) / Volume / Albums / Lights (future HA).
-- `main/home_controller.pb.c/.h` — generated protocol (copy of `proto/`).
-- `components/nanopb/` — vendored nanopb 0.4.9.1 runtime (not on the registry).
+- `../components/p4_shared/knob.c` (+ `include/knob.h`) — UART link driver
+  (nanopb + CRC32 + COBS framing, ACK/retry, dead-link "not acking" diagnostic).
+- `../components/p4_shared/knob_input.c` (+ `include/knob_input.h`) —
+  context-aware mapper: turns knob position/button events into `ui_request_*()`
+  calls (backend-neutral — same code runs in the HA build). Four menus:
+  Now Playing (scrub) / Volume / Albums / Lights (HA).
+- `../components/p4_shared/home_controller.pb.c/.h` — generated protocol
+  (copy of `proto/`).
+- `components/nanopb/` — vendored nanopb 0.4.9.1 runtime (not on the registry;
+  shared into the HA build via EXTRA_COMPONENT_DIRS).
 
-**Gated behind `KNOB_ENABLED` (default 0)** in `main.c` — when off, the UART is
-never configured and no GPIO is touched, so flashing a board *without* the knob is
-completely unaffected. Build with the knob: `idf.py build -DKNOB_ENABLED=1` (or set
-it in `main.c`).
+**Gated behind `KNOB_ENABLED` (default 0)** — when off, the UART is never
+configured and no GPIO is touched, so flashing a board *without* the knob is
+completely unaffected. Build with the knob: `idf.py build -DKNOB_ENABLED=1`
+(plumbed through `main/CMakeLists.txt`; the value is sticky in the CMake cache,
+so turn it off again with `-DKNOB_ENABLED=0`, not by omitting the flag). Both
+targets build green at `=1`.
 
 **UART pins (verified against the J3 header):** P4 TX = GPIO32, RX = GPIO46.
-Full pin map, protocol details, SimpleFOC/MT6701 facts, and the hardware-verify
-checklist are in [`../../docs/KNOB-NOTES.md`](../../docs/KNOB-NOTES.md).
+Full pin map, protocol details, SimpleFOC/MT6701 facts, the wiring table and
+the first-flash bring-up order are in
+[`../../docs/KNOB-NOTES.md`](../../docs/KNOB-NOTES.md).
 
 ## Already in this folder
 - Copied board-agnostic, unchanged: `spotify.c/.h`, `albums.c/.h`,
   `album_art.cpp/.h`, `littlefs.c/.h`, `album_thumbs.c/.h/.bin`.
 - New: `main.c` (skeleton), `sdkconfig.defaults`, `partitions.csv`, `CMakeLists.txt`,
   `main/CMakeLists.txt`, `main/idf_component.yml`, `include/secrets.h.example`.
-- Knob driver: `main/knob.c/.h`, `main/knob_input.c/.h`, `main/home_controller.pb.c/.h`,
-  `components/nanopb/` (see "Haptic knob" above).
+- Knob driver: `../components/p4_shared/knob.c` + `knob_input.c` +
+  `home_controller.pb.c` (shared with the HA build), `components/nanopb/`
+  (see "Haptic knob" above).
 - **Vendored BSP:** `components/esp32_p4_wifi6_touch_lcd_4_3/` (checked in).

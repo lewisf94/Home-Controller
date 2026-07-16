@@ -224,23 +224,31 @@ core 1's FOC loop sees a harmless no-op if it races ahead before the lock is rea
 | `rp2040/src/interface_task.h/.cpp` | UART protocol, sensors, LEDs (core 0) |
 | `rp2040/src/proto_gen/` | Copy of generated .pb files |
 | `rp2040/lib/nanopb/` | Vendored nanopb 0.4.9.1 runtime |
-| `waveshare/esp-idf/main/knob.h/.c` | P4-side UART driver (Apache 2.0 + SmartKnob attribution) |
-| `waveshare/esp-idf/main/knob_input.h/.c` | Context-aware input mapper |
-| `waveshare/esp-idf/main/home_controller.pb.h/.c` | Copy of generated .pb files |
-| `waveshare/esp-idf/components/nanopb/` | Vendored nanopb 0.4.9.1 for ESP-IDF |
+| `waveshare/components/p4_shared/knob.c` (+ `include/knob.h`) | P4-side UART driver, both builds (Apache 2.0 + SmartKnob attribution) |
+| `waveshare/components/p4_shared/knob_input.c` (+ `include/knob_input.h`) | Context-aware input mapper, both builds |
+| `waveshare/components/p4_shared/home_controller.pb.c` (+ `include/home_controller.pb.h`) | Copy of generated .pb files |
+| `waveshare/esp-idf/components/nanopb/` | Vendored nanopb 0.4.9.1 for ESP-IDF (shared into the HA build via EXTRA_COMPONENT_DIRS) |
 | `NOTICE` | Apache 2.0 req 4(d) attribution (SmartKnob, SimpleFOC, nanopb) |
+
+(The knob files moved from `waveshare/esp-idf/main/` into the shared
+`p4_shared` component -- one copy now serves both the direct-Spotify and HA
+builds.)
 
 ### `KNOB_ENABLED` compile flag
 
-`waveshare/esp-idf/main/main.c` gates `knob_input_start()` behind:
-```c
-#if KNOB_ENABLED
-    knob_input_start();
-#endif
+Both builds' `main.c` gate `knob_input_start()` behind `#if KNOB_ENABLED`
+(default 0). Since 2026-07-14 the flag is plumbed through each build's
+`main/CMakeLists.txt`, so it works from the command line without editing code:
+
 ```
-Default is 0 (undefined = off). The UART is never configured and no GPIO is
-touched when the flag is absent. P4 builds without the knob hardware are
-completely unaffected.
+idf.py build -DKNOB_ENABLED=1    # knob on
+idf.py build -DKNOB_ENABLED=0    # knob off again -- the value is STICKY in the
+                                 # CMake cache; omitting the flag keeps the
+                                 # previous value, so turn it off explicitly
+```
+
+Default off = the UART is never configured and no GPIO is touched; P4 builds
+without the knob hardware are completely unaffected.
 
 ---
 
@@ -321,20 +329,18 @@ mirroring `ui_get_volume()`'s lock-and-read pattern exactly). Both fall back to
 a sensible default (0) if read before the first poll/browser build, same as
 Volume's existing `-1` fallback. Build-verified on both waveshare targets.
 
-### Minor / low-priority observations (not blocking)
+### Minor / low-priority observations (updated 2026-07-14)
 
-- **`ToKnob` has no compile-time size guard.** `interface_task.cpp`'s
-  `_send_state()` has `static_assert(KnobState_size + 4 <= 68, ...)` protecting
-  its (RP2040->P4) send buffer; `knob.c`'s `_send_packet()` (P4->RP2040) has no
-  equivalent for `ToKnob_size` against its 256-byte buffer. Not a bug today
-  (current message sizes fit comfortably and `pb_encode()` fails safely if it
-  ever didn't), but worth mirroring the guard for the same "catch it at compile
-  time, not silently at runtime" reason.
-- **No retry backoff / diagnostic on a permanently unacked config.** `knob.c`'s
-  retry timer retries every 250 ms forever if the RP2040 never acks (e.g.
-  unplugged). Harmless (gated behind `KNOB_ENABLED=0` by default) but there's no
-  log line the way WiFi/Sonos reconnects are surfaced elsewhere in this
-  project — would help debugging a dead link on the bench.
+- **`ToKnob` compile-time size guard -- RESOLVED as impossible, documented
+  instead.** nanopb cannot emit `ToKnob_size` because the LED bytes fields are
+  `pb_callback_t` (unbounded); the pb.h says so explicitly. `_send_packet()` in
+  `knob.c` now carries a worst-case-by-hand bound comment (~140 B vs the 256 B
+  buffer) and `pb_encode()` still fails cleanly with a log if a schema change
+  ever outgrows it.
+- **Unacked-config diagnostic -- DONE.** `knob.c`'s retry timer now warns after
+  ~2 s of no ack ("knob not acking (nonce N, M retries) -- link down or
+  unplugged?") and then every ~30 s, so a dead/miswired link is visible on the
+  bench instead of silently retrying forever.
 - **`ToKnob.request_state` is defined in the proto but never sent or handled.**
   Not a bug (the RP2040 already pushes state proactively every `STATE_TX_MS` or
   on change), just unused schema surface — fine to leave for a future "force an
@@ -342,15 +348,85 @@ Volume's existing `-1` fallback. Build-verified on both waveshare targets.
 
 ---
 
-## Hardware verification checklist
+## Pre-hardware setup pass (2026-07-14) — everything verifiable without the PCB is verified
 
-- [ ] Beep-test GPIO46 on J3 header before soldering the harness
-- [ ] Confirm motor pole pairs match `MOTOR_POLE_PAIRS 7` (or update)
-- [ ] Calibrate `HX711_PRESS_THRESHOLD 5000` for the actual strain-gauge bridge
-- [ ] Run `KNOB_ENABLED=1 idf.py build flash monitor` and confirm knob UART init OK log
-- [ ] Turn knob → album carousel scrolls, knob re-anchors to new position
-- [ ] Strain-gauge press → play/pause toggles
-- [ ] Battery % and ambient lux appear in serial log
+Done in preparation for wiring the daughterboard. All build-verified; nothing
+here has touched real knob hardware yet.
+
+- **RP2040 firmware compiled for the FIRST time** (`pio run`, PlatformIO at
+  `~/.platformio`): **SUCCESS — RAM 4.6% (12,048 B), Flash 4.6% (95,776 B)**,
+  `rp2040/.pio/build/rp2040/firmware.uf2` produced. This retires the standing
+  "RP2040 code has never been compile-checked" risk (angle-unwrap fix, KNOB_PI,
+  the static_assert — all confirmed compiling).
+  - `platformio.ini` had two dead registry pins that failed dependency
+    resolution; fixed: `Adafruit VEML7700 Lib` -> `Adafruit VEML7700 Library`,
+    `Adafruit MAX1704X @ ^1.2.2` (version never existed) -> `@ ^1.0.3`.
+- **HA build had a knob compile bug waiting to fire**: `main.c` called
+  `knob_input_init()` — the function is `knob_input_start()`. Fixed; the HA
+  hardcoded `#define KNOB_ENABLED 0` is now `#ifndef`-guarded like the direct
+  build.
+- **`idf.py build -DKNOB_ENABLED=1` now actually works**: previously the README
+  documented the flag but neither build's CMake forwarded it to the compiler
+  (so it silently did nothing). Both `main/CMakeLists.txt` now translate the
+  cache flag into a compile definition. Remember it is sticky — flip back with
+  `-DKNOB_ENABLED=0`.
+- **Both P4 targets build green with `KNOB_ENABLED=1`** (direct 28% free, HA
+  25% free) and were then restored to the deployable `=0` state.
+- **Bench diagnostic added**: P4 logs "knob not acking ... link down or
+  unplugged?" after ~2 s of unacked config (then every ~30 s) — the first
+  hookup failure mode is a miswired UART, and it used to be silent.
+
+### Component-list cross-check (against Lewis's build list, 2026-07-14)
+
+Everything in the list matches the firmware, with these notes:
+
+| Item | Firmware status |
+|---|---|
+| **MAX17048 "Address 0x32"** | **LIST ERROR — the MAX17048 I2C address is 0x36** (datasheet fixed address; the Adafruit lib default the firmware uses). Nothing to change in code; correct the list before it feeds PCB/debug assumptions. |
+| VEML7700 0x10 | Matches (Adafruit default, Wire1 on RP2040 SDA=26/SCL=27). Drives P4 auto-brightness — implemented. |
+| TMC6300 6PWM (+3.3 uH VM inductor) | Matches `BLDCDriver6PWM` GPIO0–5 + EN 6, active-high (no polarity flags needed). Inductor is hardware-only. |
+| SparkFun gimbal motor (not arrived) | Firmware assumes `MOTOR_POLE_PAIRS 7` (typical 12N14P gimbal) — confirm on arrival. Motor/driver absence does NOT block a UART/buttons/strain bench test (FOC alignment fails gracefully; core 0 runs regardless). |
+| MT6701 SSI + diametric magnet | Matches `MagneticSensorMT6701SSI`, sole device on SPI0 (MISO16/SCK18/CS17). Diametric magnet required — correct. |
+| BF350 + HX711 | Matches DOUT=10/CLK=11; `HX711_PRESS_THRESHOLD 5000` is a placeholder to calibrate. **PCB note: tie the HX711 RATE pin HIGH (80 SPS)** — at the default 10 SPS a quick tap can be missed entirely and long-press timing gets +-100 ms jitter. |
+| 4x MX switches, hot-swap | Matches GPIO12–15, INPUT_PULLUP, active-low. Debounce deliberately deferred to hardware (tune to the real switches). |
+| SK6812 ring + button LEDs, level shifters | Matches GPIO20 (12 ring) / GPIO21 (4 buttons), GRBW. Level shifters are PCB-stage; firmware indifferent. |
+| LiPo 3.7 V | TMC6300 VM range is 2–11 V — running the motor straight off the cell is the SmartKnob-proven arrangement. |
+| MAX17048 not yet ordered | Fine: with the chip absent, `begin()` fails and battery reads garbage/0 — it only goes to a debug log today. No blocker. |
+| IMU / hall-effect "maybe add" | Not in firmware. Free RP2040 GPIOs for them: 7, 19, 22, 28, 29; an IMU can share I2C1 (0x68/0x69 — no clash with 0x10/0x36). Proto is append-only extensible. |
+| ESP32-H2 + Pi (Thread border router), USB-TTL for the C6 | External to this firmware; matches the HA plan. |
+
+### Wiring the UART link (the one cross-connection to get right)
+
+| P4 (J3 header) | direction | RP2040 |
+|---|---|---|
+| GPIO32 = UART1 TX (J3 pin 31) | -> | GPIO9 = UART1 RX |
+| GPIO46 = UART1 RX (bottom-right J3 cluster) | <- | GPIO8 = UART1 TX |
+| GND | <-> | GND (common ground, required) |
+
+Both sides are 3.3 V logic — no level shifting on the UART. **Beep-test GPIO46
+on J3 before soldering** (edge of the readable schematic region; GPIO47/48 are
+drop-in alternatives if 46 turns out inaccessible — change `KNOB_UART_RX_PIN`
+in `p4_shared/include/knob.h`).
+
+### Bring-up order (first flash)
+
+1. Flash the RP2040 alone over USB (`pio run -t upload`, or copy
+   `rp2040/.pio/build/rp2040/firmware.uf2` onto the BOOTSEL drive). It runs
+   standalone — no P4 needed.
+2. Wire the UART (table above) + common GND. Power the RP2040.
+3. Build + flash the P4 with the knob on:
+   `idf.py build -DKNOB_ENABLED=1` then `idf.py -p COM4 flash monitor`.
+4. In the monitor expect `knob: knob UART init OK (tx=32 rx=46 baud=921600)`,
+   then NO "knob not acking" warnings — acks flowing = link proven. If the
+   warning appears, swap TX/RX first (the classic).
+5. MX buttons: press SW1–SW4 -> `knob_input: active menu -> N` lines.
+6. Strain press -> play/pause toggles. Calibrate `HX711_PRESS_THRESHOLD`.
+7. Motor (once TMC6300 + gimbal arrive): confirm pole pairs vs
+   `MOTOR_POLE_PAIRS 7`; turn the knob -> carousel scrolls with detents;
+   full 0->100 volume sweep with no torque kick (validates the angle-unwrap
+   fix at its guaranteed-wrap point).
+8. Ambient lux changes panel brightness; battery % appears in the debug log
+   (once the MAX17048 is fitted).
 
 ### Input conditioning to tune on hardware (needs real sensor/switch noise)
 

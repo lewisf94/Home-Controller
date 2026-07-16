@@ -433,6 +433,9 @@ checkpoint roadmap (1 display → 2 WiFi → 3 Spotify → 4 UI → 5 assets →
   LV_FONT_KERNING_NONE, 128)` on all font instances. LVGL 9.4 kerning cache
   (upstream issue #6304) corrupts the heap under sustained scrolling; KERNING_NONE
   bypasses the cache entirely. Never use plain `lv_tiny_ttf_create_data` here.
+  *(SUPERSEDED 2026-07: runtime tiny_ttf is now fully disabled on the P4 — its
+  stb rasteriser also proved unstable. All text renders through compiled
+  `lv_font_hc_*` fonts; see CLAUDE.md "Text crash prevention".)*
 - JPEGDEC third-party warnings silenced via `CMakeLists.txt`
   `target_compile_options(${jpegdec_lib} PRIVATE -w)`.
 
