@@ -27,7 +27,7 @@ static const album_entry_t s_albums[] = {
     { "L.A. Woman",                                                                    "The Doors",             "spotify:album:7IKUTIc9UWuVngyGPtqNHS" },
     { "Morrison Hotel",                                                                "The Doors",             "spotify:album:6AFLOkpJjFF652jevcSOZX" },
     { "Dance, No One's Watching",                                                      "Ezra Collective",       "spotify:album:2BwKd9lWotQIhROHSWQ78h" },
-    { "O",                                                                             "Fcukers",               "spotify:album:4RrsgnUbZIFTw42Apa8lXO" },
+    { "Ö",                                                                             "Fcukers",               "spotify:album:4RrsgnUbZIFTw42Apa8lXO" },
     { "What Went Down",                                                                "Foals",                 "spotify:album:0RyCpIKlCV0kgEuzrmp73O" },
     { "Dogrel",                                                                        "Fontaines D.C.",        "spotify:album:2lK23mYbRD6bCJpjI8BbdC" },
     { "A Hero's Death",                                                                "Fontaines D.C.",        "spotify:album:307RtUHysY6w6RO29i9YNL" },

@@ -8,11 +8,20 @@ idf_component_register(
     SRCS
         "wifi.c"
         "art_buffer.c"
-    INCLUDE_DIRS "include"
+        "reliability.c"
+        "ota.c"
+    INCLUDE_DIRS "." "include"
     PRIV_REQUIRES
         esp_wifi
         esp_netif
         esp_event
         esp_timer
-        p4_shared     # ui_art_refresh()
+        freertos
+        esp_system        # esp_reset_reason() (reliability boot report)
+        espcoredump       # crash coredump summary on boot
+        esp_https_ota     # OTA runner (ota.c)
+        app_update        # esp_ota_ops (pulled in by esp_https_ota)
+        esp_http_client
+        esp-tls           # esp_crt_bundle_attach for https OTA
+        p4_shared         # ui_art_refresh(), ui_set_ota_status()
 )

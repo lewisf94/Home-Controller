@@ -20,13 +20,17 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "esp_websocket_client.h"
+#include "app_core_reliability.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "mbedtls/base64.h"
 
 #include "player.h"    /* spotify_track_t -- backend-neutral contract from p4_shared */
 #include "ui.h"        /* ui_set_track_info */
+
+bool p4_json_copy_string(const char *p, char *out, size_t out_len);
 
 static const char *TAG = "ha";
 
@@ -36,6 +40,7 @@ static int         s_port   = 8123;
 static const char *s_token  = NULL;
 static char        s_entity_buf[96] = {0};
 static const char *s_entity = s_entity_buf;   /* points at the buffer; runtime-switchable */
+static bool        s_active_is_ma = false;
 
 static const char *s_sp_client_id     = NULL;
 static const char *s_sp_client_secret = NULL;
@@ -44,16 +49,40 @@ static char        s_sp_access_token[256] = {0};
 static int64_t     s_sp_token_expiry_us = 0;
 
 static esp_websocket_client_handle_t s_ws = NULL;
+static volatile bool s_authenticated = false;
+static volatile bool s_initial_state_received = false;
 static int s_msg_id = 1;                 /* incrementing WS command id */
 static int s_states_req_id = 0;          /* id of our now-playing get_states request */
-static int s_devices_req_id = 0;         /* id of a device-list get_states request */
-static int s_lights_req_id = 0;          /* id of a light-list get_states request */
-static int s_album_entities_req_id = 0;  /* id of get_states for album-source discovery */
+static int s_inventory_req_id = 0;       /* shared devices/lights inventory snapshot */
+static int s_queue_req_id = 0;           /* Music Assistant get_queue response */
+static int64_t s_inventory_pending_since_us = 0;
+static int64_t s_inventory_last_us = 0;
+static int64_t s_lights_settle_due_us = 0;   /* coalesced post-light-command refresh deadline */
+static int64_t s_forced_inventory_last_us = 0; /* last cooldown-bypassing snapshot */
 static int s_album_browse_req_id = 0;    /* id of a media_player/browse_media request */
 static int s_album_browse_depth = 0;     /* follow at most a few folder layers */
 static int s_sub_id = 0;                 /* id of the active subscribe_trigger (for unsubscribe) */
+static volatile bool s_subscribe_pending = false;
+static volatile bool s_ws_restart_pending = false; /* server closed cleanly; tick must restart the client */
+static volatile bool s_auth_rejected = false;      /* last auth attempt answered auth_invalid */
+static int64_t s_ws_restart_due_us = 0;            /* written by the ha task only */
+static int64_t s_last_rx_us = 0;                   /* last inbound WS frame (heartbeat) */
+static int64_t s_ping_await_us = 0;                /* heartbeat ping sent-at; 0 = not awaiting a pong */
 
 static spotify_track_t s_track = {0};
+
+/* HA core Spotify integration support. That integration creates one account
+ * media_player whose `source_list` holds the Connect devices known to Spotify.
+ * HA permits renaming its entity_id, so detection cannot rely only on the
+ * historical media_player.spotify_* prefix. Each source becomes a row; tapping
+ * it calls select_source and follows the account entity. Multiple accounts:
+ * the last entity seen wins (rare enough not to engineer for). */
+#define SPOTIFY_SRC_PREFIX "spotify-src:"
+#define MAX_SPOTIFY_SOURCES 8
+static char s_spotify_entity[96] = "";
+static char s_spotify_sources[MAX_SPOTIFY_SOURCES][40];
+static int  s_spotify_source_count = 0;
+static char s_spotify_source_now[40] = "";
 
 /* Pending album-art relative URL, set by the WS task, consumed by the ha task. */
 static portMUX_TYPE s_art_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -66,19 +95,35 @@ static char  *s_rx     = NULL;
 static size_t s_rx_cap = 0;
 static bool   s_rx_dropping_oversize = false;
 static bool   s_rx_drop_was_album = false;
-#define RX_MAX_CAP (256 * 1024)
+static bool   s_rx_drop_was_devices = false;
+/* HA's get_states result contains every entity. A moderately busy installation
+ * can exceed 256 KB, so keep the reassembly buffer in PSRAM and allow a
+ * realistic full snapshot without taking memory from the display/codec. */
+#define RX_MAX_CAP (768 * 1024)
 
 /* Must match ui.c's private ui_album_candidate_t layout. Kept local so the
  * shared public include/ folder does not need a private-folder include sync. */
 #define HA_ALBUM_CANDIDATE_MAX 16
+#define HA_QUEUE_ITEM_MAX 12
 #define HA_ALBUM_BROWSE_MAX_DEPTH 3
 #define HA_ALBUM_BROWSE_ENTITY_MAX 16
+#define HA_LIGHT_VALUE_UNKNOWN_SUPPORTED (-2)
 typedef struct {
     char title[80];
     char artist[56];
     char uri[64];
     char image_url[100];   /* cover art URL (Spotify search only); "" otherwise */
 } ha_album_candidate_t;
+
+/* Must match ui.c's private ui_queue_item_t layout. Kept local for the same
+ * reason as ha_album_candidate_t: these are backend/UI seam data, not a public
+ * component contract yet. */
+typedef struct {
+    char title[80];
+    char artist[56];
+    char uri[96];
+    bool is_current;
+} ha_queue_item_t;
 
 static char s_album_browse_entities[HA_ALBUM_BROWSE_ENTITY_MAX][96];
 static int  s_album_browse_entity_count = 0;
@@ -88,14 +133,58 @@ static char s_album_browse_item_title[80] = {0};
 static char s_album_browse_item_artist[56] = {0};
 static int64_t s_album_pending_since_us = 0;
 #define HA_ALBUM_REQ_TIMEOUT_US (10LL * 1000LL * 1000LL)
+#define HA_INVENTORY_COOLDOWN_US (15LL * 1000LL * 1000LL)
+
+/* Post-light-command settle refresh (see ha_request_lights_fresh /
+ * ha_client_tick). A full get_states is the heaviest SDIO burst we can ask
+ * for, so as a mere settle-confirmation it runs under stricter rules than an
+ * ordinary inventory fetch: it waits out the Matter round-trip, coalesces any
+ * commands issued meanwhile into ONE snapshot, keeps a hard floor between
+ * cooldown-bypassing snapshots, demands the larger cover-fetch-class memory
+ * reserve, and never runs at all while music is streaming (the optimistic row
+ * state stands until the next natural refresh). */
+#define LIGHT_SETTLE_DELAY_US        (700LL * 1000LL)
+#define LIGHT_SETTLE_RETRY_US        (1500LL * 1000LL)
+#define LIGHT_SETTLE_STREAM_RETRY_US (3000LL * 1000LL)
+#define FORCED_INVENTORY_MIN_US      (5LL * 1000LL * 1000LL)
+#define LIGHT_SETTLE_MIN_FREE        (64U * 1024U)
+#define LIGHT_SETTLE_MIN_LARGEST     (32U * 1024U)
+
+/* Delay before restarting the WebSocket after a clean server-side close.
+ * Long enough not to hammer a Home Assistant that is still booting, short
+ * enough that recovery feels automatic. */
+#define WS_RESTART_DELAY_US          (5LL * 1000LL * 1000LL)
+/* Connected-but-unauthenticated watchdog: a booting HA has been seen taking
+ * 10 s just to send auth_required and then dropping the socket without any
+ * event (hardware log 2026-07-12). If the handshake hasn't completed in this
+ * long, force a fresh connect rather than trusting the half-open socket. */
+#define WS_AUTH_STALL_US             (30LL * 1000LL * 1000LL)
+/* Idle heartbeat. With playback stopped there are no state events, so a
+ * half-open socket (router NAT drop, HA restart without a clean FIN) is
+ * indistinguishable from a quiet-but-healthy link. After HA_PING_IDLE_US with
+ * no inbound frame, send an application-level {"type":"ping"}; if nothing (the
+ * pong, or any other frame) arrives within HA_PONG_TIMEOUT_US, treat the link
+ * as dead and reconnect. This is what recovers a controller that was left idle
+ * while the network blipped, without waiting for the user to poke it. */
+#define HA_PING_IDLE_US              (30LL * 1000LL * 1000LL)
+#define HA_PONG_TIMEOUT_US           (10LL * 1000LL * 1000LL)
+
+/* From p4_shared/audio_stream_bridge.h (root-private to p4_shared; declared
+ * here to match main.c's cross-component externs). True while the ES8311 is
+ * streaming music -- installation-wide snapshots must hold off then. */
+bool audio_stream_is_active(void);
 
 /* `err` NULL = success; else a short human reason shown on the add screen. */
 void ui_set_album_candidates(const void *list, int count, const char *err);
+void ui_set_queue(const void *list, int count, const char *err);
 void ui_show_toast(const char *msg, uint32_t ms_dur);
-void ui_set_lights_ext(const ui_light_t *list, const int *hues, const int *sats, int count);
+void ui_set_devices_error(const char *message);
+void ui_set_lights_ext(const ui_light_t *list, const int *hues, const int *sats,
+                       const int *temps, int count);
 
 static bool media_player_is_unavailable(const char *obj);
 static bool media_player_is_renderer(const char *eid, const char *attrs);
+static bool json_slice_contains(const char *start, const char *needle);
 
 /* ── JSON scanner ────────────────────────────────────────────────────────── */
 static const char *json_skip_string(const char *p)
@@ -157,27 +246,7 @@ static const char *json_obj_get(const char *obj, const char *key)
 
 static bool json_copy_string(const char *p, char *out, size_t out_len)
 {
-    if (!p || *p != '"' || out_len == 0) return false;
-    p++;
-    size_t i = 0;
-    while (*p && *p != '"' && i + 1 < out_len) {
-        if (*p == '\\' && p[1]) {
-            switch (p[1]) {
-                case 'n': out[i++] = '\n'; break;
-                case 't': out[i++] = '\t'; break;
-                case 'r': out[i++] = '\r'; break;
-                case '"': out[i++] = '"';  break;
-                case '\\':out[i++] = '\\'; break;
-                case '/': out[i++] = '/';  break;
-                default:  out[i++] = p[1]; break;
-            }
-            p += 2;
-        } else {
-            out[i++] = *p++;
-        }
-    }
-    out[i] = '\0';
-    return (*p == '"');
+    return p4_json_copy_string(p, out, out_len);
 }
 
 static bool json_obj_get_str(const char *obj, const char *key,
@@ -213,6 +282,7 @@ static bool json_array_get_two_doubles(const char *arr, double *a, double *b)
 
 /* ── Outbound (WebSocket sends) ──────────────────────────────────────────── */
 static bool ws_send(const char *json);
+static bool request_inventory_refresh(const char *reason, bool force_cooldown);
 
 static bool ascii_contains_ci(const char *s, const char *needle)
 {
@@ -910,6 +980,170 @@ static bool spotify_search_albums(const char *query, ha_album_candidate_t *out,
     return ok;
 }
 
+static bool spotify_search_tracks(const char *query, ha_album_candidate_t *out,
+                                  int max, int *count, char *err_out,
+                                  size_t err_len)
+{
+    if (err_out && err_len) err_out[0] = '\0';
+    if (count) *count = 0;
+    if (!query || !query[0] || !out || max <= 0) return false;
+    if (max > SPOTIFY_SEARCH_LIMIT_MAX) max = SPOTIFY_SEARCH_LIMIT_MAX;
+    if (!spotify_client_token(err_out, err_len)) return false;
+
+    char trimmed[80], q[260], url[384];
+    if (!search_query_trim_copy(trimmed, sizeof(trimmed), query)) {
+        if (err_out) snprintf(err_out, err_len, "Enter a song or artist");
+        return false;
+    }
+    if (!url_encode(q, sizeof(q), trimmed)) {
+        if (err_out) snprintf(err_out, err_len, "Search text is too long");
+        return false;
+    }
+    snprintf(url, sizeof(url),
+             "https://api.spotify.com/v1/search?q=%s&type=track&limit=%d", q, max);
+
+    spotify_resp_buf_t resp = {0};
+    esp_http_client_config_t cfg = {
+        .url = url, .method = HTTP_METHOD_GET,
+        .event_handler = spotify_http_event_handler, .user_data = &resp,
+        .crt_bundle_attach = esp_crt_bundle_attach, .timeout_ms = 7000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        if (err_out) snprintf(err_out, err_len, "Out of memory");
+        return false;
+    }
+    char bearer[320];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", s_sp_access_token);
+    esp_http_client_set_header(client, "Authorization", bearer);
+    esp_err_t herr = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    int n = 0;
+    bool ok = false;
+    if (herr == ESP_OK && status == 200 && resp.data) {
+        const char *tracks = json_obj_get(resp.data, "tracks");
+        const char *item = json_array_first_obj(json_obj_get(tracks, "items"));
+        while (item && n < max) {
+            ha_album_candidate_t *track = &out[n];
+            memset(track, 0, sizeof(*track));
+            const char *v;
+            if ((v = json_obj_get(item, "name")))
+                json_copy_string(v, track->title, sizeof(track->title));
+            if ((v = json_obj_get(item, "uri")))
+                json_copy_string(v, track->uri, sizeof(track->uri));
+            const char *artist = json_array_first_obj(json_obj_get(item, "artists"));
+            if (artist && (v = json_obj_get(artist, "name")))
+                json_copy_string(v, track->artist, sizeof(track->artist));
+            if (!track->artist[0]) snprintf(track->artist, sizeof(track->artist), "Unknown artist");
+            if (track->title[0] && strncmp(track->uri, "spotify:track:", 14) == 0) n++;
+            item = json_array_next_obj(item);
+        }
+        ok = true;
+    } else if (status == 401) {
+        s_sp_access_token[0] = '\0';
+        s_sp_token_expiry_us = 0;
+        if (err_out) snprintf(err_out, err_len, "Spotify rejected the search token");
+    } else {
+        char api_msg[96] = {0};
+        spotify_response_error_message(resp.data, api_msg, sizeof(api_msg));
+        if (err_out) snprintf(err_out, err_len, "%s",
+                              api_msg[0] ? api_msg : "Spotify song search failed");
+    }
+    free(resp.data);
+    if (count) *count = n;
+    return ok;
+}
+
+static bool spotify_album_id_from_uri(const char *uri, char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return false;
+    out[0] = '\0';
+    if (!uri) return false;
+
+    const char *p = NULL;
+    if (strncmp(uri, "spotify:album:", 14) == 0) {
+        p = uri + 14;
+    } else if (strncmp(uri, "spotify://album/", 16) == 0) {
+        p = uri + 16;
+    } else {
+        const char *web = strstr(uri, "open.spotify.com/album/");
+        if (web) p = web + strlen("open.spotify.com/album/");
+    }
+    if (!p || !*p) return false;
+
+    size_t i = 0;
+    while (p[i] && i + 1 < out_len) {
+        char c = p[i];
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9');
+        if (!ok) break;
+        out[i] = c;
+        i++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+bool ha_spotify_album_image_url(const char *spotify_uri, char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return false;
+    out[0] = '\0';
+
+    char id[64];
+    if (!spotify_album_id_from_uri(spotify_uri, id, sizeof(id))) return false;
+
+    char err_msg[96];
+    if (!spotify_client_token(err_msg, sizeof(err_msg))) {
+        ESP_LOGW(TAG, "spotify album art repair token failed: %s",
+                 err_msg[0] ? err_msg : "-");
+        return false;
+    }
+
+    char url[160];
+    snprintf(url, sizeof(url), "https://api.spotify.com/v1/albums/%s", id);
+
+    spotify_resp_buf_t resp = {0};
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_GET,
+        .event_handler     = spotify_http_event_handler,
+        .user_data         = &resp,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 7000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+
+    char bearer[320];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", s_sp_access_token);
+    esp_http_client_set_header(client, "Authorization", bearer);
+
+    esp_err_t herr = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    bool ok = false;
+    if (herr == ESP_OK && status == 200 && resp.data) {
+        const char *img = json_array_first_obj(json_obj_get(resp.data, "images"));
+        if (img && json_obj_get_str(img, "url", out, out_len)) ok = true;
+    } else if (status == 401) {
+        ESP_LOGW(TAG, "spotify album art lookup got 401, invalidating search token");
+        s_sp_access_token[0] = '\0';
+        s_sp_token_expiry_us = 0;
+    } else {
+        char api_msg[96] = {0};
+        spotify_response_error_message(resp.data, api_msg, sizeof(api_msg));
+        ESP_LOGW(TAG, "spotify album art lookup failed (err=%d status=%d msg=%s)",
+                 (int)herr, status, api_msg[0] ? api_msg : "-");
+    }
+
+    free(resp.data);
+    if (ok) ESP_LOGI(TAG, "spotify album art URL found for %.32s", spotify_uri);
+    return ok;
+}
+
 static void send_auth(void)
 {
     char buf[320];
@@ -918,22 +1152,32 @@ static void send_auth(void)
     ws_send(buf);
 }
 
-static void send_subscribe(void)
+/* The initial get_states snapshot can be large. Do not overlap it with a
+ * trigger subscription, and especially do not start a second snapshot while
+ * resolving a stale configured entity. ESP-Hosted has a small internal RX
+ * pool, so the previous startup burst could assert in sdio_rx_get_buffer. */
+static bool request_current_state(void)
 {
-    char buf[256];
-    /* Seed current state (one big array, parsed once). */
+    char buf[64];
     s_states_req_id = s_msg_id++;
     snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_states_req_id);
-    ws_send(buf);
+    if (ws_send(buf)) return true;
+    s_states_req_id = 0;
+    return false;
+}
 
-    /* Push only this entity's future state changes. Remember the id so a later
-     * entity switch can unsubscribe this trigger. */
+static bool subscribe_active_entity(void)
+{
+    char buf[256];
+    /* Push only future state changes after the snapshot has settled. */
     s_sub_id = s_msg_id++;
     snprintf(buf, sizeof(buf),
              "{\"id\":%d,\"type\":\"subscribe_trigger\","
              "\"trigger\":{\"platform\":\"state\",\"entity_id\":\"%s\"}}",
              s_sub_id, s_entity ? s_entity : "");
-    ws_send(buf);
+    if (ws_send(buf)) return true;
+    s_sub_id = 0;
+    return false;
 }
 
 /* call_service targeting an explicit entity_id, with an optional service_data
@@ -1001,6 +1245,18 @@ bool ha_set_volume(int pct)
 
 bool ha_play_album(const char *spotify_uri)
 {
+    /* The HA Spotify integration's account entity is not a Music Assistant
+     * player, so music_assistant.play_media would be rejected there. It does
+     * accept a plain media_player.play_media with the raw spotify: URI as a
+     * context id -- playback starts on whichever Connect device is active. */
+    if (s_spotify_entity[0] && strcmp(s_entity, s_spotify_entity) == 0) {
+        char data[200];
+        snprintf(data, sizeof(data),
+                 "\"media_content_id\":\"%s\",\"media_content_type\":\"album\"",
+                 spotify_uri ? spotify_uri : "");
+        return call_service("media_player", "play_media", data);
+    }
+
     /* "spotify:album:ID" -> "spotify://album/ID" for Music Assistant. */
     char media_id[160];
     const char *c1 = spotify_uri ? strchr(spotify_uri, ':') : NULL;       /* after "spotify" */
@@ -1015,6 +1271,80 @@ bool ha_play_album(const char *spotify_uri)
     snprintf(data, sizeof(data),
              "\"media_id\":\"%s\",\"media_type\":\"album\"", media_id);
     return call_service("music_assistant", "play_media", data);
+}
+
+static bool queue_available(void)
+{
+    if (!s_authenticated) {
+        ui_set_queue(NULL, 0, "Home Assistant is not connected");
+        return false;
+    }
+    if (!s_active_is_ma) {
+        ui_set_queue(NULL, 0, "Select a Music Assistant player in Output");
+        return false;
+    }
+    return true;
+}
+
+void ha_request_queue(void)
+{
+    if (!queue_available()) return;
+    char buf[320];
+    s_queue_req_id = s_msg_id++;
+    snprintf(buf, sizeof(buf),
+             "{\"id\":%d,\"type\":\"call_service\",\"domain\":\"music_assistant\","
+             "\"service\":\"get_queue\",\"target\":{\"entity_id\":\"%s\"},"
+             "\"return_response\":true}", s_queue_req_id, s_entity ? s_entity : "");
+    if (!ws_send(buf)) {
+        s_queue_req_id = 0;
+        ui_set_queue(NULL, 0, "Home Assistant is not connected");
+    }
+}
+
+bool ha_queue_add(const char *spotify_uri, bool play_next)
+{
+    if (!queue_available() || !spotify_uri || !spotify_uri[0]) return false;
+    const char *c1 = strchr(spotify_uri, ':');
+    const char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+    char media_id[160];
+    char media_type[20] = "track";
+    if (c1 && c2) {
+        snprintf(media_type, sizeof(media_type), "%.*s", (int)(c2 - c1 - 1), c1 + 1);
+        snprintf(media_id, sizeof(media_id), "spotify://%s/%s", media_type, c2 + 1);
+    } else {
+        snprintf(media_id, sizeof(media_id), "%s", spotify_uri);
+    }
+    char data[280];
+    snprintf(data, sizeof(data),
+             "\"media_id\":\"%s\",\"media_type\":\"%s\",\"enqueue\":\"%s\"",
+             media_id, media_type, play_next ? "next" : "add");
+    bool ok = call_service("music_assistant", "play_media", data);
+    if (ok) ui_show_toast(play_next ? "Added next" : "Added to queue", 1600);
+    return ok;
+}
+
+bool ha_queue_clear(void)
+{
+    if (!queue_available()) return false;
+    bool ok = call_service("media_player", "clear_playlist", NULL);
+    if (ok) ui_show_toast("Queue cleared", 1600);
+    return ok;
+}
+
+void ha_search_queue_tracks(const char *query)
+{
+    static ha_album_candidate_t tracks[HA_ALBUM_CANDIDATE_MAX];
+    char err[160] = {0};
+    int n = 0;
+    if (!queue_available()) {
+        ui_set_album_candidates(NULL, 0, "Select a Music Assistant player in Output");
+        return;
+    }
+    bool ok = spotify_search_tracks(query, tracks, HA_ALBUM_CANDIDATE_MAX,
+                                    &n, err, sizeof(err));
+    ui_set_album_candidates(ok ? tracks : NULL, ok ? n : 0,
+                            ok ? (n ? NULL : "No Spotify songs matched")
+                               : (err[0] ? err : "Spotify song search failed"));
 }
 
 bool ha_light_toggle(const char *entity_id)
@@ -1033,6 +1363,15 @@ bool ha_light_set_brightness(const char *entity_id, int pct)
 
 bool ha_light_set_hs(const char *entity_id, int hue_deg, int sat_pct)
 {
+    if (sat_pct < 0) {
+        int kelvin = hue_deg;
+        if (kelvin < 1500) kelvin = 1500;
+        if (kelvin > 9000) kelvin = 9000;
+        char temp_data[40];
+        snprintf(temp_data, sizeof(temp_data), "\"color_temp_kelvin\":%d", kelvin);
+        return call_service_entity("light", "turn_on", entity_id, temp_data);
+    }
+
     if (hue_deg < 0) hue_deg = 0;
     hue_deg %= 360;
     if (sat_pct < 1) sat_pct = 1;
@@ -1045,6 +1384,11 @@ bool ha_light_set_hs(const char *entity_id, int hue_deg, int sat_pct)
 /* ── Inbound (state parsing) ─────────────────────────────────────────────── */
 static void apply_state_object(const char *st)
 {
+    /* Monotonic playback-position reference -- see the media_position comment
+     * below. Function-static: apply_state_object only ever runs for the active
+     * entity, and a transfer changes the title (track_changed -> re-base). */
+    static uint32_t s_media_pos_raw = 0;
+    static int64_t  s_media_pos_ref_us = 0;
     if (!st || *st != '{') return;
 
     char state[24] = {0};
@@ -1053,16 +1397,35 @@ static void apply_state_object(const char *st)
 
     const char *attrs = json_obj_get(st, "attributes");
     if (attrs && *attrs == '{') {
+        s_active_is_ma = json_slice_contains(attrs, "\"mass_player_id\"");
+        char prev_title[sizeof s_track.title];
+        snprintf(prev_title, sizeof prev_title, "%s", s_track.title);
         json_obj_get_str(attrs, "media_title",      s_track.title,  sizeof(s_track.title));
         json_obj_get_str(attrs, "media_artist",     s_track.artist, sizeof(s_track.artist));
         json_obj_get_str(attrs, "media_album_name", s_track.album,  sizeof(s_track.album));
         json_obj_get_str(attrs, "friendly_name",    s_track.device_name, sizeof(s_track.device_name));
+        bool track_changed = (strcmp(prev_title, s_track.title) != 0);
 
+        /* HA's media_position is a snapshot sampled at media_position_updated_at,
+         * NOT a live counter. Re-basing progress to it on every poll snaps the
+         * bar backwards ~one poll interval each cycle (very visible on Music
+         * Assistant / local Sendspin playback, where the bar looked frozen).
+         * Keep a monotonic reference and only re-base when the position really
+         * moves (seek / track change / periodic refresh); the value pushed to
+         * the UI below is reference + elapsed, so the bar advances smoothly like
+         * the direct-Spotify build's live progress. */
         double pos = 0, dur = 0;
-        if (json_obj_get_double(attrs, "media_position", &pos))
-            s_track.progress_ms = (uint32_t)(pos * 1000.0);
         if (json_obj_get_double(attrs, "media_duration", &dur))
             s_track.duration_ms = (uint32_t)(dur * 1000.0);
+        if (json_obj_get_double(attrs, "media_position", &pos)) {
+            uint32_t raw = (uint32_t)(pos * 1000.0);
+            uint32_t drift = raw > s_media_pos_raw ? raw - s_media_pos_raw
+                                                   : s_media_pos_raw - raw;
+            if (track_changed || drift > 1500 || s_media_pos_ref_us == 0) {
+                s_media_pos_raw    = raw;
+                s_media_pos_ref_us = esp_timer_get_time();
+            }
+        }
 
         char art[256];
         if (json_obj_get_str(attrs, "entity_picture", art, sizeof(art)) &&
@@ -1105,6 +1468,22 @@ static void apply_state_object(const char *st)
         }
     }
 
+    /* Resolve the live position from the monotonic reference (see the
+     * media_position comment). Playing: reference + elapsed. Paused: hold the
+     * reference and reset the clock so a long pause never inflates the position
+     * on resume. */
+    if (s_track.is_playing && s_media_pos_ref_us) {
+        int64_t elapsed_ms = (esp_timer_get_time() - s_media_pos_ref_us) / 1000;
+        if (elapsed_ms < 0) elapsed_ms = 0;
+        uint32_t live = s_media_pos_raw + (uint32_t)elapsed_ms;
+        if (s_track.duration_ms && live > s_track.duration_ms)
+            live = s_track.duration_ms;
+        s_track.progress_ms = live;
+    } else if (!s_track.is_playing) {
+        s_track.progress_ms = s_media_pos_raw;
+        s_media_pos_ref_us  = esp_timer_get_time();
+    }
+
     ESP_LOGI(TAG, "state: %s -- %s [%s]", s_track.artist, s_track.title, state);
     ui_set_track_info(&s_track);
 }
@@ -1135,6 +1514,43 @@ static const char *find_entity_in_array(const char *arr)
 static char s_dev_ids[MAX_DEVICES][96];
 static bool s_dev_playable[MAX_DEVICES];
 static int  s_dev_count = 0;
+static ui_device_t s_devices[MAX_DEVICES];
+static bool s_devices_cache_valid = false;
+
+static ui_light_t s_lights[MAX_LIGHTS];
+static int s_light_hues[MAX_LIGHTS];
+static int s_light_sats[MAX_LIGHTS];
+static int s_light_temps[MAX_LIGHTS];
+static int s_light_count = 0;
+static bool s_lights_cache_valid = false;
+
+/* Bounded substring search inside ONE JSON value. json_obj_get returns a
+ * pointer into the whole websocket message, so a plain strstr from there could
+ * match text belonging to a LATER entity in the array. */
+static bool json_slice_contains(const char *start, const char *needle)
+{
+    if (!start) return false;
+    const char *end = json_skip_value(start);
+    size_t nlen = strlen(needle);
+    for (const char *p = start; p + nlen <= end; p++)
+        if (memcmp(p, needle, nlen) == 0) return true;
+    return false;
+}
+
+/* Copy up to `max` string elements out of a JSON array of strings. */
+static int json_array_get_strings(const char *arr, char out[][40], int max)
+{
+    int n = 0;
+    if (!arr || *arr != '[') return 0;
+    const char *p = arr + 1;
+    while (*p && *p != ']' && n < max) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+        if (*p == ']' || *p == '\0') break;
+        if (*p == '"' && json_copy_string(p, out[n], 40)) n++;
+        p = json_skip_value(p);
+    }
+    return n;
+}
 
 static bool media_player_is_unavailable(const char *obj)
 {
@@ -1152,10 +1568,78 @@ static bool media_player_is_renderer(const char *eid, const char *attrs)
            ascii_contains_ci(fname, "sonos");
 }
 
+static bool media_player_is_spotify_account(const char *eid, const char *attrs)
+{
+    if (eid && (strncmp(eid, "media_player.spotify", 20) == 0 ||
+                ascii_contains_ci(eid + 13, "spotify"))) return true;
+    if (!attrs || json_slice_contains(attrs, "\"mass_player_id\"")) return false;
+
+    /* The HA Spotify account player exposes only SELECT_SOURCE (2048) and a
+     * source_list. This capability signature survives user entity renames;
+     * ordinary MA/Sonos/TV players expose a broader feature mask. */
+    const char *sources = json_obj_get(attrs, "source_list");
+    double supported = 0.0;
+    return sources && *sources == '[' &&
+           json_obj_get_double(attrs, "supported_features", &supported) &&
+           (int)supported == 2048;
+}
+
 static void media_player_state(const char *obj, char *out, size_t out_len)
 {
     if (!json_obj_get_str(obj, "state", out, out_len))
         snprintf(out, out_len, "unknown");
+}
+
+/* Collapse HA integration aliases onto the Music Assistant player that users
+ * actually control. For example, "Living Room - Sonos Play:5 Media Renderer"
+ * and "Living Room Speaker" both normalise to "living room". */
+static void normalise_device_name(const char *src, char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return;
+    size_t n = 0;
+    bool previous_space = true;
+    for (; src && *src && n + 1 < out_len; src++) {
+        char c = *src;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c == ' ' || c == '\t' || c == '_' || c == '-') {
+            if (!previous_space) out[n++] = ' ';
+            previous_space = true;
+        } else {
+            out[n++] = c;
+            previous_space = false;
+        }
+    }
+    while (n > 0 && out[n - 1] == ' ') n--;
+    out[n] = '\0';
+
+    char *model = strstr(out, " sonos ");
+    if (model) *model = '\0';
+    char *renderer = strstr(out, " media renderer");
+    if (renderer) *renderer = '\0';
+    size_t len = strlen(out);
+    if (len > 8 && strcmp(out + len - 8, " speaker") == 0)
+        out[len - 8] = '\0';
+    while (len > 0 && out[len - 1] == ' ') out[--len] = '\0';
+}
+
+static int device_duplicate_index(const ui_device_t *devs, int count, const char *name)
+{
+    char wanted[48];
+    normalise_device_name(name, wanted, sizeof(wanted));
+    if (!wanted[0]) return -1;
+    for (int i = 0; i < count; i++) {
+        /* The HA Spotify account entity often shares its friendly name with a
+         * real speaker (both can be "Home Controller"). An account is not an
+         * output alias -- if it were allowed to absorb one, the on-device
+         * Music Assistant speaker vanished from the picker (hardware log
+         * 2026-07-11). The UI renders Spotify rows in their own section, so
+         * cross-section dedup is never wanted. */
+        if (strncmp(devs[i].detail, "SPOTIFY", 7) == 0) continue;
+        char existing[48];
+        normalise_device_name(devs[i].name, existing, sizeof(existing));
+        if (strcmp(wanted, existing) == 0) return i;
+    }
+    return -1;
 }
 
 /* Build the device list from a get_states result array: every media_player
@@ -1163,9 +1647,15 @@ static void media_player_state(const char *obj, char *out, size_t out_len)
  * duplicate friendly names stay distinguishable). Pushed straight to the UI. */
 static void build_device_list(const char *arr)
 {
-    static ui_device_t devs[MAX_DEVICES];   /* static: only ever touched on the WS task */
+    ui_device_t *devs = s_devices;          /* cache owned by the WS task */
     int n = 0;
     int skipped_unavailable = 0;
+    int skipped_renderer = 0;
+    int skipped_duplicate = 0;
+    bool is_ma_slot[MAX_DEVICES] = {0};
+    s_spotify_source_count = 0;   /* re-discovered below on every build */
+    s_spotify_entity[0] = '\0';
+    s_spotify_source_now[0] = '\0';
     if (arr && *arr == '[') {
         const char *p = arr + 1;
         while (*p && n < MAX_DEVICES) {
@@ -1181,35 +1671,115 @@ static void build_device_list(const char *arr)
                     p = json_skip_value(p);
                     continue;
                 }
-                ui_device_t *d = &devs[n];
-                memset(d, 0, sizeof(*d));
-
-                snprintf(s_dev_ids[n], sizeof(s_dev_ids[n]), "%s", eid);
-                snprintf(d->id, sizeof(d->id), "%d", n);   /* UI carries the list index */
-
                 const char *attrs = json_obj_get(obj, "attributes");
                 char fname[64] = {0};
                 char state[24] = {0};
                 if (attrs) json_obj_get_str(attrs, "friendly_name", fname, sizeof(fname));
                 media_player_state(obj, state, sizeof(state));
                 bool renderer = media_player_is_renderer(eid, attrs);
+                /* Provenance tags so the list makes clear WHAT each row is:
+                 * a Music Assistant player, the Spotify account entity, or a
+                 * plain HA media_player. Label-only -- routing decisions key
+                 * on the entity, not these. */
+                bool is_ma = attrs && json_slice_contains(attrs, "\"mass_player_id\"");
+                bool is_spotify_acct = media_player_is_spotify_account(eid, attrs);
+                if (is_spotify_acct && attrs) {
+                    snprintf(s_spotify_entity, sizeof(s_spotify_entity), "%s", eid);
+                    s_spotify_source_count = json_array_get_strings(
+                        json_obj_get(attrs, "source_list"),
+                        s_spotify_sources, MAX_SPOTIFY_SOURCES);
+                    if (!json_obj_get_str(attrs, "source", s_spotify_source_now,
+                                          sizeof(s_spotify_source_now)))
+                        s_spotify_source_now[0] = '\0';
+                    ESP_LOGI(TAG, "Spotify account: %s sources=%d active='%s'",
+                             eid, s_spotify_source_count,
+                             s_spotify_source_now[0] ? s_spotify_source_now : "-");
+                }
+                /* The Spotify account entity is a source SELECTOR, not an output:
+                 * it rejects play_media / media_play_pause (supported_features=
+                 * 2048, hardware log 2026-07-12), duplicates the "Home Controller"
+                 * name, and could show red alongside an active Connect source.
+                 * Do not render it -- its Connect devices are appended as their
+                 * own rows below and it is followed internally via
+                 * s_spotify_entity for select_source + state. */
+                if (is_spotify_acct) {
+                    p = json_skip_value(p);
+                    continue;
+                }
+                /* Sonos/DLNA renderer entities are implementation detail rows.
+                 * MA's player is the useful control surface, so do not expose
+                 * a second alias with a model-heavy name. */
+                if (renderer && !is_ma) {
+                    ESP_LOGI(TAG, "device: %s renderer alias skipped", eid);
+                    skipped_renderer++;
+                    p = json_skip_value(p);
+                    continue;
+                }
+
+                const char *name = fname[0] ? fname : eid + 13;
+                int slot = device_duplicate_index(devs, n, name);
+                if (slot >= 0 && (!is_ma || is_ma_slot[slot])) {
+                    ESP_LOGI(TAG, "device: %s duplicate of %s skipped", eid, s_dev_ids[slot]);
+                    skipped_duplicate++;
+                    p = json_skip_value(p);
+                    continue;
+                }
+                if (slot < 0) slot = n++;
+
+                ui_device_t *d = &devs[slot];
+                memset(d, 0, sizeof(*d));
+                snprintf(s_dev_ids[slot], sizeof(s_dev_ids[slot]), "%s", eid);
+                snprintf(d->id, sizeof(d->id), "%d", slot);   /* UI carries the list index */
                 snprintf(d->name, sizeof(d->name), "%.39s", fname[0] ? fname : eid + 13);
-                snprintf(d->detail, sizeof(d->detail), "%s %.14s",
-                         renderer ? "READY" : "OTHER", state);
+                snprintf(d->detail, sizeof(d->detail), "%s %.7s",
+                         is_ma ? "MUSIC ASSISTANT" : "HOME ASSISTANT", state);
 
                 d->is_active = (strcmp(eid, s_entity) == 0);
                 d->is_sonos  = false;   /* all HA entities switch via ui_request_transfer */
-                s_dev_playable[n] = renderer;
+                s_dev_playable[slot] = is_ma || renderer;
+                is_ma_slot[slot] = is_ma;
                 ESP_LOGI(TAG, "device[%d]: %s name='%s' state=%s kind=%s",
-                         n, eid, d->name, state, renderer ? "renderer" : "other");
-                n++;
+                         slot, eid, d->name, state,
+                         is_ma ? "ma" : renderer ? "renderer" : "other");
             }
             p = json_skip_value(p);
         }
     }
+
+    /* Append the Spotify account's Connect devices (source_list) as their own
+     * rows, so e.g. the phone is directly selectable. Never auto-picked. */
+    for (int i = 0; i < s_spotify_source_count && n < MAX_DEVICES; i++) {
+        /* Skip a Connect source that is really an output already listed as a
+         * speaker -- e.g. this device's own "Home Controller" MA player. It is
+         * controllable via that speaker row; the self-referential Connect row
+         * was the confusing "two Home Controllers" duplicate. External targets
+         * (phone, Echo) don't match any speaker, so they stay. */
+        if (device_duplicate_index(devs, n, s_spotify_sources[i]) >= 0) {
+            ESP_LOGI(TAG, "spotify source '%s' duplicates a speaker row -- skipped",
+                     s_spotify_sources[i]);
+            continue;
+        }
+        ui_device_t *d = &devs[n];
+        memset(d, 0, sizeof(*d));
+        snprintf(s_dev_ids[n], sizeof(s_dev_ids[n]), SPOTIFY_SRC_PREFIX "%.80s",
+                 s_spotify_sources[i]);
+        snprintf(d->id, sizeof(d->id), "%d", n);
+        snprintf(d->name, sizeof(d->name), "%.39s", s_spotify_sources[i]);
+        snprintf(d->detail, sizeof(d->detail), "SPOTIFY CONNECT");
+        d->is_active = s_spotify_entity[0] &&
+                       strcmp(s_entity, s_spotify_entity) == 0 &&
+                       strcmp(s_spotify_sources[i], s_spotify_source_now) == 0;
+        d->is_sonos = false;
+        s_dev_playable[n] = false;
+        ESP_LOGI(TAG, "device[%d]: spotify connect source '%s'%s", n,
+                 s_spotify_sources[i], d->is_active ? " (active)" : "");
+        n++;
+    }
+
     s_dev_count = n;
-    ESP_LOGI(TAG, "devices: %d available media_player entities (%d unavailable skipped)",
-             n, skipped_unavailable);
+    s_devices_cache_valid = true;
+    ESP_LOGI(TAG, "devices: %d available (%d unavailable, %d renderer, %d duplicate skipped)",
+             n, skipped_unavailable, skipped_renderer, skipped_duplicate);
     ui_set_devices(devs, n);
 }
 
@@ -1235,9 +1805,10 @@ static bool select_best_available_device(void)
  * needed -- ha_light_toggle()/ha_light_set_brightness() take it directly. */
 static void build_light_list(const char *arr)
 {
-    static ui_light_t lights[MAX_LIGHTS];   /* static: only ever touched on the WS task */
-    static int hues[MAX_LIGHTS];
-    static int sats[MAX_LIGHTS];
+    ui_light_t *lights = s_lights;          /* cache owned by the WS task */
+    int *hues = s_light_hues;
+    int *sats = s_light_sats;
+    int *temps = s_light_temps;
     int n = 0;
     int skipped_unavailable = 0;
     if (arr && *arr == '[') {
@@ -1280,12 +1851,14 @@ static void build_light_list(const char *arr)
 
                 hues[n] = -1;
                 sats[n] = 100;
+                temps[n] = -1;
                 const char *modes = attrs ? json_obj_get(attrs, "supported_color_modes") : NULL;
                 bool supports_level = modes && !ascii_contains_ci(modes, "onoff");
                 bool supports_colour = modes &&
                     (ascii_contains_ci(modes, "hs") ||
                      ascii_contains_ci(modes, "xy") ||
                      ascii_contains_ci(modes, "rgb"));
+                bool supports_temp = modes && ascii_contains_ci(modes, "color_temp");
                 if (l->brightness_pct < 0 && supports_level)
                     l->brightness_pct = 100;
                 const char *hs = attrs ? json_obj_get(attrs, "hs_color") : NULL;
@@ -1298,13 +1871,27 @@ static void build_light_list(const char *arr)
                     hues[n] = (int)(hue + 0.5);
                     sats[n] = (int)(sat + 0.5);
                 } else if (supports_colour) {
-                    hues[n] = 28;
+                    hues[n] = HA_LIGHT_VALUE_UNKNOWN_SUPPORTED;
                     sats[n] = 66;
                 }
 
-                ESP_LOGI(TAG, "light: %s state=%s brightness=%d%% hue=%d sat=%d",
+                double kelvin = 0.0;
+                if (attrs && json_obj_get_double(attrs, "color_temp_kelvin", &kelvin) &&
+                    kelvin > 0.0) {
+                    temps[n] = (int)(kelvin + 0.5);
+                } else {
+                    double mired = 0.0;
+                    if (attrs && json_obj_get_double(attrs, "color_temp", &mired) &&
+                        mired > 0.0) {
+                        temps[n] = (int)(1000000.0 / mired + 0.5);
+                    } else if (supports_temp) {
+                        temps[n] = HA_LIGHT_VALUE_UNKNOWN_SUPPORTED;
+                    }
+                }
+
+                ESP_LOGI(TAG, "light: %s state=%s brightness=%d%% hue=%d sat=%d temp=%d",
                          eid, state[0] ? state : "(missing)", l->brightness_pct,
-                         hues[n], sats[n]);
+                          hues[n], sats[n], temps[n]);
                 n++;
             }
             p = json_skip_value(p);
@@ -1312,7 +1899,65 @@ static void build_light_list(const char *arr)
     }
     ESP_LOGI(TAG, "lights: %d available light entities (%d unavailable skipped)",
              n, skipped_unavailable);
-    ui_set_lights_ext(lights, hues, sats, n);
+    s_light_count = n;
+    s_lights_cache_valid = true;
+    ui_set_lights_ext(lights, hues, sats, temps, n);
+}
+
+static const char *json_first_object_value(const char *obj)
+{
+    if (!obj || *obj != '{') return NULL;
+    const char *p = obj + 1;
+    while (*p && *p != '}') {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+        if (*p != '"') return NULL;
+        p = json_skip_string(p);
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p != ':') return NULL;
+        p++;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        return (*p == '{') ? p : NULL;
+    }
+    return NULL;
+}
+
+static void handle_queue_result(const char *result)
+{
+    static ha_queue_item_t items[HA_QUEUE_ITEM_MAX];
+    const char *response = result ? json_obj_get(result, "response") : NULL;
+    const char *queue = response ? json_obj_get(response, s_entity ? s_entity : "") : NULL;
+    if (!queue) queue = json_first_object_value(response);
+    if (!queue) {
+        ui_set_queue(NULL, 0, "Music Assistant returned no queue");
+        return;
+    }
+
+    int current_index = -1;
+    const char *cur = json_obj_get(queue, "current_index");
+    if (cur) current_index = atoi(cur);
+    const char *entry = json_array_first_obj(json_obj_get(queue, "items"));
+    int n = 0, index = 0;
+    while (entry && n < HA_QUEUE_ITEM_MAX) {
+        ha_queue_item_t *out = &items[n];
+        memset(out, 0, sizeof(*out));
+        const char *media = json_obj_get(entry, "media_item");
+        const char *source = (media && *media == '{') ? media : entry;
+        json_obj_get_str(source, "name", out->title, sizeof(out->title));
+        if (!out->title[0]) json_obj_get_str(entry, "name", out->title, sizeof(out->title));
+        json_obj_get_str(source, "uri", out->uri, sizeof(out->uri));
+        if (!out->uri[0]) json_obj_get_str(entry, "uri", out->uri, sizeof(out->uri));
+        const char *artists = json_obj_get(source, "artists");
+        const char *artist = json_array_first_obj(artists);
+        if (artist) json_obj_get_str(artist, "name", out->artist, sizeof(out->artist));
+        if (!out->artist[0]) json_obj_get_str(source, "artist", out->artist, sizeof(out->artist));
+        if (!out->artist[0]) snprintf(out->artist, sizeof(out->artist), "Music Assistant");
+        if (!out->title[0]) snprintf(out->title, sizeof(out->title), "Untitled item");
+        out->is_current = (index == current_index);
+        n++;
+        index++;
+        entry = json_array_next_obj(entry);
+    }
+    ui_set_queue(items, n, NULL);
 }
 
 static void handle_message(const char *msg)
@@ -1321,12 +1966,28 @@ static void handle_message(const char *msg)
     if (!json_obj_get_str(msg, "type", type, sizeof(type))) return;
 
     if (strcmp(type, "auth_required") == 0) {
+        ESP_LOGI(TAG, "authentication requested");
         send_auth();
     } else if (strcmp(type, "auth_ok") == 0) {
+        s_authenticated = true;
+        s_auth_rejected = false;
+        s_initial_state_received = false;
+        s_sub_id = 0;
         ESP_LOGI(TAG, "authenticated");
-        send_subscribe();
+        if (!request_current_state())
+            ESP_LOGW(TAG, "initial state request could not be sent");
     } else if (strcmp(type, "auth_invalid") == 0) {
-        ESP_LOGE(TAG, "auth_invalid -- check HA_TOKEN");
+        s_authenticated = false;
+        s_initial_state_received = false;
+        s_auth_rejected = true;
+        /* Never fatal: HA rejects even a valid token while its auth
+         * subsystem is still starting (seen booting controller + HA
+         * together), then closes the socket. The CLOSED handler arms the
+         * reconnect; arm it here too in case the server leaves us open. A
+         * genuinely bad token just keeps cycling, and the Devices screen
+         * points at Settings > SETUP. */
+        ESP_LOGE(TAG, "auth_invalid -- retrying; check HA_TOKEN / Settings > SETUP if persistent");
+        s_ws_restart_pending = true;
     } else if (strcmp(type, "event") == 0) {
         /* subscribe_trigger payload: event.variables.trigger.to_state */
         const char *ev   = json_obj_get(msg, "event");
@@ -1350,41 +2011,73 @@ static void handle_message(const char *msg)
         char err_msg[128] = {0};
         if (failed) {
             const char *err = json_obj_get(msg, "error");
-            if (!json_obj_get_str(err, "message", err_msg, sizeof(err_msg)))
-                snprintf(err_msg, sizeof(err_msg), "unknown error");
-            ESP_LOGW(TAG, "result id=%d FAILED: %s", id, err_msg);
+            char err_code[48] = {0};
+            if (err) {
+                json_obj_get_str(err, "code", err_code, sizeof err_code);
+                json_obj_get_str(err, "message", err_msg, sizeof err_msg);
+            }
+            if (!err_msg[0])
+                snprintf(err_msg, sizeof err_msg, "%s",
+                         err_code[0] ? err_code : "unknown error");
+            /* Log the code AND a bounded raw slice of the error object: some
+             * Music Assistant failures (seek/volume on the local player) carry
+             * the real reason in a field our scanner doesn't surface, and a bare
+             * "unknown error" is not diagnosable. */
+            ESP_LOGW(TAG, "result id=%d FAILED: code=%s msg=%s raw=%.140s",
+                     id, err_code[0] ? err_code : "?", err_msg,
+                     err ? err : "(none)");
         }
         if (id == s_states_req_id) {
+            /* Clear before auto-selecting. ha_set_active_entity() can start a
+             * new snapshot; clearing afterwards would otherwise lose its id. */
+            s_states_req_id = 0;
             const char *arr = json_obj_get(msg, "result");
+            if (!failed) {
+                /* The one mandatory installation-wide snapshot seeds every
+                 * inventory cache. Pages can render immediately from these
+                 * typed caches instead of each issuing its own get_states. */
+                build_device_list(arr);
+                build_light_list(arr);
+                collect_album_browse_entities(arr);
+                s_inventory_last_us = esp_timer_get_time();
+            }
             const char *st  = find_entity_in_array(arr);
+            bool selected_other = false;
             if (st) apply_state_object(st);
             else {
                 ESP_LOGW(TAG, "entity %s not found in get_states; open Devices and pick a valid media_player",
                          s_entity ? s_entity : "");
-                build_device_list(arr);
-                if (!select_best_available_device())
+                selected_other = select_best_available_device();
+                if (!selected_other)
                     ui_show_toast("HA media player not found - open Devices", 3500);
-            }
-        } else if (s_devices_req_id && id == s_devices_req_id) {
-            build_device_list(json_obj_get(msg, "result"));
-            s_devices_req_id = 0;
-        } else if (s_lights_req_id && id == s_lights_req_id) {
-            build_light_list(json_obj_get(msg, "result"));
-            s_lights_req_id = 0;
-        } else if (s_album_entities_req_id && id == s_album_entities_req_id) {
-            s_album_entities_req_id = 0;
-            s_album_pending_since_us = 0;
-            if (failed) {
-                ui_set_album_candidates(NULL, 0,
-                    "Home Assistant could not list media players");
-            } else {
-                collect_album_browse_entities(json_obj_get(msg, "result"));
-                if (s_album_browse_entity_count == 0) {
-                    ui_set_album_candidates(NULL, 0,
-                        "No HA media_player entities found");
-                } else {
-                    start_next_album_browse_entity();
+                else {
+                    /* The same snapshot already contains the new active
+                     * player. Use it instead of starting another full
+                     * get_states transfer while the first is still settling. */
+                    const char *selected = find_entity_in_array(arr);
+                    if (selected) apply_state_object(selected);
                 }
+            }
+            if (!failed) {
+                s_initial_state_received = true;
+                ESP_LOGI(TAG, "initial state received");
+                s_subscribe_pending = true;
+            }
+        } else if (s_queue_req_id && id == s_queue_req_id) {
+            s_queue_req_id = 0;
+            if (failed) ui_set_queue(NULL, 0, err_msg[0] ? err_msg : "Music Assistant could not read the queue");
+            else handle_queue_result(json_obj_get(msg, "result"));
+        } else if (s_inventory_req_id && id == s_inventory_req_id) {
+            s_inventory_req_id = 0;
+            s_inventory_pending_since_us = 0;
+            if (failed) {
+                ui_set_devices_error(err_msg[0] ? err_msg : "Home Assistant could not refresh devices");
+            } else {
+                const char *arr = json_obj_get(msg, "result");
+                build_device_list(arr);
+                build_light_list(arr);
+                if (!s_album_browse_req_id) collect_album_browse_entities(arr);
+                s_inventory_last_us = esp_timer_get_time();
             }
         } else if (s_album_browse_req_id && id == s_album_browse_req_id) {
             if (failed) {
@@ -1395,11 +2088,46 @@ static void handle_message(const char *msg)
             }
         } else if (!failed && id) {
             ESP_LOGI(TAG, "result id=%d OK", id);
+        } else if (failed && id) {
+            /* A transport / seek / volume command HA rejected (not one of the
+             * inventory/queue/browse requests, which surface their own errors).
+             * Toast it so a control that silently did nothing is explained --
+             * e.g. Music Assistant refusing a seek while the local player is
+             * idle/stopped. */
+            char toast[160];
+            snprintf(toast, sizeof toast, "Player rejected command: %s", err_msg);
+            ui_show_toast(toast, 3000);
         }
     }
 }
 
 /* ── WebSocket event handler (reassembly + dispatch) ─────────────────────── */
+
+/* Session teardown shared by both disconnect flavours (abnormal drop and
+ * clean server-side close). Runs on the WS task. */
+static void ws_session_reset(void)
+{
+    s_authenticated = false;
+    s_initial_state_received = false;
+    s_states_req_id = 0;
+    s_sub_id = 0;
+    s_subscribe_pending = false;
+    if (s_queue_req_id) {
+        s_queue_req_id = 0;
+        ui_set_queue(NULL, 0, "Home Assistant disconnected");
+    }
+    if (s_inventory_req_id) {
+        s_inventory_req_id = 0;
+        s_inventory_pending_since_us = 0;
+        ui_set_devices_error("Home Assistant disconnected");
+    }
+    s_album_pending_since_us = 0;
+    if (s_album_browse_req_id) {
+        s_album_browse_req_id = 0;
+        ui_set_album_candidates(NULL, 0, "Home Assistant disconnected");
+    }
+}
+
 static void ws_event_handler(void *arg, esp_event_base_t base,
                              int32_t event_id, void *event_data)
 {
@@ -1409,18 +2137,31 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
     switch (event_id) {
         case WEBSOCKET_EVENT_CONNECTED:
             ESP_LOGI(TAG, "ws connected");
+            s_last_rx_us = esp_timer_get_time();
+            s_ping_await_us = 0;
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "ws disconnected");
-            s_states_req_id = 0;
-            s_album_entities_req_id = 0;
-            s_album_pending_since_us = 0;
-            if (s_album_browse_req_id) {
-                s_album_browse_req_id = 0;
-                ui_set_album_candidates(NULL, 0, "Home Assistant disconnected");
-            }
+            ws_session_reset();
+            break;
+        case WEBSOCKET_EVENT_CLOSED:
+            /* A clean server-side close. HA sends one after auth_invalid --
+             * including when a VALID token is rejected because HA's auth
+             * subsystem is still starting up (hardware log 2026-07-12:
+             * controller booted alongside HA, one auth_invalid, then the
+             * connection sat dead until a power cycle). Unlike DISCONNECTED,
+             * the client does NOT auto-reconnect from a clean close, so arm a
+             * deferred restart; ha_client_tick() performs it off this task
+             * (stopping the client from its own event handler deadlocks). */
+            ESP_LOGW(TAG, "ws closed by server -- reconnect scheduled");
+            ws_session_reset();
+            s_ws_restart_pending = true;
             break;
         case WEBSOCKET_EVENT_DATA: {
+            /* Any inbound frame (data, pong, keepalive) proves the link is live
+             * -- feed the heartbeat before the op_code filter. */
+            s_last_rx_us = esp_timer_get_time();
+            s_ping_await_us = 0;
             /* op_code 1 = text, 0 = continuation. Ignore ping/pong/binary/close. */
             if (d->op_code != 1 && d->op_code != 0) break;
             if (d->payload_len <= 0) break;
@@ -1428,16 +2169,25 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
                 if (d->payload_offset == 0) {
                     s_rx_dropping_oversize = true;
                     s_rx_drop_was_album = (s_album_browse_req_id != 0);
+                    s_rx_drop_was_devices = (s_inventory_req_id != 0);
                     ESP_LOGW(TAG, "ws frame too large (%d B > %d B), dropping",
                              d->payload_len, RX_MAX_CAP);
                 }
                 if (d->payload_offset + d->data_len >= d->payload_len) {
                     bool was_album = s_rx_drop_was_album;
+                    bool was_devices = s_rx_drop_was_devices;
                     s_rx_dropping_oversize = false;
                     s_rx_drop_was_album = false;
+                    s_rx_drop_was_devices = false;
                     if (was_album && s_album_browse_req_id) {
                         ESP_LOGW(TAG, "album browse response too large, trying next source");
                         start_next_album_browse_entity();
+                    }
+                    if (was_devices && s_inventory_req_id) {
+                        ESP_LOGW(TAG, "inventory response too large");
+                        s_inventory_req_id = 0;
+                        s_inventory_pending_since_us = 0;
+                        ui_set_devices_error("Home Assistant inventory is too large");
                     }
                 }
                 break;
@@ -1445,15 +2195,25 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
             if (d->payload_offset == 0) {
                 s_rx_dropping_oversize = false;
                 s_rx_drop_was_album = false;
+                s_rx_drop_was_devices = false;
             } else if (s_rx_dropping_oversize) {
                 break;
             }
 
             if ((size_t)d->payload_len + 1 > s_rx_cap) {
+                /* Keep small auth/control frames in normal RAM, matching the
+                 * previously hardware-working path. With the HA build's
+                 * SPIRAM malloc policy, large get_states responses still move
+                 * to PSRAM automatically once they exceed 4 KB. */
                 char *grown = realloc(s_rx, d->payload_len + 1);
                 if (!grown) {
                     ESP_LOGW(TAG, "ws rx realloc failed for %d B", d->payload_len + 1);
                     if (s_album_browse_req_id) start_next_album_browse_entity();
+                    if (s_inventory_req_id) {
+                        s_inventory_req_id = 0;
+                        s_inventory_pending_since_us = 0;
+                        ui_set_devices_error("Not enough memory to refresh HA inventory");
+                    }
                     break;
                 }
                 s_rx = grown;
@@ -1474,6 +2234,9 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
 /* ── Public API ──────────────────────────────────────────────────────────── */
 void ha_client_init(const char *host, int port, const char *token, const char *entity)
 {
+    s_authenticated = false;
+    s_initial_state_received = false;
+    s_subscribe_pending = false;
     s_host   = host;
     s_port   = port;
     s_token  = token;
@@ -1494,6 +2257,8 @@ void ha_spotify_init(const char *client_id, const char *client_secret,
 
 void ha_client_start(void)
 {
+    s_authenticated = false;
+    s_initial_state_received = false;
     char uri[160];
     snprintf(uri, sizeof(uri), "ws://%s:%d/api/websocket", s_host, s_port);
 
@@ -1514,31 +2279,167 @@ void ha_client_start(void)
     ESP_LOGI(TAG, "ws started -> %s", uri);
 }
 
+bool ha_client_is_authenticated(void)
+{
+    return s_authenticated;
+}
+
+bool ha_client_is_ready(void)
+{
+    return s_authenticated && s_initial_state_received;
+}
+
 void ha_client_tick(void)
 {
+    /* Deferred WebSocket restart after a clean server-side close (see the
+     * WEBSOCKET_EVENT_CLOSED / auth_invalid handlers): the client never
+     * auto-reconnects from a clean close, and stop() cannot run on the WS
+     * task itself. */
+    if (s_ws_restart_pending && s_ws) {
+        int64_t now = esp_timer_get_time();
+        if (!s_ws_restart_due_us) {
+            s_ws_restart_due_us = now + WS_RESTART_DELAY_US;
+        } else if (now >= s_ws_restart_due_us) {
+            s_ws_restart_pending = false;
+            s_ws_restart_due_us = 0;
+            ESP_LOGI(TAG, "restarting WebSocket (server closed / auth retry)");
+            esp_websocket_client_stop(s_ws);
+            esp_websocket_client_start(s_ws);
+        }
+    }
+
+    /* Auth-handshake watchdog (see WS_AUTH_STALL_US). */
+    static int64_t s_unauth_conn_since_us;
+    if (s_ws && !s_authenticated && !s_ws_restart_pending &&
+        esp_websocket_client_is_connected(s_ws)) {
+        int64_t now = esp_timer_get_time();
+        if (!s_unauth_conn_since_us) {
+            s_unauth_conn_since_us = now;
+        } else if (now - s_unauth_conn_since_us >= WS_AUTH_STALL_US) {
+            s_unauth_conn_since_us = 0;
+            ESP_LOGW(TAG, "auth handshake stalled -- restarting WebSocket");
+            s_ws_restart_pending = true;
+        }
+    } else {
+        s_unauth_conn_since_us = 0;
+    }
+
+    /* Idle heartbeat (see HA_PING_IDLE_US). Only while fully connected and
+     * authenticated -- the restart/auth watchdogs above own the other states. */
+    if (s_ws && s_authenticated && !s_ws_restart_pending &&
+        esp_websocket_client_is_connected(s_ws)) {
+        int64_t now = esp_timer_get_time();
+        if (!s_last_rx_us) s_last_rx_us = now;
+        if (s_ping_await_us) {
+            if (now - s_ping_await_us >= HA_PONG_TIMEOUT_US) {
+                ESP_LOGW(TAG, "no heartbeat pong in %llds -- link dead, reconnecting",
+                         HA_PONG_TIMEOUT_US / 1000000LL);
+                s_ping_await_us = 0;
+                s_ws_restart_pending = true;
+            }
+        } else if (now - s_last_rx_us >= HA_PING_IDLE_US) {
+            char ping[48];
+            snprintf(ping, sizeof ping, "{\"id\":%d,\"type\":\"ping\"}", s_msg_id++);
+            if (ws_send(ping)) s_ping_await_us = now;
+        }
+    } else {
+        s_ping_await_us = 0;
+    }
+
+    /* Only the HA task sends the delayed trigger. The WebSocket callback first
+     * finishes parsing the big startup response, so SDIO never has a new
+     * outbound command competing with that receive burst. */
+    if (s_subscribe_pending && s_authenticated && !s_states_req_id && !s_sub_id) {
+        if (subscribe_active_entity()) s_subscribe_pending = false;
+    }
+    if (s_inventory_pending_since_us &&
+        esp_timer_get_time() - s_inventory_pending_since_us >= HA_ALBUM_REQ_TIMEOUT_US) {
+        ESP_LOGW(TAG, "inventory refresh timed out");
+        s_inventory_req_id = 0;
+        s_inventory_pending_since_us = 0;
+        ui_set_devices_error("Home Assistant inventory refresh timed out");
+    }
+    if (s_lights_settle_due_us &&
+        esp_timer_get_time() >= s_lights_settle_due_us) {
+        int64_t now = esp_timer_get_time();
+        if (audio_stream_is_active()) {
+            /* Never compete with the audio feed for SDIO/internal SRAM just to
+             * confirm a toggle the row already shows optimistically. Re-check
+             * after playback; the deadline survives until a window opens. */
+            s_lights_settle_due_us = now + LIGHT_SETTLE_STREAM_RETRY_US;
+        } else if (s_forced_inventory_last_us &&
+                   now - s_forced_inventory_last_us < FORCED_INVENTORY_MIN_US) {
+            s_lights_settle_due_us = s_forced_inventory_last_us + FORCED_INVENTORY_MIN_US;
+        } else if (!app_core_reliability_network_budget_ok(
+                       "light settle refresh",
+                       LIGHT_SETTLE_MIN_FREE, LIGHT_SETTLE_MIN_LARGEST)) {
+            s_lights_settle_due_us = now + LIGHT_SETTLE_RETRY_US;
+        } else if (request_inventory_refresh("light command settle", true)) {
+            s_lights_settle_due_us = 0;
+            s_forced_inventory_last_us = now;
+        } else {
+            /* Auth lost or a snapshot already in flight. An in-flight snapshot
+             * may predate the light command, so keep the deadline armed. */
+            s_lights_settle_due_us = now + LIGHT_SETTLE_RETRY_US;
+        }
+    }
     if (!s_album_pending_since_us) return;
     int64_t now = esp_timer_get_time();
     if (now - s_album_pending_since_us < HA_ALBUM_REQ_TIMEOUT_US) return;
 
-    if (s_album_entities_req_id) {
-        ESP_LOGW(TAG, "album source discovery timed out");
-        s_album_entities_req_id = 0;
-        s_album_pending_since_us = 0;
-        ui_set_album_candidates(NULL, 0,
-            "Home Assistant did not return media players");
-    } else if (s_album_browse_req_id) {
+    if (s_album_browse_req_id) {
         ESP_LOGW(TAG, "album browse timed out, trying next source");
         start_next_album_browse_entity();
     }
 }
 
+/* `force_cooldown` skips only the rate limit -- the transport-protecting
+ * guards (auth, single-flight, memory budget) always apply. Used by the
+ * post-command settle refresh, where a service call just changed real state
+ * and waiting out the cooldown would leave the UI showing the old state. */
+static bool request_inventory_refresh(const char *reason, bool force_cooldown)
+{
+    int64_t now = esp_timer_get_time();
+    if (!s_authenticated || !s_initial_state_received || s_states_req_id ||
+        s_inventory_req_id) return false;
+    if (!force_cooldown &&
+        s_inventory_last_us && now - s_inventory_last_us < HA_INVENTORY_COOLDOWN_US)
+        return false;
+    if (!app_core_reliability_network_budget_ok(
+            reason ? reason : "HA inventory",
+            APP_CORE_INTERNAL_NETWORK_MIN_FREE,
+            APP_CORE_INTERNAL_NETWORK_MIN_LARGEST)) return false;
+
+    char buf[64];
+    s_inventory_req_id = s_msg_id++;
+    s_inventory_pending_since_us = now;
+    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_inventory_req_id);
+    if (!ws_send(buf)) {
+        s_inventory_req_id = 0;
+        s_inventory_pending_since_us = 0;
+        return false;
+    }
+    ESP_LOGI(TAG, "inventory refresh requested (%s)", reason ? reason : "periodic");
+    return true;
+}
+
 void ha_request_devices(void)
 {
-    /* Re-pull every entity's state; the result handler filters media_player.* */
-    char buf[64];
-    s_devices_req_id = s_msg_id++;
-    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_devices_req_id);
-    if (!ws_send(buf)) s_devices_req_id = 0;
+    if (s_devices_cache_valid)
+        ui_set_devices(s_devices, s_dev_count);
+    if (!request_inventory_refresh("device inventory", false) && !s_devices_cache_valid) {
+        /* Say WHY the screen is empty. "Not connected" was previously reported
+         * for every refusal, which misled when the real cause was memory
+         * pressure or a snapshot already being in flight. */
+        if (!s_authenticated || !s_initial_state_received)
+            ui_set_devices_error(s_auth_rejected
+                ? "Home Assistant rejected the access token -- retrying (check Settings > SETUP)"
+                : "Home Assistant is not connected");
+        else if (s_states_req_id || s_inventory_req_id)
+            ;   /* a snapshot is in flight -- its response renders this screen */
+        else
+            ui_set_devices_error("Home Assistant is busy -- try again shortly");
+    }
 }
 
 void ha_request_album_candidates(const char *query)
@@ -1557,27 +2458,30 @@ void ha_request_album_candidates(const char *query)
 
     s_album_browse_req_id = 0;
     s_album_browse_depth = 0;
-    s_album_browse_entity_count = 0;
     s_album_browse_entity_next = 0;
-
-    char buf[64];
-    s_album_entities_req_id = s_msg_id++;
-    s_album_pending_since_us = esp_timer_get_time();
-    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_album_entities_req_id);
-    if (!ws_send(buf)) {
-        s_album_entities_req_id = 0;
-        s_album_pending_since_us = 0;
-        ui_set_album_candidates(NULL, 0, "Home Assistant is not connected");
-    }
+    if (s_album_browse_entity_count > 0)
+        start_next_album_browse_entity();
+    else
+        ui_set_album_candidates(NULL, 0, "No cached HA media libraries found");
 }
 
 void ha_request_lights(void)
 {
-    /* Re-pull every entity's state; the result handler filters light.* */
-    char buf[64];
-    s_lights_req_id = s_msg_id++;
-    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_lights_req_id);
-    if (!ws_send(buf)) s_lights_req_id = 0;
+    if (s_lights_cache_valid)
+        ui_set_lights_ext(s_lights, s_light_hues, s_light_sats,
+                          s_light_temps, s_light_count);
+    request_inventory_refresh("light inventory", false);
+}
+
+void ha_request_lights_fresh(void)
+{
+    /* Post-command settle: a light service call just changed real state. Do
+     * NOT re-push the cache (it still holds the PRE-command state) and do NOT
+     * snapshot inline -- arm a coalesced deadline that ha_client_tick() honours
+     * once the Matter round-trip has settled. Each further command pushes the
+     * deadline out, so a brightness drag or a run of toggles costs at most ONE
+     * installation-wide get_states, never one per command. */
+    s_lights_settle_due_us = esp_timer_get_time() + LIGHT_SETTLE_DELAY_US;
 }
 
 void ha_set_active_entity(const char *sel)
@@ -1591,6 +2495,18 @@ void ha_set_active_entity(const char *sel)
     long idx = strtol(sel, &end, 10);
     if (end && *end == '\0' && idx >= 0 && idx < s_dev_count && s_dev_ids[idx][0])
         entity = s_dev_ids[idx];
+
+    /* A Spotify Connect source row: ask the Spotify account entity to transfer
+     * playback to that device, then follow the account entity for state. */
+    if (strncmp(entity, SPOTIFY_SRC_PREFIX, strlen(SPOTIFY_SRC_PREFIX)) == 0) {
+        if (!s_spotify_entity[0]) return;
+        const char *src = entity + strlen(SPOTIFY_SRC_PREFIX);
+        char data[80];
+        snprintf(data, sizeof(data), "\"source\":\"%s\"", src);
+        call_service_entity("media_player", "select_source", s_spotify_entity, data);
+        snprintf(s_spotify_source_now, sizeof(s_spotify_source_now), "%s", src);
+        entity = s_spotify_entity;
+    }
 
     if (strcmp(entity, s_entity) == 0) return;   /* already the active entity */
 
@@ -1613,11 +2529,17 @@ void ha_set_active_entity(const char *sel)
     }
 
     snprintf(s_entity_buf, sizeof(s_entity_buf), "%s", entity);
+    s_active_is_ma = false;  /* refreshed from the newly selected state */
     s_art_loaded[0]          = '\0';   /* force the new entity's art to reload */
     s_track.album_art_url[0] = '\0';
     ESP_LOGI(TAG, "active entity -> %s", s_entity);
 
-    send_subscribe();   /* fresh get_states (refreshes now-playing) + new trigger */
+    /* Do not issue another installation-wide get_states request here. The
+     * startup snapshot is intentionally the only large HA frame; switching an
+     * output reuses its cached initial state and waits for this entity's small
+     * trigger updates instead. This keeps Sendspin and HA within ESP-Hosted's
+     * finite SDIO receive pool. */
+    s_subscribe_pending = true;
 }
 
 bool ha_take_pending_art(char *rel_out, size_t out_len)

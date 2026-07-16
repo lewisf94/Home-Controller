@@ -19,7 +19,16 @@ idf_component_register(
         joltwallet__littlefs
         bitbank2__jpegdec
         p4_shared           # shared UI, audio, albums, fonts, knob protocol
+        sendspin_player      # native Music Assistant playback through the ES8311
         app_core             # shared WiFi connect/reconnect + art buffer
         esp32_p4_wifi6_touch_lcd_4_3
         lvgl__lvgl
 )
+
+# RP2040 haptic knob: forward the CMake cache flag to the compiler so
+# `idf.py build -DKNOB_ENABLED=1` enables the knob without editing main.c.
+# The value is STICKY in the CMake cache -- turn it back off with
+# `idf.py build -DKNOB_ENABLED=0` (merely omitting the flag keeps it on).
+if(KNOB_ENABLED)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KNOB_ENABLED=1)
+endif()

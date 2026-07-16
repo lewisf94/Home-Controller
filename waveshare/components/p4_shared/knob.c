@@ -130,6 +130,11 @@ static bool _log_decode_cb(pb_istream_t *stream, const pb_field_t *field, void *
 }
 
 // ---- Build and transmit a single UART packet ----
+// No ToKnob_size static_assert is possible here (unlike the RP2040's KnobState
+// guard): the LED bytes fields are pb_callback_t, so nanopb cannot emit a
+// bounded ToKnob_size. Worst case by hand: scalars+tags ~70 B + 48 B ring +
+// 16 B buttons ~= 140 B -- comfortably inside pb_buf[256], and pb_encode()
+// fails cleanly (logged below) if a schema change ever outgrows it.
 static void _send_packet(const ToKnob *msg)
 {
     uint8_t pb_buf[256];
@@ -155,6 +160,8 @@ static void _send_packet(const ToKnob *msg)
 // ---- Retry timer: retransmit the pending config every 250 ms until Ack ----
 static void _retry_timer_cb(TimerHandle_t xTimer)
 {
+    static uint32_t s_unacked_retries = 0;
+
     taskENTER_CRITICAL(&s_pending_mux);
     bool    valid = s_pending_valid;
     ToKnob  msg   = s_pending_msg;
@@ -162,6 +169,16 @@ static void _retry_timer_cb(TimerHandle_t xTimer)
 
     if (valid) {
         _send_packet(&msg);
+        // Bench diagnostic: an unplugged/dead RP2040 never acks, and without
+        // this line the link failure is silent. First warn after ~2 s, then
+        // every ~30 s so a knobless bench session isn't spammed.
+        s_unacked_retries++;
+        if (s_unacked_retries == 8 || (s_unacked_retries % 120) == 0) {
+            ESP_LOGW(TAG, "knob not acking (nonce %u, %u retries) -- link down or unplugged?",
+                     (unsigned)msg.nonce, (unsigned)s_unacked_retries);
+        }
+    } else {
+        s_unacked_retries = 0;
     }
 }
 

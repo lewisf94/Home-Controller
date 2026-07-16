@@ -29,6 +29,15 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 # cp3: free the mbedTLS handshake buffers after each connect (TLS to Spotify).
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
+# Native Music Assistant playback. Only the player role is needed; transport
+# controls and metadata already flow through the HA backend/UI.
+CONFIG_SENDSPIN_ENABLE_PLAYER=y
+CONFIG_SENDSPIN_ENABLE_CONTROLLER=n
+CONFIG_SENDSPIN_ENABLE_METADATA=n
+CONFIG_SENDSPIN_ENABLE_ARTWORK=n
+CONFIG_SENDSPIN_ENABLE_VISUALIZER=n
+CONFIG_SENDSPIN_ENABLE_COLOR=n
+
 # cp3: PSRAM-first heap policy (see docs/PORT-NOTES.md). Allocations >4 KB --
 # the Spotify response/JPEG buffers -- spill to PSRAM instead of the scarce
 # 768 KB internal SRAM; WiFi/lwip buffers also move to PSRAM. PSRAM is already
@@ -37,6 +46,25 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+
+# 2026-07-11 crash fix: ESP-Hosted's SDIO RX asserts when a DMA-capable packet
+# buffer (~3.5 KB) cannot be allocated mid-receive. IDF's default exclusive
+# DMA/internal reserve is 32 KB, and with UI + HA + Sendspin resident the DMA
+# pool idled at ~8 KB free -- much of the "free internal" heap is RTC/retention
+# RAM the WiFi transport cannot DMA into. Reserve 64 KB so mandatory transport
+# allocations never lose to ordinary internal allocations. The cost is a
+# smaller plain-malloc internal pool; small allocations spill to PSRAM, which
+# this build already prefers.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+
+# Sendspin advertises itself through mDNS. The mDNS component explicitly
+# supports external task/data allocation; keep those non-DMA objects out of
+# the internal reserve needed by ESP-Hosted's SDIO packet pool.
+CONFIG_MDNS_TASK_CREATE_FROM_SPIRAM=y
+# CONFIG_MDNS_TASK_CREATE_FROM_INTERNAL is not set
+CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
+# CONFIG_MDNS_MEMORY_ALLOC_INTERNAL is not set
 
 # LVGL 9.4 (Kconfig-driven; the board uses esp_lvgl_adapter, not lv_conf.h).
 CONFIG_LV_OS_FREERTOS=y
@@ -67,8 +95,24 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
-# lv_tiny_ttf: runtime TTF rendering for title/artist labels so accented
-# characters (e.g. Sigur Ros with accent, Cyrillic, Irish) render correctly.
-# Montserrat-Medium.ttf is primary; DejaVuSans.ttf is the fallback.
-# Both are embedded as flash blobs (see CMakeLists.txt EMBED_FILES).
-CONFIG_LV_USE_TINY_TTF=y
+# Runtime tiny_ttf is unsafe on this P4/LVGL path. Extended Spotify metadata is
+# provided by compiled hc fonts in p4_shared instead.
+# CONFIG_LV_USE_TINY_TTF is not set
+
+# ── Reliability: crash coredump-to-flash + task watchdog auto-reset ─────────
+# A panic (abort/store-fault/assert) or a watchdog timeout writes an ELF core
+# dump to the `coredump` partition; app_core_reliability_boot_report() prints
+# the crashing task + PC on the NEXT boot and then erases it. Resolve the PC
+# with: riscv32-esp-elf-addr2line -e build/<app>.elf 0x<pc>  (or idf.py
+# coredump-info for the full dump before it is erased).
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_STACK_SIZE=1280
+# Task watchdog: reset (not just warn) if either idle task is starved for 20 s
+# -- catches a wedged render/task freeze instead of hanging forever. 20 s is
+# generous so long-but-legitimate work (OTA writes, art decode) never trips it.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=20

@@ -49,18 +49,34 @@ extern "C" {
 
 namespace {
 
-/* Allocate the ~19 KB JPEGIMAGE working struct in INTERNAL SRAM, not PSRAM.
- * JPEGDEC hammers this struct with small, random reads/writes (sMCUs, Huffman
- * tables, the bit buffer) during decode. Left to plain calloc it lands in PSRAM
- * (the default heap is ~23 MB PSRAM here), where it caused an intermittent store
- * fault in JPEGDecodeMCU (wild pMCU = &sMCUs[iMCU] at a PSRAM address) -- a
- * PSRAM cache/coherency artifact, not bad JPEG data (the same cover decoded fine
- * on the next boot). Internal SRAM removes that variable and is faster too.
- * ~19 KB out of ~390 KB free internal is comfortable; freed right after decode. */
+/* The ~19 KB JPEGIMAGE working struct must live in INTERNAL SRAM, not PSRAM.
+ * JPEGDEC hammers it with small, random reads/writes (sMCUs, Huffman tables, the
+ * bit buffer) during decode; in PSRAM that caused an intermittent store fault in
+ * JPEGDecodeMCU (wild pMCU at a PSRAM address) -- a cache/coherency artifact, not
+ * bad JPEG data. Internal SRAM removes that and is faster.
+ *
+ * It is reserved ONCE at boot by album_art_init(), BEFORE the FLAC decoder, mDNS
+ * and the websocket server fragment the internal heap. During music playback the
+ * largest free internal block drops below 19 KB, so a per-decode calloc fails and
+ * album art vanishes -- reusing one pre-reserved buffer (19 KB internal, held for
+ * the program's life) is the price of art that survives playback. */
+static JPEGIMAGE *s_jpeg_persistent = nullptr;
+
 void *alloc_jpeg_image(void)
 {
+    if (s_jpeg_persistent) {
+        memset(s_jpeg_persistent, 0, sizeof(JPEGIMAGE));
+        return s_jpeg_persistent;
+    }
+    /* Fallback if init was never called or the reservation failed: a fresh
+     * internal calloc. Fine before the heap fragments; may fail during playback. */
     return heap_caps_calloc(1, sizeof(JPEGIMAGE),
                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+void free_jpeg_image(void *p)
+{
+    if (p && p != s_jpeg_persistent) heap_caps_free(p);
 }
 
 struct DecodeCtx {
@@ -154,6 +170,18 @@ bool decode_opened(JPEGIMAGE *pJPEG,
 
 }  // namespace
 
+extern "C" void album_art_init(void)
+{
+    if (s_jpeg_persistent) return;
+    s_jpeg_persistent = static_cast<JPEGIMAGE *>(
+        heap_caps_malloc(sizeof(JPEGIMAGE), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (s_jpeg_persistent)
+        ESP_LOGI(TAG, "reserved %u B internal JPEGIMAGE buffer",
+                 (unsigned)sizeof(JPEGIMAGE));
+    else
+        ESP_LOGW(TAG, "JPEGIMAGE reservation failed; art uses per-decode alloc");
+}
+
 extern "C" bool album_art_decode(const uint8_t *jpeg, size_t jpeg_len,
                                  uint16_t *out_rgb, size_t out_max_pixels,
                                  uint16_t *out_w, uint16_t *out_h)
@@ -203,12 +231,12 @@ extern "C" bool album_art_decode(const uint8_t *jpeg, size_t jpeg_len,
     if (!JPEG_openRAM(pJPEG, const_cast<uint8_t *>(jpeg),
                       static_cast<int>(jpeg_len), draw_callback)) {
         ESP_LOGE(TAG, "JPEG_openRAM failed, lastError=%d", JPEG_getLastError(pJPEG));
-        heap_caps_free(pJPEG);
+        free_jpeg_image(pJPEG);
         return false;
     }
 
     bool ok = decode_opened(pJPEG, out_rgb, out_max_pixels, out_w, out_h);
-    heap_caps_free(pJPEG);
+    free_jpeg_image(pJPEG);
     return ok;
 }
 
@@ -267,11 +295,11 @@ extern "C" bool album_art_decode_file(const char *path,
 
     if (!JPEG_openFile(pJPEG, path, draw_callback)) {
         ESP_LOGE(TAG, "JPEG_openFile failed, lastError=%d", JPEG_getLastError(pJPEG));
-        heap_caps_free(pJPEG);
+        free_jpeg_image(pJPEG);
         return false;
     }
 
     bool ok = decode_opened(pJPEG, out_rgb, out_max_pixels, out_w, out_h);
-    heap_caps_free(pJPEG);
+    free_jpeg_image(pJPEG);
     return ok;
 }

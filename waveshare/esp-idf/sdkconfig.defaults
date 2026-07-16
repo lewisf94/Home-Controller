@@ -37,6 +37,7 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
 
 # LVGL 9.4 (Kconfig-driven; the board uses esp_lvgl_adapter, not lv_conf.h).
 CONFIG_LV_OS_FREERTOS=y
@@ -67,8 +68,24 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
-# lv_tiny_ttf: runtime TTF rendering for title/artist labels so accented
-# characters (e.g. Sigur Ros with accent, Cyrillic, Irish) render correctly.
-# Montserrat-Medium.ttf is primary; DejaVuSans.ttf is the fallback.
-# Both are embedded as flash blobs (see CMakeLists.txt EMBED_FILES).
-CONFIG_LV_USE_TINY_TTF=y
+# Runtime tiny_ttf is unsafe on this P4/LVGL path. Extended Spotify metadata is
+# provided by compiled hc fonts in p4_shared instead.
+# CONFIG_LV_USE_TINY_TTF is not set
+
+# ── Reliability: crash coredump-to-flash + task watchdog auto-reset ─────────
+# A panic (abort/store-fault/assert) or a watchdog timeout writes an ELF core
+# dump to the `coredump` partition; app_core_reliability_boot_report() prints
+# the crashing task + PC on the NEXT boot and then erases it. Resolve the PC
+# with: xtensa/riscv addr2line -e build/<app>.elf 0x<pc>  (or idf.py
+# coredump-info for the full dump before it is erased).
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_STACK_SIZE=1280
+# Task watchdog: reset (not just warn) if either idle task is starved for 20 s
+# -- catches a wedged render/task freeze instead of hanging forever. 20 s is
+# generous so long-but-legitimate work (OTA writes, art decode) never trips it.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=20

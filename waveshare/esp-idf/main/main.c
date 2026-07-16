@@ -53,6 +53,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/idf_additions.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -69,6 +70,10 @@
 #include "knob_input.h"
 #include "app_core_wifi.h"
 #include "app_core_art.h"
+#include "app_core_reliability.h"
+#include "app_core_ota.h"
+
+void album_art_init(void);
 
 static const char *TAG = "main";
 
@@ -77,7 +82,11 @@ static const char *TAG = "main";
 #define CREDS_KEY_SP_ID      "sp_id"
 #define CREDS_KEY_SP_SECRET  "sp_secret"
 #define CREDS_KEY_SP_REFRESH "sp_refresh"
+#define CREDS_KEY_OTA_URL    "ota_url"
 #define CREDS_VAL_MAX 300
+#ifndef OTA_URL
+#define OTA_URL ""            /* optional secrets.h default firmware URL */
+#endif
 bool creds_get(const char *key, char *out, size_t out_len, const char *fallback);
 
 /* Optional direct Sonos control (Spotify can't drive a Sonos -- it's a
@@ -146,6 +155,7 @@ static const char *sonos_target_host(void)
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 #define WIFI_MAX_RETRY     5
 
@@ -186,6 +196,7 @@ typedef enum {
     SCMD_TRANSFER,       /* str = Spotify device id to transfer playback to */
     SCMD_SELECT_SONOS,   /* str = Sonos LAN IP to drive over UPnP */
     SCMD_TOGGLE_SHUFFLE,
+    SCMD_OTA,            /* over-the-air firmware update (reads FIRMWARE URL cred) */
 } scmd_type_t;
 
 typedef struct {
@@ -211,15 +222,18 @@ static const scmd_meta_t k_scmd_meta[] = {
     [SCMD_TRANSFER]       = { "transfer",          true  },
     [SCMD_SELECT_SONOS]   = { "select_sonos",      true  },
     [SCMD_TOGGLE_SHUFFLE] = { "toggle_shuffle",    false },
+    [SCMD_OTA]            = { "ota",               true  },
 };
-_Static_assert(sizeof k_scmd_meta / sizeof k_scmd_meta[0] == SCMD_TOGGLE_SHUFFLE + 1,
+_Static_assert(sizeof k_scmd_meta / sizeof k_scmd_meta[0] == SCMD_OTA + 1,
                "k_scmd_meta is missing an entry -- update when adding a new scmd_type_t");
 
 static QueueHandle_t s_cmd_queue = NULL;
+static TaskHandle_t s_spotify_task_handle = NULL;
 #define ALBUM_CANDIDATE_MAX 16
 
 /* `err` NULL = success; else a short human reason shown on the add screen. */
 void ui_set_album_candidates(const void *list, int count, const char *err);
+void ui_set_queue(const void *list, int count, const char *err);
 
 /* Runtime album catalogue + cover fetch (p4_shared/album_catalog.c + ui.c).
  * No shared header while the runtime catalogue is a prototype -- declared here
@@ -307,6 +321,17 @@ void ui_request_refresh_covers(void)          { _post_cmd(SCMD_REFRESH_COVERS, 0
 void ui_request_transfer(const char *id)       { _post_cmd(SCMD_TRANSFER,      0, id);   }
 void ui_request_select_sonos(const char *host) { _post_cmd(SCMD_SELECT_SONOS,  0, host); }
 
+/* Queue is backed by Music Assistant in the HA firmware. Keep the direct
+ * Spotify build usable and explicit until its Web API queue path is added. */
+void ui_request_get_queue(void)
+    { ui_set_queue(NULL, 0, "Queue needs Home Assistant"); }
+void ui_request_queue_add(const char *uri, bool play_next)
+    { (void)uri; (void)play_next; ui_set_queue(NULL, 0, "Queue needs Home Assistant"); }
+void ui_request_queue_clear(void)
+    { ui_set_queue(NULL, 0, "Queue needs Home Assistant"); }
+void ui_request_search_queue_tracks(const char *query)
+    { (void)query; ui_set_album_candidates(NULL, 0, "Song search needs Home Assistant"); }
+
 /* Lights are an HA-only concept (waveshare/esp-idf-ha/main/ha_client.c) -- this
  * build talks straight to the Spotify Web API and has no lights backend, so
  * the seam is a no-op here (mirrors how the HA build no-ops
@@ -321,6 +346,7 @@ void ui_request_light_hue(const char *entity_id, int hue_deg, int sat_pct)
     (void)hue_deg;
     (void)sat_pct;
 }
+void ui_request_ota(void) { _post_cmd(SCMD_OTA, 0, NULL); }
 
 /* WiFi connect (with resilient background reconnect) and the connect chime
  * (first successful connection only, whether that's this call or a later
@@ -377,13 +403,34 @@ static void fetch_runtime_covers(void)
 {
     size_t n = album_catalog_runtime_count();
     if (n == 0) return;
+
+    const size_t min_internal_free = 80 * 1024;
+    const size_t min_internal_largest = 24 * 1024;
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (free_internal < min_internal_free || largest_internal < min_internal_largest) {
+        ESP_LOGW(TAG, "runtime cover fetch deferred: internal heap free=%u largest=%u",
+                 (unsigned)free_internal, (unsigned)largest_internal);
+        return;
+    }
+
     uint16_t *thumb = heap_caps_malloc(ALBUM_THUMB_BYTES, MALLOC_CAP_SPIRAM);
     if (!thumb) { ESP_LOGW(TAG, "cover thumb scratch alloc failed"); return; }
 
+    int attempted = 0;
     int fetched = 0;
-    for (size_t i = 0; i < n; i++) {
+    bool more_pending = false;
+    /* Prioritise the album just added instead of making it wait behind every
+     * older uncached runtime row. */
+    for (size_t rev = n; rev > 0; rev--) {
+        size_t i = rev - 1;
         char url[128];
         if (!album_catalog_runtime_art_todo(i, url, sizeof url)) continue;
+        if (attempted >= 1) {
+            more_pending = true;
+            break;
+        }
+        attempted++;
         size_t bytes = 0;
         if (!spotify_download_to_file(url, RT_ART_PATH, &bytes) || bytes == 0) {
             ESP_LOGW(TAG, "runtime cover download failed (album %u)", (unsigned)i);
@@ -397,6 +444,10 @@ static void fetch_runtime_covers(void)
     }
     heap_caps_free(thumb);
     if (fetched > 0) ui_notify_covers_updated();
+    if (more_pending) {
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        ui_request_refresh_covers();
+    }
 }
 
 /* Gate the per-poll "now playing" INFO lines to actual state changes (track,
@@ -572,6 +623,7 @@ static void spotify_task(void *arg)
     uint32_t prev_progress = 0;
 
     while (1) {
+        app_core_reliability_tick();
         if (settle) {
             settle = false;
             for (int i = 0; i < 5; i++) {
@@ -758,6 +810,13 @@ static void spotify_task(void *arg)
                     case SCMD_TOGGLE_SHUFFLE:
                         ok = spotify_toggle_shuffle();
                         break;
+                    case SCMD_OTA: {
+                        char url[CREDS_VAL_MAX];
+                        creds_get(CREDS_KEY_OTA_URL, url, sizeof url, OTA_URL);
+                        app_core_ota_start(url);   /* non-blocking: own task */
+                        ok = true;                 /* reports its own status */
+                        break;
+                    }
                 }
                 /* Surface silent transport failures so a "button did nothing"
                  * complaint is debuggable from the serial log. Commands whose
@@ -792,6 +851,8 @@ static void spotify_task(void *arg)
 
 void app_main(void)
 {
+    app_core_reliability_init();
+
     ESP_LOGI(TAG, "Music Controller P4 (direct Spotify) -- checkpoint 5: album art");
 
     /* esp_netif logs the assigned IP/mask/gw at INFO; silence it so the serial
@@ -810,6 +871,10 @@ void app_main(void)
      * scratch for the downloaded JPEG. Both ready before spotify_task decodes. */
     art_buffer_alloc(&s_art, ART_RGB_BYTES);
     if (!littlefs_mount()) ESP_LOGW(TAG, "littlefs mount failed -- album art disabled");
+
+    /* Reserve the internal-SRAM JPEG decode buffer early so it isn't lost to
+     * heap fragmentation later (shared album_art path with the HA build). */
+    album_art_init();
 
     /* Display first so we see something while WiFi connects. */
     bsp_display_cfg_t cfg = {
@@ -832,6 +897,7 @@ void app_main(void)
     };
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
+    app_core_reliability_checkpoint("display ready");
 
     /* Bring up the ES8311 speaker + UI-sound task (independent of WiFi/display). */
     audio_init();
@@ -873,16 +939,19 @@ void app_main(void)
          * device" toast surfaces if the user taps a card before the link is up). */
         ESP_LOGE(TAG, "wifi did not connect -- continuing; background reconnect will keep trying");
     }
+    app_core_reliability_checkpoint("wifi ready");
 
     /* Build the LVGL UI (browser + now-playing) and load the browser. This
      * replaces the startup status_label screen. ui_init locks internally, so
      * it must run with the display lock released. */
     ui_init(&s_art_dsc);
+    app_core_reliability_checkpoint("ui ready");
 
     /* Create the "mailbox" (room for 8 commands) the UI posts into, then launch
      * the background worker that drains it. After the next line spotify_task
      * runs on its own forever, and app_main has done its job. */
-    s_cmd_queue = xQueueCreate(8, sizeof(scmd_t));
+    s_cmd_queue = xQueueCreateWithCaps(8, sizeof(scmd_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_cmd_queue) {
         ESP_LOGE(TAG, "failed to create command queue");
         return;   /* no mailbox -> nothing could drive playback; give up */
@@ -890,7 +959,14 @@ void app_main(void)
     /* xTaskCreate(function, name, stack-size-bytes, arg, priority, out-handle).
      * 10 KB stack: the TLS handshake (cert-bundle validation) over the esp_hosted
      * WiFi transport is stack-hungry. (The CYD board used 8 KB on native WiFi.) */
-    xTaskCreate(spotify_task, "spotify", 10240, NULL, 5, NULL);
+    if (xTaskCreatePinnedToCoreWithCaps(spotify_task, "spotify", 10240, NULL, 5,
+                                        &s_spotify_task_handle, tskNO_AFFINITY,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        ESP_LOGE(TAG, "failed to create Spotify task in PSRAM");
+        return;
+    }
+    app_core_reliability_register_task("spotify", s_spotify_task_handle, 10240);
+    app_core_reliability_checkpoint("application task ready");
 
     /* Boot: fetch covers for any runtime-added albums (spotify_task drains this
      * once WiFi is up). The on_wifi_first_connect post covers a late connect. */

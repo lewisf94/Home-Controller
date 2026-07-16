@@ -22,6 +22,12 @@
 extern "C" {
 #endif
 
+/* Reserve the internal-SRAM JPEGIMAGE working buffer ONCE, early in boot,
+ * before other components (FLAC decoder, mDNS, websocket server) fragment the
+ * internal heap. Without this the ~19 KB decode struct can't be allocated once
+ * music is playing and album art fails. Safe to call more than once (no-op). */
+void album_art_init(void);
+
 /* Decodes the JPEG bytes at `jpeg` into RGB565 pixels written to
  * `out_rgb`. The decoder auto-picks a downscale factor (1, 1/2, or
  * 1/4, 1/8) so the output fits in `out_max_pixels` and is closest to

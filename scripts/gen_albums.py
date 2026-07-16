@@ -44,12 +44,19 @@ def force_utf8_stdout() -> None:
     except (AttributeError, ValueError):
         pass
 
-# Each target: (path, language). language picks NULL vs nullptr.
+
+def console_ascii(value: str) -> str:
+    """Keep build logs portable without changing generated UTF-8 metadata."""
+    return value.encode("ascii", errors="backslashreplace").decode("ascii")
+
+# Each target: (path, language, preserve_unicode). Language picks NULL vs
+# nullptr. Waveshare has compiled Latin/typographic Unicode fallback fonts;
+# CYD keeps the proven ASCII fold until its own fonts receive the same support.
 TARGETS = [
-    (REPO_ROOT / "cyd" / "esp-idf" / "main" / "albums.c", "c"),
-    (REPO_ROOT / "cyd" / "esp-idf-ha" / "main" / "albums.c", "c"),
-    (REPO_ROOT / "waveshare" / "components" / "p4_shared" / "albums.c", "c"),
-    (REPO_ROOT / "cyd" / "platformio" / "src" / "albums.cpp", "cpp"),
+    (REPO_ROOT / "cyd" / "esp-idf" / "main" / "albums.c", "c", False),
+    (REPO_ROOT / "cyd" / "esp-idf-ha" / "main" / "albums.c", "c", False),
+    (REPO_ROOT / "waveshare" / "components" / "p4_shared" / "albums.c", "c", True),
+    (REPO_ROOT / "cyd" / "platformio" / "src" / "albums.cpp", "cpp", False),
 ]
 
 _QUOTED = re.compile(r'"([^"]*)"')
@@ -107,8 +114,8 @@ def parse_master(path: Path = MASTER) -> list[tuple[str, str, str]]:
         if uri is None:
             continue
         title, artist = [f for f in fields if f != uri][:2]
-        albums.append((_ascii_punct(title.strip()),
-                       _ascii_punct(artist.strip()), uri.strip()))
+        albums.append((unicodedata.normalize("NFC", title.strip()),
+                       unicodedata.normalize("NFC", artist.strip()), uri.strip()))
     return albums
 
 
@@ -178,13 +185,17 @@ def main() -> None:
     if not albums:
         raise SystemExit(f"No album lines parsed from {MASTER}")
 
-    for path, lang in TARGETS:
-        path.write_text(_render(albums, lang), encoding="utf-8", newline="\n")
+    for path, lang, preserve_unicode in TARGETS:
+        display_albums = albums if preserve_unicode else [
+            (_ascii_punct(title), _ascii_punct(artist), uri)
+            for title, artist, uri in albums
+        ]
+        path.write_text(_render(display_albums, lang), encoding="utf-8", newline="\n")
         print(f"  wrote {path.relative_to(REPO_ROOT)}  ({lang})")
 
     print(f"\n{len(albums)} albums, sorted by artist then title:")
     for i, (title, artist, _) in enumerate(albums):
-        print(f"  [{i:2d}] {artist:20s} -- {title}")
+        print(f"  [{i:2d}] {console_ascii(artist):20s} -- {console_ascii(title)}")
 
 
 if __name__ == "__main__":

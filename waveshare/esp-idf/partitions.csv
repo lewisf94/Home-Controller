@@ -1,5 +1,12 @@
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 8M,
-storage,  data, spiffs,  ,        4M,
+# Name,   Type, SubType,  Offset,    Size,      Flags
+# Dual-app OTA layout + a coredump slot for crash-report-on-boot.
+# nvs stays at 0x9000 (unchanged) so Settings/SETUP credentials survive the
+# reflash onto this new table. App runs from ota_0; esp_https_ota ping-pongs
+# into ota_1. 10 MB app slots leave ~2 MB headroom over the ~7.7 MB image.
+nvs,      data, nvs,      0x9000,    0x6000,
+phy_init, data, phy,      0xf000,    0x1000,
+otadata,  data, ota,      0x10000,   0x2000,
+ota_0,    app,  ota_0,    0x20000,   0xA00000,
+ota_1,    app,  ota_1,    0xA20000,  0xA00000,
+storage,  data, spiffs,   0x1420000, 0x400000,
+coredump, data, coredump, 0x1820000, 0x40000,

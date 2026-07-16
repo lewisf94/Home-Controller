@@ -66,12 +66,16 @@ idf_component_register(
         "audio.c"
         "albums.c"
         "album_catalog.c"
+        "text_codec.c"
         "creds.c"
         "album_thumbs.c"
         "album_art.cpp"
         "littlefs.c"
         "lv_font_pixel_16.c"
         "lv_font_pixel_24.c"
+        "lv_font_hc_20.c"
+        "lv_font_hc_24.c"
+        "lv_font_hc_28.c"
         "lv_font_arvo_24.c"
         "lv_font_arvo_28.c"
         "lv_font_dot_24.c"
@@ -84,9 +88,6 @@ idf_component_register(
     INCLUDE_DIRS "include"
     EMBED_FILES
         "album_thumbs.bin"          # browser thumbnail blob (gitignored; baked in private)
-        "Montserrat-Medium.ttf"     # runtime TTF for title/artist labels (primary)
-        "DejaVuSans.ttf"            # runtime TTF fallback for accented/non-Latin glyphs
-        "Arvo-Bold.ttf"             # slab-serif font choice (Settings -> FONT -> SLAB)
     REQUIRES
         lvgl__lvgl
         esp32_p4_wifi6_touch_lcd_4_3   # vendored BSP (waveshare/esp-idf/components/)
@@ -101,6 +102,7 @@ idf_component_register(
         nanopb
         esp_hw_support
         esp_system
+        esp_app_format   # esp_app_get_description() -- firmware version in SETUP
         freertos
 )
 

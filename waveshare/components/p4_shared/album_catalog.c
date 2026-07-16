@@ -22,6 +22,8 @@ static const char *TAG = "album_catalog";
 #define R_URI_BYTES         64
 #define R_URL_BYTES         100
 #define ALBUM_CATALOG_MAX_RUNTIME 16
+#define RT_THUMB_BYTES      ((size_t)ALBUM_THUMB_W * ALBUM_THUMB_H * sizeof(uint16_t))
+#define RT_THUMB_CACHE_DIR  "/littlefs"
 
 typedef struct {
     char title[R_TITLE_BYTES];
@@ -35,13 +37,12 @@ static album_entry_t   s_runtime_entries[ALBUM_CATALOG_MAX_RUNTIME];
 static size_t          s_runtime_count = 0;
 static bool            s_loaded = false;
 
-/* Runtime album cover thumbnails (ALBUM_THUMB_W x H RGB565), fetched + decoded
- * by the backend task (album_catalog_set_thumb) and read by the LVGL task
- * (album_catalog_thumb). Volatile PSRAM: NVS can't hold ~96 KB blobs, so covers
- * are re-fetched from image_url on each boot. A slot is only handed out once its
- * filled flag is set (written last, after the pixels), so a partially-written
- * slot is never read; each cover is fetched once and never rewritten. */
-static uint16_t *s_rt_thumbs = NULL;   /* MAX * ALBUM_THUMB_W * ALBUM_THUMB_H */
+/* Runtime cover thumbnails are one PSRAM allocation per populated album, not
+ * one MAX-sized pool. Each decoded 220x220 RGB565 thumb is also cached in the
+ * existing LittleFS data partition under its stable Spotify album id, so boot
+ * can restore art without another HTTPS/JPEG pass. A slot is published only
+ * after its complete file/copy succeeds. */
+static uint16_t *s_rt_thumbs[ALBUM_CATALOG_MAX_RUNTIME] = { NULL };
 static bool      s_rt_filled[ALBUM_CATALOG_MAX_RUNTIME] = { false };
 
 /* Display order: the baked list stays in its (gen_albums-sorted) order and each
@@ -115,6 +116,100 @@ static void copy_clean(char *dst, size_t dst_len, const char *src)
         }
     }
     dst[i] = '\0';
+}
+
+static bool runtime_thumb_path(const char *uri, char *out, size_t out_len)
+{
+    static const char prefix[] = "spotify:album:";
+    if (!uri || strncmp(uri, prefix, sizeof(prefix) - 1) != 0 || !out || out_len == 0)
+        return false;
+
+    const char *id = uri + sizeof(prefix) - 1;
+    size_t id_len = 0;
+    while (id[id_len]) {
+        char c = id[id_len];
+        bool alnum = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+                     (c >= 'a' && c <= 'z');
+        if (!alnum || id_len >= 48) return false;
+        id_len++;
+    }
+    if (id_len == 0) return false;
+
+    int n = snprintf(out, out_len, RT_THUMB_CACHE_DIR "/album_%s.rgb565", id);
+    return n > 0 && (size_t)n < out_len;
+}
+
+static uint16_t *runtime_thumb_alloc(size_t rt_idx)
+{
+    if (rt_idx >= ALBUM_CATALOG_MAX_RUNTIME) return NULL;
+    if (!s_rt_thumbs[rt_idx]) {
+        s_rt_thumbs[rt_idx] = heap_caps_malloc(
+            RT_THUMB_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_rt_thumbs[rt_idx])
+            ESP_LOGW(TAG, "runtime thumb alloc failed (album %u, %u B)",
+                     (unsigned)rt_idx, (unsigned)RT_THUMB_BYTES);
+    }
+    return s_rt_thumbs[rt_idx];
+}
+
+static void load_runtime_thumb_cache(void)
+{
+    size_t loaded = 0;
+    for (size_t i = 0; i < s_runtime_count; i++) {
+        char path[96];
+        if (!runtime_thumb_path(s_runtime[i].uri, path, sizeof(path))) continue;
+
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+        uint16_t *slot = runtime_thumb_alloc(i);
+        if (!slot) {
+            fclose(f);
+            break;
+        }
+
+        size_t got = fread(slot, 1, RT_THUMB_BYTES, f);
+        int extra = fgetc(f);
+        fclose(f);
+        if (got == RT_THUMB_BYTES && extra == EOF) {
+            s_rt_filled[i] = true;
+            loaded++;
+        } else {
+            ESP_LOGW(TAG, "runtime thumb cache invalid (album %u, %u/%u B)",
+                     (unsigned)i, (unsigned)got, (unsigned)RT_THUMB_BYTES);
+            heap_caps_free(slot);
+            s_rt_thumbs[i] = NULL;
+        }
+    }
+    if (loaded) ESP_LOGI(TAG, "restored %u runtime album covers from cache", (unsigned)loaded);
+}
+
+static bool persist_runtime_thumb(size_t rt_idx, const uint16_t *rgb)
+{
+    if (rt_idx >= s_runtime_count || !rgb) return false;
+
+    char path[96];
+    char tmp[104];
+    if (!runtime_thumb_path(s_runtime[rt_idx].uri, path, sizeof(path))) return false;
+    int n = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    if (n <= 0 || (size_t)n >= sizeof(tmp)) return false;
+
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    size_t wrote = fwrite(rgb, 1, RT_THUMB_BYTES, f);
+    bool ok = (fclose(f) == 0 && wrote == RT_THUMB_BYTES);
+    if (!ok) {
+        remove(tmp);
+        return false;
+    }
+
+    if (rename(tmp, path) != 0) {
+        remove(path);
+        if (rename(tmp, path) != 0) {
+            remove(tmp);
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool persist_runtime(void)
@@ -208,6 +303,7 @@ void album_catalog_init(void)
 {
     if (!s_loaded) {
         load_runtime();
+        load_runtime_thumb_cache();
         rebuild_order();
     }
 }
@@ -240,8 +336,8 @@ const uint16_t *album_catalog_thumb(size_t index)
     if (index >= s_order_count) return NULL;
     album_ref_t r = s_order[index];
     if (r.runtime) {
-        if (s_rt_thumbs && r.idx < ALBUM_CATALOG_MAX_RUNTIME && s_rt_filled[r.idx])
-            return s_rt_thumbs + (size_t)r.idx * ALBUM_THUMB_W * ALBUM_THUMB_H;
+        if (r.idx < ALBUM_CATALOG_MAX_RUNTIME && s_rt_filled[r.idx])
+            return s_rt_thumbs[r.idx];
         return NULL;
     }
     return album_thumb_data(r.idx);
@@ -310,6 +406,38 @@ bool album_catalog_runtime_art_todo(size_t rt_idx, char *url_out, size_t url_len
     return true;
 }
 
+/* Broader cover-fetch query used by backends that can repair older runtime rows
+ * which were saved before image_url was available. Returns true for any runtime
+ * album without a thumb yet, copying both the current image_url and Spotify URI. */
+bool album_catalog_runtime_needs_art(size_t rt_idx, char *url_out, size_t url_len,
+                                     char *uri_out, size_t uri_len)
+{
+    album_catalog_init();
+    if (url_out && url_len) url_out[0] = '\0';
+    if (uri_out && uri_len) uri_out[0] = '\0';
+    if (rt_idx >= s_runtime_count) return false;
+    if (rt_idx < ALBUM_CATALOG_MAX_RUNTIME && s_rt_filled[rt_idx]) return false;
+    if (url_out && url_len) snprintf(url_out, url_len, "%s", s_runtime[rt_idx].image_url);
+    if (uri_out && uri_len) snprintf(uri_out, uri_len, "%s", s_runtime[rt_idx].uri);
+    return true;
+}
+
+bool album_catalog_set_image_url(size_t rt_idx, const char *image_url)
+{
+    album_catalog_init();
+    if (rt_idx >= s_runtime_count || !image_url || !image_url[0]) return false;
+
+    char old[R_URL_BYTES];
+    snprintf(old, sizeof(old), "%s", s_runtime[rt_idx].image_url);
+    copy_clean(s_runtime[rt_idx].image_url, sizeof(s_runtime[rt_idx].image_url), image_url);
+    if (!persist_runtime()) {
+        snprintf(s_runtime[rt_idx].image_url, sizeof(s_runtime[rt_idx].image_url), "%s", old);
+        return false;
+    }
+    ESP_LOGI(TAG, "runtime album art URL repaired (album %u)", (unsigned)rt_idx);
+    return true;
+}
+
 /* Store a decoded ALBUM_THUMB_W x H RGB565 cover for runtime album `rt_idx`
  * (called from the backend task). album_catalog_thumb() returns it on the next
  * browser rebuild. The filled flag is set last, after the copy. */
@@ -318,17 +446,11 @@ bool album_catalog_set_thumb(size_t rt_idx, const uint16_t *rgb)
     album_catalog_init();
     if (rt_idx >= s_runtime_count || rt_idx >= ALBUM_CATALOG_MAX_RUNTIME || !rgb)
         return false;
-    if (!s_rt_thumbs) {
-        s_rt_thumbs = heap_caps_malloc(
-            (size_t)ALBUM_CATALOG_MAX_RUNTIME * ALBUM_THUMB_W * ALBUM_THUMB_H * sizeof(uint16_t),
-            MALLOC_CAP_SPIRAM);
-        if (!s_rt_thumbs) {
-            ESP_LOGW(TAG, "runtime thumb pool alloc failed");
-            return false;
-        }
-    }
-    memcpy(s_rt_thumbs + (size_t)rt_idx * ALBUM_THUMB_W * ALBUM_THUMB_H,
-           rgb, (size_t)ALBUM_THUMB_W * ALBUM_THUMB_H * sizeof(uint16_t));
+    uint16_t *slot = runtime_thumb_alloc(rt_idx);
+    if (!slot) return false;
+    memcpy(slot, rgb, RT_THUMB_BYTES);
     s_rt_filled[rt_idx] = true;
+    if (!persist_runtime_thumb(rt_idx, slot))
+        ESP_LOGW(TAG, "runtime thumb cache write failed (album %u)", (unsigned)rt_idx);
     return true;
 }

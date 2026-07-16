@@ -19,6 +19,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/idf_additions.h"
+
+#include "audio_stream_bridge.h"
 
 #include <math.h>
 #include <string.h>
@@ -106,11 +110,36 @@ static const int k_theme_set[AUDIO_THEME_COUNT] = {
 
 static esp_codec_dev_handle_t s_spk      = NULL;
 static QueueHandle_t          s_queue    = NULL;
+static SemaphoreHandle_t      s_codec_mux = NULL;
 static int16_t               *s_buf      = NULL;   /* synth scratch (PSRAM)        */
 static volatile bool          s_enabled  = true;
 static volatile int           s_volume   = AUDIO_VOL_DEFAULT;   /* 0..100          */
 static volatile int           s_user_set = -1;     /* -1 = AUTO, else index k_sets */
 static volatile int           s_theme_set = 0;     /* AUTO target (from MODE)      */
+static volatile bool          s_streaming = false;
+static volatile bool          s_stream_muted = false;
+static volatile int           s_stream_volume = 60;
+static uint32_t               s_stream_rate = 0;
+static uint8_t                s_stream_channels = 0;
+static uint8_t                s_stream_bits = 0;
+
+static bool codec_open_locked(uint32_t sample_rate, uint8_t channels, uint8_t bits)
+{
+    esp_codec_dev_sample_info_t fs = {
+        .bits_per_sample = bits,
+        .channel         = channels,
+        .sample_rate     = sample_rate,
+    };
+    return esp_codec_dev_open(s_spk, &fs) == ESP_OK;
+}
+
+static void apply_stream_volume_locked(void)
+{
+    int vol = s_stream_muted ? 0 : s_stream_volume;
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    esp_codec_dev_set_out_vol(s_spk, vol * AUDIO_CODEC_VOL / 100);
+}
 
 static inline float osc(waveform_t w, float phase /* [0,1) */)
 {
@@ -162,10 +191,13 @@ static void audio_task(void *arg)
     audio_sfx_t sfx;
     for (;;) {
         if (xQueueReceive(s_queue, &sfx, portMAX_DELAY) != pdTRUE) continue;
-        if (!s_spk) continue;
+        if (!s_spk || s_streaming) continue;
         size_t ns = synth_sfx(sfx);
         if (ns == 0) continue;
-        esp_codec_dev_write(s_spk, s_buf, (int)(ns * sizeof(int16_t)));
+        if (xSemaphoreTake(s_codec_mux, portMAX_DELAY) != pdTRUE) continue;
+        if (!s_streaming)
+            esp_codec_dev_write(s_spk, s_buf, (int)(ns * sizeof(int16_t)));
+        xSemaphoreGive(s_codec_mux);
     }
 }
 
@@ -178,30 +210,119 @@ void audio_init(void)
     s_spk = bsp_audio_codec_speaker_init();
     if (!s_spk) { ESP_LOGE(TAG, "speaker codec init failed"); return; }
 
-    esp_codec_dev_sample_info_t fs = {
-        .bits_per_sample = 16,
-        .channel         = 1,
-        .sample_rate     = AUDIO_SR,
-    };
-    if (esp_codec_dev_open(s_spk, &fs) != ESP_OK) {
+    s_codec_mux = xSemaphoreCreateMutex();
+    if (!s_codec_mux) { ESP_LOGE(TAG, "codec mutex alloc failed"); return; }
+
+    if (!codec_open_locked(AUDIO_SR, 1, 16)) {
         ESP_LOGE(TAG, "codec open failed");
         s_spk = NULL;
         return;
     }
     esp_codec_dev_set_out_vol(s_spk, AUDIO_CODEC_VOL);
 
-    s_queue = xQueueCreate(6, sizeof(audio_sfx_t));
+    s_queue = xQueueCreateWithCaps(6, sizeof(audio_sfx_t),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_queue) { ESP_LOGE(TAG, "queue alloc failed"); return; }
-    xTaskCreatePinnedToCore(audio_task, "audio", 4096, NULL, 4, NULL, tskNO_AFFINITY);
+    if (xTaskCreatePinnedToCoreWithCaps(audio_task, "audio", 4096, NULL, 4, NULL,
+                                        tskNO_AFFINITY,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        ESP_LOGE(TAG, "audio task PSRAM stack alloc failed");
+        return;
+    }
     ESP_LOGI(TAG, "audio ready (ES8311 speaker, %d Hz, vol %d, %d sets)",
              AUDIO_SR, s_volume, SET_COUNT);
 }
 
 void audio_play(audio_sfx_t sfx)
 {
-    if (!s_enabled || !s_queue || sfx >= AUDIO_SFX_COUNT) return;
+    if (!s_enabled || s_streaming || !s_queue || sfx >= AUDIO_SFX_COUNT) return;
     xQueueSend(s_queue, &sfx, 0);   /* non-blocking; drop if full */
 }
+
+bool audio_stream_begin(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample)
+{
+    if (!s_spk || !s_codec_mux || sample_rate == 0 || channels == 0 || bits_per_sample != 16)
+        return false;
+
+    s_streaming = true;
+    if (s_queue) xQueueReset(s_queue);
+    if (xSemaphoreTake(s_codec_mux, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        s_streaming = false;
+        return false;
+    }
+
+    esp_codec_dev_close(s_spk);
+    bool ok = codec_open_locked(sample_rate, channels, bits_per_sample);
+    if (ok) {
+        s_stream_rate = sample_rate;
+        s_stream_channels = channels;
+        s_stream_bits = bits_per_sample;
+        apply_stream_volume_locked();
+        ESP_LOGI(TAG, "music stream ready (%lu Hz, %u ch, %u bit)",
+                 (unsigned long)sample_rate, channels, bits_per_sample);
+    } else {
+        ESP_LOGE(TAG, "music codec open failed (%lu Hz, %u ch, %u bit)",
+                 (unsigned long)sample_rate, channels, bits_per_sample);
+        if (!codec_open_locked(AUDIO_SR, 1, 16)) s_spk = NULL;
+        else esp_codec_dev_set_out_vol(s_spk, AUDIO_CODEC_VOL);
+        s_stream_rate = 0;
+        s_stream_channels = 0;
+        s_stream_bits = 0;
+        s_streaming = false;
+    }
+    xSemaphoreGive(s_codec_mux);
+    return ok;
+}
+
+size_t audio_stream_write(const uint8_t *data, size_t length, uint32_t timeout_ms)
+{
+    if (!data || length == 0 || !s_spk || !s_codec_mux || !s_streaming) return 0;
+    TickType_t wait = timeout_ms ? pdMS_TO_TICKS(timeout_ms) : 0;
+    if (xSemaphoreTake(s_codec_mux, wait) != pdTRUE) return 0;
+    int rc = s_streaming ? esp_codec_dev_write(s_spk, (void *)data, (int)length) : ESP_FAIL;
+    xSemaphoreGive(s_codec_mux);
+    return rc == ESP_OK ? length : 0;
+}
+
+void audio_stream_end(void)
+{
+    if (!s_spk || !s_codec_mux || !s_streaming) return;
+    if (xSemaphoreTake(s_codec_mux, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+    esp_codec_dev_close(s_spk);
+    bool ok = codec_open_locked(AUDIO_SR, 1, 16);
+    if (ok) esp_codec_dev_set_out_vol(s_spk, AUDIO_CODEC_VOL);
+    else {
+        ESP_LOGE(TAG, "UI sound codec reopen failed");
+        s_spk = NULL;
+    }
+    s_stream_rate = 0;
+    s_stream_channels = 0;
+    s_stream_bits = 0;
+    s_streaming = false;
+    xSemaphoreGive(s_codec_mux);
+}
+
+void audio_stream_set_volume(uint8_t volume)
+{
+    s_stream_volume = volume > 100 ? 100 : volume;
+    if (!s_streaming || !s_spk || !s_codec_mux) return;
+    if (xSemaphoreTake(s_codec_mux, pdMS_TO_TICKS(250)) == pdTRUE) {
+        apply_stream_volume_locked();
+        xSemaphoreGive(s_codec_mux);
+    }
+}
+
+void audio_stream_set_muted(bool muted)
+{
+    s_stream_muted = muted;
+    if (!s_streaming || !s_spk || !s_codec_mux) return;
+    if (xSemaphoreTake(s_codec_mux, pdMS_TO_TICKS(250)) == pdTRUE) {
+        apply_stream_volume_locked();
+        xSemaphoreGive(s_codec_mux);
+    }
+}
+
+bool audio_stream_is_active(void) { return s_streaming; }
 
 void audio_set_enabled(bool enabled) { s_enabled = enabled; }
 bool audio_is_enabled(void)          { return s_enabled; }

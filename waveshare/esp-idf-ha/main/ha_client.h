@@ -34,6 +34,12 @@ void ha_spotify_init(const char *client_id, const char *client_secret,
  * state arrives asynchronously via the event handler. */
 void ha_client_start(void);
 
+/* True after HA has accepted the long-lived token for the current WebSocket. */
+bool ha_client_is_authenticated(void);
+
+/* True once authentication and the initial get_states response are complete. */
+bool ha_client_is_ready(void);
+
 /* Periodic housekeeping from the HA task: catches album browse requests that
  * HA never answers or whose response was too large to reassemble. */
 void ha_client_tick(void);
@@ -52,7 +58,14 @@ bool ha_play_album(const char *spotify_uri);   /* "spotify:album:ID" */
  * ha_request_devices() asks HA for all media_player entities and pushes them to
  * the UI via ui_set_devices(). ha_set_active_entity() re-points the controller
  * at a different media_player at runtime (unsubscribe old trigger, subscribe the
- * new one, refresh now-playing). */
+ * new one, refresh now-playing).
+ *
+ * If the HA core Spotify integration is installed, its account entity's
+ * source_list (the Spotify Connect devices: phone, laptop, ...) is expanded
+ * into extra rows tagged SPOTIFY CONNECT; tapping one transfers playback via
+ * media_player.select_source and follows the account entity for state. Album
+ * starts against that entity use media_player.play_media (spotify: URI), since
+ * it is not a Music Assistant player. */
 void ha_request_devices(void);
 void ha_set_active_entity(const char *entity_id);
 
@@ -63,6 +76,14 @@ void ha_set_active_entity(const char *entity_id);
  * ui_set_album_candidates(). */
 void ha_request_album_candidates(const char *query);
 
+/* Music Assistant queue controls. The active output must be a Music Assistant
+ * player; Spotify Connect and ordinary HA renderer rows intentionally report a
+ * short explanation instead of issuing a service call they cannot handle. */
+void ha_request_queue(void);
+bool ha_queue_add(const char *spotify_uri, bool play_next);
+bool ha_queue_clear(void);
+void ha_search_queue_tracks(const char *query);
+
 /* Lights (HA build only). ha_request_lights() asks HA for all light.*
  * entities and pushes them to the UI via ui_set_lights(). Toggle and
  * brightness are direct call_service commands, same fire-and-forget contract
@@ -70,6 +91,15 @@ void ha_request_album_candidates(const char *query);
  * for a reply; re-opening the screen (a fresh ha_request_lights()) picks up
  * whatever state actually landed. */
 void ha_request_lights(void);
+/* Post-command settle refresh. Non-blocking: arms a coalesced deadline that
+ * ha_client_tick() honours ~0.7 s after the LAST light command, skipping the
+ * stale-cache push so a just-toggled row is not repainted with pre-command
+ * state. The eventual snapshot bypasses the 15 s inventory cooldown but runs
+ * under stricter guards than a normal fetch: a 5 s floor between forced
+ * snapshots, the larger 64/32 KB internal reserve, and full suppression while
+ * music is streaming (the UI's optimistic state stands until playback ends or
+ * the next natural refresh). */
+void ha_request_lights_fresh(void);
 bool ha_light_toggle(const char *entity_id);
 bool ha_light_set_brightness(const char *entity_id, int pct);
 bool ha_light_set_hs(const char *entity_id, int hue_deg, int sat_pct);

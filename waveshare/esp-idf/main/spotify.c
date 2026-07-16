@@ -48,6 +48,8 @@
 #include "nvs.h"
 #include "mbedtls/base64.h"
 
+bool p4_json_copy_string(const char *p, char *out, size_t out_len);
+
 static const char *TAG = "spotify";
 
 static const char *s_client_id      = NULL;
@@ -277,27 +279,7 @@ static const char *json_arr_first_obj(const char *arr)
  * Returns true on success. */
 static bool json_copy_string(const char *p, char *out, size_t out_len)
 {
-    if (!p || *p != '"' || out_len == 0) return false;
-    p++;
-    size_t i = 0;
-    while (*p && *p != '"' && i + 1 < out_len) {
-        if (*p == '\\' && p[1]) {
-            switch (p[1]) {
-                case 'n':  out[i++] = '\n'; break;
-                case 't':  out[i++] = '\t'; break;
-                case 'r':  out[i++] = '\r'; break;
-                case '"':  out[i++] = '"';  break;
-                case '\\': out[i++] = '\\'; break;
-                case '/':  out[i++] = '/';  break;
-                default:   out[i++] = p[1]; break;
-            }
-            p += 2;
-        } else {
-            out[i++] = *p++;
-        }
-    }
-    out[i] = '\0';
-    return (*p == '"');
+    return p4_json_copy_string(p, out, out_len);
 }
 
 static bool json_get_string(const char *json, const char *key,

@@ -6,6 +6,11 @@ cmake_minimum_required(VERSION 3.16)
 # the same code. Per-build files (main.c, spotify.c, sonos.c) stay in main/.
 list(APPEND EXTRA_COMPONENT_DIRS ../components)
 
+# The shared Sendspin player lives beside p4_shared but is HA-first. Keep the
+# direct-Spotify image free of its decoder/network dependency until that backend
+# has a Music Assistant route of its own.
+set(EXCLUDE_COMPONENTS sendspin_player)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(music_controller_p4)
 

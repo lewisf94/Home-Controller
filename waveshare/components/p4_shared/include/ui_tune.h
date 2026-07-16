@@ -37,19 +37,20 @@
 /* =========================================================================
  * BROWSER (album list) -- text + furniture          { BASIC, GLYPH, PIXEL, PAPER }
  * ========================================================================= */
-/* Cover-strip top Y and transport-key size. Only PAPER differs from the
- * others: its header rule (TUNE_PAPER_RULE_Y) pushed the strip down to y54;
- * BASIC/GLYPH/PIXEL have no such rule and stay at their original,
- * hardware-verified y30. TKEY_SZ likewise -- PAPER's transport keys were
- * shrunk to keep clear of the art's lower rule, the others are untouched.
+/* Cover-strip top Y and transport-key size. BASIC and PAPER start the strip at
+ * y54; GLYPH/PIXEL stay at their original hardware-verified y30. BASIC was
+ * lowered from y30 so the covers clear the top button row (ADD/DEVICES/etc):
+ * at y30 the strip crowded the buttons; y54 leaves a ~20px gap. PAPER's y54
+ * comes from its header rule (TUNE_PAPER_RULE_Y). TKEY_SZ: PAPER's transport
+ * keys were shrunk to clear the art's lower rule; the others are untouched.
  * Strip height (SCROLLER_H, ui.c) is a flat 292 for every theme. */
-#define TUNE_SCROLLER_Y        {  30,  30,  30,  54 }
+#define TUNE_SCROLLER_Y        {  54,  30,  30,  54 }
 #define TUNE_TKEY_SZ           {  56,  56,  56,  48 }
-/* Album title / artist baseline Y. Tracks TUNE_SCROLLER_Y per mode: 342/384
- * keep BASIC/GLYPH/PIXEL's original 16px gap below their y322 strip bottom;
- * PAPER's strip bottom moved to y346, so its title/artist follow to 362/404. */
-#define TUNE_BR_TITLE_Y        { 342, 342, 342, 362 }
-#define TUNE_BR_ARTIST_Y       { 384, 384, 384, 404 }
+/* Album title / artist baseline Y. Tracks TUNE_SCROLLER_Y per mode: GLYPH/PIXEL
+ * keep the 16px gap below their y322 strip bottom (342/384); BASIC and PAPER
+ * start lower (strip bottom y346) so their title/artist follow to 362/404. */
+#define TUNE_BR_TITLE_Y        { 362, 342, 342, 362 }
+#define TUNE_BR_ARTIST_Y       { 404, 384, 384, 404 }
 /* Extra letter spacing (px) on the browser + now-playing title text. */
 #define TUNE_TITLE_LETTER_SP   {   0,   0,   0,   0 }
 /* Selection underline: px below the strip bottom (TUNE_SCROLLER_Y + 292). */
@@ -123,12 +124,17 @@
  * shorter, lower-started track keeps the knob clear of the LEVEL label
  * above (bottom y74) at 100% (knob top = fader_y - 26 = 80) and the printed
  * rule below. Bottom stays at y266 (106+160), same as the original 86+180. */
-#define TUNE_FADER_X           { 708, 708, 708, 708 }
+/* Volume column lives on the LEFT of the album art (OUTPUT moved to the
+ * right column); the +/- buttons sit at fader_x + FADER_W + gap, and the
+ * whole column stays clear of the art at ART_X=272. X=80 centres the fader +
+ * button cluster (fader_x .. fader_x+108) in the 0..272 left zone -- was 36,
+ * which hugged the left edge and left a lopsided ~128px gap before the art. */
+#define TUNE_FADER_X           {  80,  80,  80,  80 }
 #define TUNE_FADER_Y           {  66,  66,  66, 106 }
 #define TUNE_FADER_H           { 236, 236, 236, 160 }
-/* PAPER only: "LEVEL" fader corner-label geometry, centred on the fader's
+/* PAPER only: "VOLUME" fader corner-label geometry, centred on the fader's
  * mid-x (FADER_W/2, ui.c). Y=58 matches OUTPUT's clearance below the y42
- * top rule. W=110: the mono font is ~16px/char, so "LEVEL" + letter-spacing
- * needs ~88px -- 80 wrapped it onto two lines. */
+ * top rule. W=132: the mono font is ~16px/char, so "VOLUME" + letter-spacing
+ * needs ~112px. */
 #define TUNE_LEVEL_Y           58
-#define TUNE_LEVEL_W           110
+#define TUNE_LEVEL_W           132

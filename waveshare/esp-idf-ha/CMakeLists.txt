@@ -34,3 +34,11 @@ idf_component_get_property(p4_shared_lib p4_shared COMPONENT_LIB)
 if(p4_shared_lib)
     target_compile_definitions(${p4_shared_lib} PUBLIC P4_HAS_HA_LIGHTS=1 P4_BACKEND_HA=1)
 endif()
+
+# sendspin-cpp 0.6.1 trips a GCC 14 false positive while move-assigning a
+# std::optional<std::string> inside ShadowSlot. Keep warnings-as-errors for our
+# components; demote only this one diagnostic on the third-party target.
+idf_component_get_property(sendspin_lib sendspin__sendspin-cpp COMPONENT_LIB)
+if(sendspin_lib)
+    target_compile_options(${sendspin_lib} PRIVATE -Wno-error=maybe-uninitialized)
+endif()

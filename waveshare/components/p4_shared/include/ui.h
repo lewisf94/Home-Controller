@@ -41,6 +41,10 @@ void ui_set_track_info(const spotify_track_t *info);
  * under the LVGL lock. Safe to call from any task. (cp5) */
 void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h);
 
+/* Shows / updates the full-screen OTA progress modal. Called from the OTA task
+ * (app_core/ota.c); self-locks, safe from any task. */
+void ui_set_ota_status(const char *msg);
+
 /* Hook used by ui.c when the user taps a card on the browser. The host
  * (main.c) implements this and forwards the URI to the Spotify task via
  * a FreeRTOS queue so the HTTPS PUT doesn't block the LVGL render loop.
