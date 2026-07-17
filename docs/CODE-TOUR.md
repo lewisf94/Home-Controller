@@ -127,7 +127,7 @@ list.
 | File | What it is |
 |---|---|
 | **`main.c`** | **Start here.** The entry point and the conductor: boot setup, the three tasks, the command queue, the WiFi connection, the poll loop, and the Spotify-vs-Sonos routing. Its header comment is a mini version of this tour. |
-| **`ui.c`** (+ `ui.h`) | The whole user interface, built with LVGL: the album carousel, the now-playing screen, the Settings screens, the themes, the Cover Flow effect, the volume HUD, the WiFi bars. It's the biggest file by far. The `ui_*()` functions in `ui.h` are the "public" way other code talks to the screen. |
+| **`ui.c`** (+ `ui.h`) | The whole user interface, built with LVGL: the album carousel, the now-playing screen, the Settings screens, the themes, the Cover Flow effect, the volume controls, the WiFi bars. Lives in the shared `waveshare/components/p4_shared/` component (both P4 builds use it). It's the biggest file by far. The `ui_*()` functions in `ui.h` are the "public" way other code talks to the screen. |
 | **`ui_tune.h`** | A header full of "tweak these by eye" numbers — text positions, colours, spacings — gathered in one place per theme so you can adjust the look without hunting through `ui.c`. |
 | **`spotify.c`** (+ `spotify.h`) | The Spotify web-API client: log in / refresh the access token, ask what's playing, send play/pause/next/seek/volume, list devices, download cover art. Includes a tiny hand-written JSON reader (we only need a few fields). |
 | **`sonos.c`** (+ `sonos.h`) | Local control of a Sonos speaker over the network (the SOAP/UPnP protocol on port 1400): play/pause/seek/volume, read what it's playing, and start an album on it. |
@@ -200,7 +200,14 @@ list with reasons is in `CLAUDE.md`; the beginner-relevant ones:
 The project targets a few hardware variants, each in its own folder, sharing the
 same ideas:
 
-- **`waveshare/esp-idf/`** — this build (ESP32-P4, direct Spotify). The lead.
+- **`waveshare/esp-idf/`** — this build (ESP32-P4, direct Spotify). The simplest
+  to learn from, so this tour uses it.
+- **`waveshare/esp-idf-ha/`** — the same board and UI, but controlling music
+  through **Home Assistant** + Music Assistant instead of Spotify directly. This
+  is the everyday build (it can also play music on the device's own speaker). It
+  shares all its UI/audio/album code with `waveshare/esp-idf/` via the common
+  `waveshare/components/p4_shared/` folder — only the backend (`ha_client.c`
+  instead of `spotify.c`) differs.
 - **`cyd/esp-idf/`** — an earlier, smaller board ("CYD") with physical knobs and
   buttons, also direct Spotify. Its UI/input code is *shared* via a common folder
   (`cyd/components/cyd_shared/`).
