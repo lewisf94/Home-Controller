@@ -10,7 +10,10 @@ except ImportError:
     print("Error: Pillow library is required. Install it using: pip install Pillow")
     sys.exit(1)
 
-SIZE = 120  # Must match the size used in convert_albums.py
+# Keep this aligned with convert_albums.py: the CYD SD-card thumbnails are
+# 80x80 RGB565 images.  A host test locks the two scripts together so a future
+# size change cannot silently make previews read past the end of every file.
+SIZE = 80
 
 def read_rgb565_bin(path):
     """Read an RGB565 .bin file and return a PIL Image."""

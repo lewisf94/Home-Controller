@@ -106,11 +106,11 @@ def main() -> None:
                          "0x20-0x7e,0xa0-0x17f; emits a sparse cmap")
     args = ap.parse_args()
 
-    if args.codepoints and args.ranges:
+    if args.codepoints is not None and args.ranges is not None:
         ap.error("--codepoints and --ranges are mutually exclusive")
-    if args.codepoints:
+    if args.codepoints is not None:
         cps = sorted({int(c, 0) for c in args.codepoints.split(",") if c.strip()})
-    elif args.ranges:
+    elif args.ranges is not None:
         cp_set: set[int] = set()
         for item in args.ranges.split(","):
             item = item.strip()
@@ -129,7 +129,7 @@ def main() -> None:
         cps = list(range(RANGE_START, RANGE_END + 1))
     if not cps:
         ap.error("no codepoints selected")
-    sparse = bool(args.codepoints or args.ranges)
+    sparse = args.codepoints is not None or args.ranges is not None
 
     # Small dots with a clear gap (radius capped under half the pitch) so adjacent
     # strokes read as separate dots instead of merging into blobs. A simple,

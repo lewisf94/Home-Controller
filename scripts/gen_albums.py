@@ -181,7 +181,7 @@ def main() -> None:
     if not MASTER.exists():
         raise SystemExit(f"Missing master album list: {MASTER}")
 
-    albums = sort_albums(parse_master())
+    albums = sort_albums(parse_master(MASTER))
     if not albums:
         raise SystemExit(f"No album lines parsed from {MASTER}")
 

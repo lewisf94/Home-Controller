@@ -13,6 +13,10 @@ bool art_buffer_alloc(art_buffer_t *ab, size_t bytes)
     ab->idx    = 0;
     if (!ab->buf[0] || !ab->buf[1]) {
         ESP_LOGE(TAG, "failed to allocate %u-byte art buffers", (unsigned)bytes);
+        heap_caps_free(ab->buf[0]);
+        heap_caps_free(ab->buf[1]);
+        ab->buf[0] = NULL;
+        ab->buf[1] = NULL;
         return false;
     }
     return true;
