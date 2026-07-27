@@ -156,6 +156,18 @@ Deep-dive queue (one at a time, Lewis's request): **A concurrency — DONE (clea
   music and inventory refresh; repair of an older runtime album with missing
   art; and the 60-minute interactive plus eight-hour playback/idle soak.
 
+### RP2040 Pico + MT6701 native bring-up, 2026-07-27
+
+- Pico-layout RP2040 clone powers, enters BOOTSEL, flashes, and exposes USB CDC
+  with a USB-A to USB-C cable. Its USB-C port does not work C-to-C; the final PCB
+  must include separate 5.1 kΩ Rd pulldowns on CC1 and CC2.
+- Native Pico SDK 2.3.0 harness added at `rp2040/bringup/`. Checkpoint 1 (Pico)
+  is hardware-verified. Checkpoint 2 samples MT6701 I2C on GP4/GP5 at 1 kHz and
+  reports timing/error counters; build and flash are verified.
+- **Still pending:** wire the MT6701 at 3.3 V, centre a diametric magnet, and
+  verify stable angle output through a full rotation. Do not connect the
+  TMC6300 or motor during this sensor-only checkpoint.
+
 ### RP2040 knob - pre-hardware setup pass, 2026-07-14 (Claude Code session)
 
 Preparation for wiring the daughterboard; full detail + wiring + bring-up

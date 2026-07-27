@@ -107,6 +107,16 @@ one-way `.lib` → `.kicad_sym`. Footprints (`.kicad_mod`) work as-is.
   (or buck), USB-C, **BOOTSEL** button (pulls QSPI CS low), **RESET** button
   (pulls RUN low).
 - Same firmware runs on both; breakout headers expose the same nets.
+- **Prototype module selected (2026-07-27):** Pico-layout RP2040 clone
+  (dual-core Arm Cortex-M0+, 264 KB SRAM). The native Pico SDK bring-up harness
+  is in `rp2040/bringup/`; its MT6701 I2C test uses GP4 SDA and GP5 SCL at
+  3.3 V. This is a hardware test path, separate from the production
+  SimpleFOC/SSI firmware in `rp2040/`.
+- The clone powers and enumerates with a USB-A to USB-C cable but not a USB-C to
+  USB-C cable. Treat that as a clone-board USB-C implementation limitation,
+  most likely missing the required 5.1 kΩ Rd pulldown on each CC pin. Do not
+  infer a fix from unlabeled TP1-TP6 pads. The final daughterboard USB-C
+  receptacle must have separate 5.1 kΩ pulldowns from CC1 and CC2 to GND.
 
 ### 3. Strain gauge — **full Wheatstone bridge (all 4 BF350)**
 - 4× sensitivity over quarter-bridge, 2× over half-bridge.
@@ -157,8 +167,9 @@ needed on the daughterboard for it.
 
 ## Open / pending decisions
 
-1. **RP2040 breakout chosen for prototyping** — which exact module? (Pico, Pico W,
-   bare-RP2040 breakout?) Affects header pinout during the prototype phase.
+1. **RP2040 breakout — RESOLVED (2026-07-27):** Pico-layout RP2040 clone.
+   Use USB-A to USB-C for this prototype; see RP2040 section 2 above for the
+   C-to-C limitation and final-board CC requirements.
 2. **Waveshare GPIO header mapping** — UART-to-RP2040 RESOLVED (2026-06-18):
    **P4 TX = GPIO32 (J3 pin 31), RX = GPIO46** — both verified broken out on J3
    and clear of LCD/touch/audio/SDIO-to-C6/strapping/USB-JTAG. GPIO33 is NOT on

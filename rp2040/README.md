@@ -59,3 +59,11 @@ The matching P4-side driver is `waveshare/components/p4_shared/knob.c` +
 `knob_input.c` (shared by both waveshare builds), gated behind `KNOB_ENABLED`
 (`idf.py build -DKNOB_ENABLED=1`). Wiring table + first-flash bring-up order:
 [`../docs/KNOB-NOTES.md`](../docs/KNOB-NOTES.md).
+
+## Native-SDK hardware bring-up
+
+`bringup/` is a separate Raspberry Pi Pico C/C++ SDK harness for proving the
+Pico-layout prototype and MT6701 breakout before any motor hardware is
+connected. It does not replace this production SimpleFOC firmware. See
+[`bringup/README.md`](bringup/README.md) for the sensor-only wiring and build
+steps.

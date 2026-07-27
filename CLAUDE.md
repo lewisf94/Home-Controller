@@ -825,6 +825,14 @@ completely unaffected — no UART configured, no GPIO touched.
 (`pio.exe` under `penv/Scripts`); two registry pins in `platformio.ini` were
 fixed to get there (VEML7700 library name, MAX1704X version).
 
+**Native Pico SDK bring-up harness (2026-07-27):**
+`rp2040/bringup/` is a separate motor-safe project for the Pico-layout RP2040
+prototype and MT6701 breakout. Pico USB CDC and flashing are hardware-verified;
+the MT6701 I2C diagnostic builds and runs at 1 kHz but the sensor is not wired
+yet. This harness does not replace the production SimpleFOC/SSI firmware above.
+The clone requires a USB-A to USB-C cable; C-to-C does not power it, consistent
+with missing USB-C CC pulldowns on the clone board.
+
 #### RP2040 pin assignments (FINAL — do not change without reading rationale)
 
 | Function | Pins | Critical note |
