@@ -225,6 +225,11 @@ extern const lv_font_t lv_font_hc_24;
 extern const lv_font_t lv_font_hc_28;
 extern const lv_font_t lv_font_arvo_28;
 extern const lv_font_t lv_font_arvo_24;
+/* BOLD theme heading/label font -- Jost Bold (OFL, Google Fonts), a free
+ * geometric-sans substitute for Futura. Fixed pairing (like GLYPH/PAPER's
+ * bespoke fonts) -- the SANS/SLAB FONT setting doesn't apply here. */
+extern const lv_font_t lv_font_jost_28;
+extern const lv_font_t lv_font_jost_24;
 #define FONT_SANS  0
 #define FONT_SLAB  1
 static uint8_t s_font_choice = FONT_SANS;
@@ -395,12 +400,21 @@ static const theme_t THEME_PAPER  = { 0xE8E0CC, 0xDED4BC, 0x26211A, 0x4A4438, 0x
 /* PAPER dark: the cream sheet photo-negative -- dark sepia "blueprint" ground,
  * parchment ink. The light face keeps the canonical cream. */
 static const theme_t THEME_PAPER_DARK = { 0x211D14, 0x2B2719, 0xE4DCC4, 0xB0A88E, 0x6E6754, 0x4A4434 };
+/* BOLD: Futura-inspired geometric-sans redesign of BASIC -- pushed to the
+ * extremes of the neutral scale (true black / true white, not BASIC's
+ * softer off-black / warm off-white) so Jost Bold headings read as a poster,
+ * not a tint of BASIC. No art restyling (falls through the same is_pixel/
+ * is_glyph/is_paper branches as BASIC, i.e. none of them fire), no bespoke
+ * chrome -- the redesign is entirely font + palette + button radius (see
+ * font_lg/font_md and style_key_btn's is_bold_theme() branches). */
+static const theme_t THEME_BOLD       = { 0x000000, 0x1C1C1C, 0xFFFFFF, 0xB0B0B0, 0x707070, 0x2C2C2C };
+static const theme_t THEME_BOLD_LIGHT = { 0xFFFFFF, 0xF0F0F0, 0x000000, 0x555555, 0x999999, 0xE0E0E0 };
 static const theme_t *s_th = &THEME_BLACK;
 
-/* MODE picks the design language (BASIC / GLYPH / PIXEL / PAPER); a separate
- * DARK/LIGHT toggle picks which face of that mode's palette pair is live.
- * COLOUR (accent) overlays a single accent on any combination. */
-enum { MODE_BASIC = 0, MODE_GLYPH, MODE_PIXEL, MODE_PAPER, MODE_COUNT };
+/* MODE picks the design language (BASIC / GLYPH / PIXEL / PAPER / BOLD); a
+ * separate DARK/LIGHT toggle picks which face of that mode's palette pair is
+ * live. COLOUR (accent) overlays a single accent on any combination. */
+enum { MODE_BASIC = 0, MODE_GLYPH, MODE_PIXEL, MODE_PAPER, MODE_BOLD, MODE_COUNT };
 static uint8_t s_mode = MODE_BASIC;
 static bool    s_dark = true;
 /* [mode][0] = dark face, [mode][1] = light face. */
@@ -409,6 +423,7 @@ static const theme_t *const k_mode_palettes[MODE_COUNT][2] = {
     [MODE_GLYPH] = { &THEME_GLYPH_DARK, &THEME_GLYPH },
     [MODE_PIXEL] = { &THEME_PIXEL,      &THEME_PIXEL_LIGHT },
     [MODE_PAPER] = { &THEME_PAPER_DARK, &THEME_PAPER },
+    [MODE_BOLD]  = { &THEME_BOLD,       &THEME_BOLD_LIGHT },
 };
 static void apply_palette(void) { s_th = k_mode_palettes[s_mode][s_dark ? 0 : 1]; }
 /* THEME ALBUM ART: when off, PIXEL/PAPER keep their chrome but the covers stay
@@ -794,7 +809,7 @@ static lv_obj_t       *s_cf_img = NULL;
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
 };
-static const char *const k_mode_names[MODE_COUNT] = { "BASIC", "GLYPH", "PIXEL", "PAPER" };
+static const char *const k_mode_names[MODE_COUNT] = { "BASIC", "GLYPH", "PIXEL", "PAPER", "BOLD" };
 static const char *const k_darklight_names[2]     = { "DARK", "LIGHT" };
 static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSEL", "FOCUS", "COVER FLOW" };
 
@@ -919,6 +934,7 @@ static void position_seek_thumb(int32_t pct);
 static bool is_glyph_theme(void);
 static bool is_pixel_theme(void);
 static bool is_paper_theme(void);
+static bool is_bold_theme(void);
 static const lv_font_t *font_lg(void);
 static const lv_font_t *font_md(void);
 static const lv_font_t *font_sm(void);
@@ -1043,7 +1059,10 @@ static lv_color_t opt_sel_fg(void)
 static void style_key_btn(lv_obj_t *btn)
 {
     lv_obj_set_style_radius(btn,
-        is_paper_theme() ? 0 : is_glyph_theme() ? LV_RADIUS_CIRCLE : 3, 0);
+        is_paper_theme() ? 0
+        : is_glyph_theme() ? LV_RADIUS_CIRCLE
+        : is_bold_theme() ? 14
+        : 3, 0);
     lv_obj_set_style_shadow_width(btn, 0, 0);
     if (is_paper_theme()) {
         lv_obj_set_style_border_width(btn, 2, 0);
@@ -2390,6 +2409,11 @@ static bool is_paper_theme(void)
     return s_mode == MODE_PAPER;
 }
 
+static bool is_bold_theme(void)
+{
+    return s_mode == MODE_BOLD;
+}
+
 /* 1bpp bitmap fonts for the PIXEL retro theme (Press Start 2P + FA5 symbols).
  * Generated offline by lv_font_conv; committed as .c files in main/. */
 extern const lv_font_t lv_font_pixel_16;
@@ -2420,6 +2444,7 @@ static const lv_font_t *font_lg(void)
      * Body text and icons are clean small type via font_md/font_sm. */
     if (is_glyph_theme()) return &lv_font_dot_24;
     if (is_paper_theme()) return &lv_font_mono_24;
+    if (is_bold_theme()) return &lv_font_jost_28;
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_28;
     return &lv_font_hc_28;
 }
@@ -2433,6 +2458,7 @@ static const lv_font_t *font_md(void)
      * reads muddy" nit. */
     if (is_glyph_theme()) return &lv_font_hc_20;
     if (is_paper_theme()) return &lv_font_mono_16;
+    if (is_bold_theme()) return &lv_font_jost_24;
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_24;
     return &lv_font_hc_24;
 }
@@ -3896,11 +3922,13 @@ static void settings_build_display_appearance(lv_obj_t *pg_disp)
 static void settings_build_display_theme(lv_obj_t *pg_disp)
 {
     settings_header(pg_disp, "THEME", 24, 102);
-    /* 4 design languages in one row, same pitch as the COLOUR swatches. */
+    /* Design languages in one row, centred; pitch shrunk from the original
+     * 176/168 (4 modes) to fit BOLD as a 5th without crowding the 800px page. */
     for (int i = 0; i < MODE_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(pg_disp);
-        lv_obj_set_size(btn, 168, 48);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 176) - 264, 134);
+        lv_obj_set_size(btn, 136, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID,
+                     (int)((i - (MODE_COUNT - 1) / 2.0f) * 144.0f), 134);
         style_key_btn(btn);
         style_button_press(btn);
         lv_obj_add_event_cb(btn, on_theme_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
@@ -3972,13 +4000,13 @@ static void settings_build_display_browser_style(lv_obj_t *pg_disp)
 
 static void settings_build_display_tail(lv_obj_t *pg_disp)
 {
-    /* FONT chooser: hidden in GLYPH and PAPER -- those themes' bespoke fonts
-     * (round-dot / teletype mono) are fixed and the SANS/SLAB choice doesn't
-     * apply. Clear the refs so refresh_font_selection() skips the
-     * (non-existent) buttons. Everything below flows from y0 so hiding the
-     * section closes its slot instead of leaving a 100px hole. */
+    /* FONT chooser: hidden in GLYPH, PAPER and BOLD -- those themes' bespoke
+     * fonts (round-dot / teletype mono / Jost Bold) are fixed and the
+     * SANS/SLAB choice doesn't apply. Clear the refs so refresh_font_selection()
+     * skips the (non-existent) buttons. Everything below flows from y0 so
+     * hiding the section closes its slot instead of leaving a 100px hole. */
     int y0 = 694;   /* base of the post-FONT stack when FONT is shown */
-    if (is_glyph_theme() || is_paper_theme()) {
+    if (is_glyph_theme() || is_paper_theme() || is_bold_theme()) {
         memset(s_font_btns,   0, sizeof s_font_btns);
         memset(s_font_labels, 0, sizeof s_font_labels);
         y0 = 594;   /* FONT hidden: pull the rest of the column up */
@@ -5652,7 +5680,8 @@ static void save_volume(uint8_t v)                 { nvs_save_u8(NVS_KEY_VOLUME,
 
 /* Map the active visual MODE to a UI-sound palette so the sounds match the look:
  * PIXEL -> chiptune squares, GLYPH -> ambient, PAPER -> typewriter clicks, the
- * rest -> the clean modern set. */
+ * rest (BASIC, BOLD) -> the clean AUDIO_THEME_MODERN sine set -- unrelated
+ * naming clash: that's the audio identity's name, not a MODE. */
 static void apply_audio_theme(void)
 {
     audio_theme_t at = AUDIO_THEME_MODERN;

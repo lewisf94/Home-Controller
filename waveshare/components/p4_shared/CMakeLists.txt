@@ -78,6 +78,8 @@ idf_component_register(
         "lv_font_hc_28.c"
         "lv_font_arvo_24.c"
         "lv_font_arvo_28.c"
+        "lv_font_jost_24.c"
+        "lv_font_jost_28.c"
         "lv_font_dot_24.c"
         "lv_font_dot_sym_24.c"
         "lv_font_mono_16.c"

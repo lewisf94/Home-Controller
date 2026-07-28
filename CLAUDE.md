@@ -325,17 +325,40 @@ What's in `ui.c` as committed:
   re-reads creds live. SECURITY: stored secrets render only as "set (n
   chars)", are never logged, and the editor pre-fills ONLY a stored override —
   never a compiled secrets.h value.
-- **Four MODE options, each with a DARK/LIGHT face** (`MODE_BASIC / MODE_GLYPH /
-  MODE_PIXEL / MODE_PAPER`, `MODE_COUNT=4`; `s_dark` toggle). (The on-screen
-  Settings header reads **THEME**; the enum/NVS key stay `MODE_*` / `ui_mode`.) `k_mode_palettes
-  [MODE_COUNT][2]` maps {mode, dark?} → a `theme_t` palette; `apply_palette()`
-  selects `s_th`. BASIC dark is the old BLACK; BASIC light the old LIGHT; GLYPH /
-  PIXEL / PAPER each carry a dark + light palette. APPEARANCE (dark/light) sits
-  above MODE in Settings. NVS keys `ui_mode` / `ui_dark` (the old single `theme`
-  key is retired — first boot after this change lands in BASIC dark). (History:
-  the old 6/7-theme flat enum and the Yudho/Fuhrer VFX-backdrop themes are gone;
-  the whole `lv_canvas` particle system, vortex/emission tick callbacks and the
+- **Five MODE options, each with a DARK/LIGHT face** (`MODE_BASIC / MODE_GLYPH /
+  MODE_PIXEL / MODE_PAPER / MODE_BOLD`, `MODE_COUNT=5`; `s_dark` toggle). (The
+  on-screen Settings header reads **THEME**; the enum/NVS key stay `MODE_*` /
+  `ui_mode`.) `k_mode_palettes[MODE_COUNT][2]` maps {mode, dark?} → a `theme_t`
+  palette; `apply_palette()` selects `s_th`. BASIC dark is the old BLACK; BASIC
+  light the old LIGHT; GLYPH / PIXEL / PAPER / BOLD each carry a dark + light
+  palette. APPEARANCE (dark/light) sits above MODE in Settings. NVS keys
+  `ui_mode` / `ui_dark` (the old single `theme` key is retired — first boot
+  after this change lands in BASIC dark). (History: the old 6/7-theme flat
+  enum and the Yudho/Fuhrer VFX-backdrop themes are gone; the whole
+  `lv_canvas` particle system, vortex/emission tick callbacks and the
   `s_vfx_*` state were deleted.)
+- **BOLD theme — Futura-style geometric-sans redesign of BASIC, NOT YET
+  HARDWARE-VERIFIED (2026-07-28, no local ESP-IDF toolchain in this session —
+  needs `idf.py build flash` + an on-device look before trusting it).**
+  Futura itself isn't licensable to bundle, so the font is **Jost Bold**
+  (OFL, Google Fonts) — `Jost-Bold.ttf` instantiated from the upstream
+  variable font at wght=700 via fonttools, baked to `lv_font_jost_28`
+  (`font_lg`, headings) and `lv_font_jost_24` (`font_md`, labels/buttons) by
+  `scripts/gen_lvgl_font.py`, ASCII range 0x20–0x7E falling back to
+  `lv_font_hc_28/24` (so accents/symbols still render). `is_bold_theme()`
+  gates the font swap and a bolder `style_key_btn` radius (14, vs BASIC's 3
+  / GLYPH's full pill / PAPER's square). Palette (`THEME_BOLD` /
+  `THEME_BOLD_LIGHT`) pushes past BASIC's soft off-black/off-white to true
+  black/true white for higher poster-like contrast; `TUNE_TITLE_LETTER_SP`
+  adds +1 letter-spacing on BOLD titles. Deliberately reuses BASIC's layout
+  geometry (every other `ui_tune.h` per-mode value) and does no art
+  restyling (no dither/duotone/dot-matrix pass — falls through the same
+  `is_pixel_theme()`/`is_glyph_theme()`/`is_paper_theme()` branches as BASIC,
+  i.e. none fire) — the redesign is font + palette + button radius only. The
+  FONT (SANS/SLAB) setting is hidden for BOLD, same as GLYPH/PAPER, since its
+  Jost pairing is fixed. Added as a 5th MODE (not a BASIC in-place edit) so
+  the original BASIC theme stays selectable for an instant on-device A/B
+  compare / rollback — no code needs reverting to go back to it.
 - **THEME ALBUM ART toggle** (`s_theme_art`, NVS `ui_themeart`, shown directly
   under the THEME picker) — turns the per-theme art restyle (PIXEL dither, PAPER
   1-bit duotone, GLYPH colour dot-matrix) on/off while keeping the rest of the
@@ -350,7 +373,7 @@ What's in `ui.c` as committed:
   from the MODE palette. Default is deep orange (`s_accent = 8`). The selected
   swatch shows a contrast-aware check (ink on light swatches, white on dark).
 - **`components/p4_shared/include/ui_tune.h` — user-tweakable layout/colour knobs.** Central header of
-  per-MODE arrays (`{ BASIC, GLYPH, PIXEL, PAPER }` order) for the values that
+  per-MODE arrays (`{ BASIC, GLYPH, PIXEL, PAPER, BOLD }` order) for the values that
   were repeatedly tuned by eye: accent palette, browser/now-playing text Y,
   title letter-spacing, selection-line gap, FPS + top-button positions, PAPER
   rule Y, devices-selector icon, progress-bar Y, timestamp width, transport-key
@@ -1126,6 +1149,13 @@ git log --oneline -10          # recent history
   Cover-Flow centre-tap fix, the settings cog icon, and the album-art-decode crash
   fix (JPEGIMAGE in internal SRAM). FONT setting (SANS/SLAB, Arvo Bold embedded;
   overridden in PIXEL, GLYPH and PAPER). **All of this is verified on hardware.**
+  - **BOLD theme added 2026-07-28 — NOT YET HARDWARE-VERIFIED** (built in a
+    session with no local ESP-IDF toolchain, so not even build-checked; needs
+    `idf.py build flash monitor` before trusting it). A 5th MODE, Futura-style
+    geometric-sans redesign of BASIC using Jost Bold (free OFL substitute for
+    Futura) — see the "BOLD theme" bullet under the `ui.c` feature list above
+    for the full breakdown. BASIC is untouched, so if BOLD looks wrong on
+    device it's a same-session flip back in Settings > THEME, no revert needed.
   Toolchain: **ESP-IDF 5.5.x** (NOT 5.4/6.0). Build: dot-source the IDF
   5.5.4 PowerShell profile, `idf.py set-target esp32p4`, `idf.py build flash
   monitor`. Board enumerates as CH343 USB-serial (COM3/COM4). Creds in

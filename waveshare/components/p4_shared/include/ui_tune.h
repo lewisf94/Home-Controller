@@ -6,9 +6,12 @@
  *
  * Most knobs are per-MODE arrays in this order:
  *
- *        { BASIC, GLYPH, PIXEL, PAPER }
+ *        { BASIC, GLYPH, PIXEL, PAPER, BOLD }
  *
- * so each theme can have its own spacing without affecting the others.
+ * so each theme can have its own spacing without affecting the others. BOLD
+ * reuses BASIC's geometry throughout (it's a font/palette/radius redesign of
+ * BASIC, not a new layout) except TUNE_TITLE_LETTER_SP, where it adds a touch
+ * of tracking for the geometric-poster feel.
  * Y values are pixels from the top of the 800x480 landscape panel; X from the
  * left. The album strip is TUNE_SCROLLER_Y tall SCROLLER_H (292) px in every
  * browser style -- BASIC/GLYPH/PIXEL start at y30 (bottom y322); PAPER starts
@@ -44,31 +47,33 @@
  * comes from its header rule (TUNE_PAPER_RULE_Y). TKEY_SZ: PAPER's transport
  * keys were shrunk to clear the art's lower rule; the others are untouched.
  * Strip height (SCROLLER_H, ui.c) is a flat 292 for every theme. */
-#define TUNE_SCROLLER_Y        {  54,  30,  30,  54 }
-#define TUNE_TKEY_SZ           {  56,  56,  56,  48 }
+#define TUNE_SCROLLER_Y        {  54,  30,  30,  54,  54 }
+#define TUNE_TKEY_SZ           {  56,  56,  56,  48,  56 }
 /* Album title / artist baseline Y. Tracks TUNE_SCROLLER_Y per mode: GLYPH/PIXEL
  * keep the 16px gap below their y322 strip bottom (342/384); BASIC and PAPER
  * start lower (strip bottom y346) so their title/artist follow to 362/404. */
-#define TUNE_BR_TITLE_Y        { 362, 342, 342, 362 }
-#define TUNE_BR_ARTIST_Y       { 404, 384, 384, 404 }
-/* Extra letter spacing (px) on the browser + now-playing title text. */
-#define TUNE_TITLE_LETTER_SP   {   0,   0,   0,   0 }
+#define TUNE_BR_TITLE_Y        { 362, 342, 342, 362, 362 }
+#define TUNE_BR_ARTIST_Y       { 404, 384, 384, 404, 404 }
+/* Extra letter spacing (px) on the browser + now-playing title text. BOLD
+ * gets a touch of tracking on its Jost Bold headings -- the geometric-poster
+ * feel Futura/Bauhaus titling leans on. */
+#define TUNE_TITLE_LETTER_SP   {   0,   0,   0,   0,   1 }
 /* Selection underline: px below the strip bottom (TUNE_SCROLLER_Y + 292). */
-#define TUNE_SEL_LINE_DY       {   4,   4,   4,   4 }
+#define TUNE_SEL_LINE_DY       {   4,   4,   4,   4,   4 }
 /* FPS readout position (top-left). GLYPH starts further right so it clears
  * the 4-dot WiFi meter. PAPER: Y=17 centres mono_16 on the ~y25 header row;
  * X=64 clears the WiFi cluster now that it's inset further right (x0=20). */
-#define TUNE_FPS_X             {  44,  64,  44,  64 }
-#define TUNE_FPS_Y             {   6,   6,   6,  17 }
+#define TUNE_FPS_X             {  44,  64,  44,  64,  44 }
+#define TUNE_FPS_Y             {   6,   6,   6,  17,   6 }
 /* WiFi bar cluster: X of the leftmost bar, Y of the bars' shared bottom edge.
  * GLYPH's slot is unused (it shows an orbiting dot cluster instead of bars). */
-#define TUNE_WIFI_X0           {   6,   6,   6,  20 }
-#define TUNE_WIFI_BOT          {  22,  22,  22,  34 }
+#define TUNE_WIFI_X0           {   6,   6,   6,  20,   6 }
+#define TUNE_WIFI_BOT          {  22,  22,  22,  34,  22 }
 /* Settings cog / devices buttons (top-right corner): Y of both buttons,
  * and the X inset of each (negative = from the right edge). PAPER's Y=8
  * puts the TOPBTN_H-tall (34px, ui.c) button at y8..42, clearing the header
  * rule at y46 (icon centred ~y25, no longer cut off at the bottom). */
-#define TUNE_TOPBTN_Y          {   0,   0,   0,   8 }
+#define TUNE_TOPBTN_Y          {   0,   0,   0,   8,   0 }
 #define TUNE_GEAR_X            (-6)
 #define TUNE_DEVBTN_X          (-56)
 #define TUNE_LIGHTSBTN_X       (-106)   /* one more 50px slot left of DEVBTN */
@@ -108,17 +113,17 @@
  * NOW PLAYING                                       { BASIC, GLYPH, PIXEL, PAPER }
  * ========================================================================= */
 /* Track title / artist Y (art occupies y44..300). */
-#define TUNE_NP_TITLE_Y        { 308, 308, 308, 308 }
-#define TUNE_NP_ARTIST_Y       { 348, 348, 348, 348 }
+#define TUNE_NP_TITLE_Y        { 308, 308, 308, 308, 308 }
+#define TUNE_NP_ARTIST_Y       { 348, 348, 348, 348, 348 }
 /* Progress bar Y. PAPER sits higher: its tick ruler needs room above the
  * transport keys. Timestamps, seek overlay and the GLYPH gas-tank all derive
  * from this value automatically. */
-#define TUNE_PROG_Y            { 392, 392, 392, 378 }
+#define TUNE_PROG_Y            { 392, 392, 392, 378, 392 }
 /* Width of each timestamp label. Wide enough that "-12:34" stays on ONE line:
  * Montserrat needs ~64, the chunky PIXEL / PAPER mono digits need ~104. */
-#define TUNE_TS_W              {  64,  64, 104, 104 }
+#define TUNE_TS_W              {  64,  64, 104, 104,  64 }
 /* Transport keys (prev/play/next) Y. */
-#define TUNE_TKEY_Y            { 414, 414, 414, 414 }
+#define TUNE_TKEY_Y            { 414, 414, 414, 414, 414 }
 /* Vertical volume fader: X, top Y, track height (width is FADER_W, ui.c).
  * The square knob overhangs the track ends by ~26px at 0%/100% -- PAPER's
  * shorter, lower-started track keeps the knob clear of the LEVEL label
@@ -129,9 +134,9 @@
  * whole column stays clear of the art at ART_X=272. X=80 centres the fader +
  * button cluster (fader_x .. fader_x+108) in the 0..272 left zone -- was 36,
  * which hugged the left edge and left a lopsided ~128px gap before the art. */
-#define TUNE_FADER_X           {  80,  80,  80,  80 }
-#define TUNE_FADER_Y           {  66,  66,  66, 106 }
-#define TUNE_FADER_H           { 236, 236, 236, 160 }
+#define TUNE_FADER_X           {  80,  80,  80,  80,  80 }
+#define TUNE_FADER_Y           {  66,  66,  66, 106,  66 }
+#define TUNE_FADER_H           { 236, 236, 236, 160, 236 }
 /* PAPER only: "VOLUME" fader corner-label geometry, centred on the fader's
  * mid-x (FADER_W/2, ui.c). Y=58 matches OUTPUT's clearance below the y42
  * top rule. W=132: the mono font is ~16px/char, so "VOLUME" + letter-spacing
