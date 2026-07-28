@@ -18,11 +18,12 @@ Checkpoint 1 is hardware-verified on the Pico-layout RP2040 clone:
 - The standard Pico GPIO25 LED pulses when the clone has one fitted.
 - No MT6701, TMC6300, motor, or load-cell pins are configured.
 
-Checkpoint 2 is build- and flash-verified, but the sensor is not connected yet.
-It adds the MT6701 over I2C while leaving every motor-driver output
-unconfigured. It samples at 1 kHz and reports angle plus I2C timing statistics
-once per second. With no sensor connected, `mt6701=NOT_FOUND` is the expected
-result.
+Checkpoint 2 is hardware-verified. It adds the MT6701 over I2C while leaving
+every motor-driver output unconfigured. With a centred diametric magnet it
+samples cleanly at 1 kHz and reports angle plus I2C timing statistics once per
+second (`1000` reads, `0` errors measured on the prototype). While undetected,
+it reports the live SDA/SCL levels and scans the I2C address space every five
+seconds.
 
 ## MT6701 test wiring
 
@@ -50,8 +51,8 @@ Expected serial output with a connected sensor:
 
 ```text
 SMARTKNOB_RP2040_OK sdk=2.3.0 clock=125000000Hz
-MT6701_I2C address=0x06 sda=GP4 scl=GP5 baud=400000Hz
-mt6701=OK raw=8192 angle=180.00deg reads=1000 errors=0 read_us=100/105/120
+MT6701_I2C address=0x06 sda=GP4 scl=GP5 baud=100000Hz
+mt6701=OK raw=8192 angle=180.00deg reads=1000 errors=0 read_us=821/821/830
 ```
 
 ## Build

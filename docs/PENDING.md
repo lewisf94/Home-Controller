@@ -162,11 +162,12 @@ Deep-dive queue (one at a time, Lewis's request): **A concurrency — DONE (clea
   with a USB-A to USB-C cable. Its USB-C port does not work C-to-C; the final PCB
   must include separate 5.1 kΩ Rd pulldowns on CC1 and CC2.
 - Native Pico SDK 2.3.0 harness added at `rp2040/bringup/`. Checkpoint 1 (Pico)
-  is hardware-verified. Checkpoint 2 samples MT6701 I2C on GP4/GP5 at 1 kHz and
-  reports timing/error counters; build and flash are verified.
-- **Still pending:** wire the MT6701 at 3.3 V, centre a diametric magnet, and
-  verify stable angle output through a full rotation. Do not connect the
-  TMC6300 or motor during this sensor-only checkpoint.
+  and checkpoint 2 (MT6701 I2C on GP4/GP5) are hardware-verified. With a centred
+  diametric magnet, the sensor tracked manual rotation at 1 kHz with 1000
+  reads/s and zero errors.
+- The short 100 kHz bench bus works with the Pico's internal pull-ups, but the
+  final PCB should retain the datasheet's 4.7 kΩ SDA/SCL pull-ups. The TMC6300
+  and motor remained disconnected throughout this sensor-only checkpoint.
 
 ### RP2040 knob - pre-hardware setup pass, 2026-07-14 (Claude Code session)
 
