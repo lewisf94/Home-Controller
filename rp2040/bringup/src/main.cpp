@@ -12,9 +12,30 @@ namespace {
 
 constexpr uint kMt6701SdaPin = 4;
 constexpr uint kMt6701SclPin = 5;
-constexpr uint32_t kMt6701BaudHz = 400000;
+constexpr uint32_t kMt6701BaudHz = 100000;
 constexpr uint32_t kSamplePeriodUs = 1000;
 constexpr uint32_t kReportPeriodMs = 1000;
+constexpr uint32_t kScanPeriodReports = 5;
+
+void scan_i2c_bus() {
+    uint32_t devices_found = 0;
+
+    std::printf("i2c_scan:");
+    for (uint8_t address = 0x01; address <= 0x7e; ++address) {
+        uint8_t value = 0;
+        const int result = i2c_read_timeout_us(
+            i2c0, address, &value, 1, false, 1000);
+        if (result >= 0) {
+            std::printf(" 0x%02x", address);
+            ++devices_found;
+        }
+    }
+
+    if (devices_found == 0) {
+        std::printf(" none");
+    }
+    std::printf("\r\n");
+}
 
 void set_led(bool on) {
 #ifdef PICO_DEFAULT_LED_PIN
@@ -60,6 +81,7 @@ int main() {
     uint32_t read_time_min_us = UINT32_MAX;
     uint32_t read_time_max_us = 0;
     uint16_t raw_angle = 0;
+    uint32_t reports_since_scan = kScanPeriodReports;
     absolute_time_t next_sample = get_absolute_time();
     absolute_time_t next_report = make_timeout_time_ms(kReportPeriodMs);
 
@@ -106,10 +128,17 @@ int main() {
             } else {
                 std::printf(
                     "mt6701=NOT_FOUND address=0x%02x errors=%" PRIu32
-                    " check 3V3/GND/SDA/SCL\r\n",
+                    " sda=%u scl=%u\r\n",
                     Mt6701I2c::kDefaultAddress,
-                    read_errors);
+                    read_errors,
+                    gpio_get(kMt6701SdaPin),
+                    gpio_get(kMt6701SclPin));
                 set_led(false);
+
+                if (++reports_since_scan >= kScanPeriodReports) {
+                    reports_since_scan = 0;
+                    scan_i2c_bus();
+                }
             }
 
             reads_ok = 0;

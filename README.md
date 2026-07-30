@@ -228,6 +228,7 @@ Detail in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 ## Development
 
 - **Project memory:** [`CLAUDE.md`](CLAUDE.md) — hardware pins, architecture, coding conventions. Read before non-trivial changes.
+- **Writing standard:** All new or changed technical text must follow [ASD-STE100 Simplified Technical English](docs/WRITING-STANDARD.md), Issue 9.
 - **What's pending verify:** [`docs/PENDING.md`](docs/PENDING.md).
 - **Port gotchas:** [`docs/PORT-NOTES.md`](docs/PORT-NOTES.md).
 - **Test plan:** [`docs/TESTING.md`](docs/TESTING.md).

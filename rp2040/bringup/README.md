@@ -18,22 +18,29 @@ Checkpoint 1 is hardware-verified on the Pico-layout RP2040 clone:
 - The standard Pico GPIO25 LED pulses when the clone has one fitted.
 - No MT6701, TMC6300, motor, or load-cell pins are configured.
 
-Checkpoint 2 is build- and flash-verified, but the sensor is not connected yet.
-It adds the MT6701 over I2C while leaving every motor-driver output
-unconfigured. It samples at 1 kHz and reports angle plus I2C timing statistics
-once per second. With no sensor connected, `mt6701=NOT_FOUND` is the expected
-result.
+Checkpoint 2 is hardware-verified. It adds the MT6701 over I2C while leaving
+every motor-driver output unconfigured. With a centred diametric magnet it
+samples cleanly at 1 kHz and reports angle plus I2C timing statistics once per
+second (`1000` reads, `0` errors measured on the prototype). While undetected,
+it reports the live SDA/SCL levels and scans the I2C address space every five
+seconds.
+
+Checkpoint 3 is build-verified but not yet hardware-verified. It is a separate
+TMC6300 motor-test UF2: all six bridge inputs and VIO are forced LOW before USB
+starts, the driver requires an explicit arm command, arming expires after 10
+seconds, and the motor routine is limited to 2.4 seconds at 12% duty. DIAG or
+the stop command immediately turns every bridge input off and pulls VIO LOW.
 
 ## MT6701 test wiring
 
 Unplug USB before changing any wire.
 
-| MT6701 breakout | Pico signal | Pico physical pin |
+| MT6701 breakout | Pico signal | Pico board marking |
 |---|---|---|
-| VDD | 3V3(OUT) | 36 |
-| GND | GND | 38 |
-| SDA | GP4 / I2C0 SDA | 6 |
-| SCL | GP5 / I2C0 SCL | 7 |
+| VDD | 3V3(OUT) | `3V3` (not `3V3_EN`) |
+| GND | GND | `GND` |
+| SDA | GP4 / I2C0 SDA | `GP4` |
+| SCL | GP5 / I2C0 SCL | `GP5` |
 | Analog/PWM | Not connected | - |
 
 Use 3.3 V, not VBUS/5 V. The sensor accepts 5 V, but a breakout's I2C pull-ups
@@ -50,9 +57,65 @@ Expected serial output with a connected sensor:
 
 ```text
 SMARTKNOB_RP2040_OK sdk=2.3.0 clock=125000000Hz
-MT6701_I2C address=0x06 sda=GP4 scl=GP5 baud=400000Hz
-mt6701=OK raw=8192 angle=180.00deg reads=1000 errors=0 read_us=100/105/120
+MT6701_I2C address=0x06 sda=GP4 scl=GP5 baud=100000Hz
+mt6701=OK raw=8192 angle=180.00deg reads=1000 errors=0 read_us=821/821/830
 ```
+
+## TMC6300 motor test
+
+The motor-test firmware uses GP4 and GP5 for the W-phase bridge controls.
+Disconnect the MT6701 SDA/SCL wires before flashing the motor-test UF2. Do not
+try to run the I2C sensor and this motor test simultaneously.
+
+The production six-PWM pin map is used:
+
+| TMC6300 breakout | Pico |
+|---|---|
+| UH | GP0 |
+| UL | GP1 |
+| VH | GP2 |
+| VL | GP3 |
+| WH | GP4 |
+| WL | GP5 |
+| VIO | GP6 |
+| DIAG | GP7 |
+| GND | GND |
+| SEN | Not connected |
+| VCP | Not connected |
+
+Motor power is separate from Pico USB power:
+
+| TMC6300 breakout | Connection |
+|---|---|
+| VIN | Verified 5 V motor rail |
+| GND | Motor-rail ground and Pico ground |
+| U | Motor red phase |
+| V | Motor yellow phase |
+| W | Motor light-blue phase |
+
+The phase order is arbitrary for the first test; swapping any two reverses
+direction. The prototype motor measured 7.8 ohms across all three phase pairs
+and open circuit from every phase to its metal body.
+
+The Elegoo MB-V2 is suitable only for this brief low-duty test. Set its rail to
+5 V and verify voltage and polarity with a multimeter before connecting VIN.
+Its nominal 700 mA maximum is too close to the motor's approximately 640 mA
+5 V locked phase-to-phase current for sustained or full-duty operation.
+
+Bring-up order:
+
+1. Leave the TMC6300 and motor disconnected. Flash `smartknob_motor_test.uf2`
+   and confirm serial reports `startup=SAFE`.
+2. Unplug everything. Wire GP0-GP7 and common ground to the TMC6300, but leave
+   U/V/W empty. Connect the verified 5 V motor rail to VIN.
+3. Power the Pico and motor rail. Press `E` in the monitor. Confirm the standby
+   LED turns on, DIAG remains off, and serial reports `tmc6300=ARMED`.
+4. Press `X`; confirm standby turns off. Then remove all power.
+5. Connect motor U/V/W, secure the motor, restore power, press `E`, then `T`.
+   Press `X` immediately for any unexpected sound, heat, or movement.
+
+The test never spins at boot. `E` only enables VIO with all bridge inputs off;
+`T` is rejected unless the driver was armed first.
 
 ## Build
 
@@ -65,7 +128,22 @@ cd "C:\Users\lewis\Documents\home-controller\rp2040\bringup"
 .\build.ps1
 ```
 
-The result is `build\release\smartknob_rp2040.uf2`.
+The results are:
+
+- `build\release\smartknob_rp2040.uf2` - MT6701 sensor test
+- `build\release\smartknob_motor_test.uf2` - fail-safe TMC6300 motor test
+
+## Monitor
+
+The monitor enables DTR/RTS, shows output, and sends the single-key safety
+commands:
+
+```powershell
+.\monitor.ps1 -PortName COM4
+```
+
+Keys: `E` arm, `T` run the 2.4-second test, `X` stop/disable, `S` status,
+`H` help, `Q` close the monitor.
 
 ## Flash
 

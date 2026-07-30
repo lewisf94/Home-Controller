@@ -979,11 +979,12 @@ fixed to get there (VEML7700 library name, MAX1704X version).
 
 **Native Pico SDK bring-up harness (2026-07-27):**
 `rp2040/bringup/` is a separate motor-safe project for the Pico-layout RP2040
-prototype and MT6701 breakout. Pico USB CDC and flashing are hardware-verified;
-the MT6701 I2C diagnostic builds and runs at 1 kHz but the sensor is not wired
-yet. This harness does not replace the production SimpleFOC/SSI firmware above.
-The clone requires a USB-A to USB-C cable; C-to-C does not power it, consistent
-with missing USB-C CC pulldowns on the clone board.
+prototype and MT6701 breakout. Pico USB CDC, flashing, and the MT6701 I2C path
+are hardware-verified: 1 kHz sampling at 100 kHz I2C produced 1000 reads/s with
+zero errors and tracked manual magnet rotation. This harness does not replace
+the production SimpleFOC/SSI firmware above. The clone requires a USB-A to
+USB-C cable; C-to-C does not power it, consistent with missing USB-C CC
+pulldowns on the clone board.
 
 #### RP2040 pin assignments (FINAL — do not change without reading rationale)
 
@@ -1105,6 +1106,9 @@ a native Sendspin player.
 ## Coding conventions for this codebase
 
 - **No emojis in code or commit messages** (Lewis preference)
+- **Simplified Technical English:** Write all new or changed explanatory text
+  in ASD-STE100 Simplified Technical English, Issue 9. Follow
+  [`docs/WRITING-STANDARD.md`](docs/WRITING-STANDARD.md).
 - **Create dynamic workflows when the task warrants it** — use TodoWrite (or
   similar live task lists) for any multi-step job, and adapt the plan as scope
   shifts rather than grinding through a fixed sequence. Triage first, group

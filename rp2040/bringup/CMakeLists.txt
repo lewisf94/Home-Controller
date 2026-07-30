@@ -24,7 +24,17 @@ add_executable(smartknob_rp2040
     src/mt6701_i2c.cpp
 )
 
+add_executable(smartknob_motor_test
+    src/motor_main.cpp
+)
+
 target_compile_options(smartknob_rp2040 PRIVATE
+    -Wall
+    -Wextra
+    -Werror
+)
+
+target_compile_options(smartknob_motor_test PRIVATE
     -Wall
     -Wextra
     -Werror
@@ -36,6 +46,16 @@ target_link_libraries(smartknob_rp2040 PRIVATE
     hardware_i2c
 )
 
+target_link_libraries(smartknob_motor_test PRIVATE
+    pico_stdlib
+    hardware_clocks
+    hardware_pwm
+)
+
 pico_enable_stdio_usb(smartknob_rp2040 1)
 pico_enable_stdio_uart(smartknob_rp2040 0)
 pico_add_extra_outputs(smartknob_rp2040)
+
+pico_enable_stdio_usb(smartknob_motor_test 1)
+pico_enable_stdio_uart(smartknob_motor_test 0)
+pico_add_extra_outputs(smartknob_motor_test)
