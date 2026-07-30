@@ -164,10 +164,12 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri,
 #define ART_Y          44
 
 #define PROG_W        520
-/* Live-tunable (Settings > DEVELOPER, default per mode in ui_tune.h). This is
- * a macro so the derived geometry below (SEEK_OV_Y, PROG_TANK_*) keeps working
- * unchanged; it expands to a function call, so every use site must be inside a
- * function -- all of them are, and none needs a constant expression. */
+/* The Settings > DEVELOPER page can change this value. ui_tune.h holds the
+ * default value for each mode. This value is a macro, so the geometry values
+ * below (SEEK_OV_Y, PROG_TANK_*) keep their present form. This macro expands
+ * to a function call. Each point of use must therefore be inside a function.
+ * Each point of use meets this condition, and none needs a constant
+ * expression. */
 #define PROG_H        (dv(DV_PROG_H))
 #define PROG_X         ((SCREEN_W - PROG_W) / 2)
 /* Per-mode (ticks, timestamps, seek overlay and the GLYPH gas-tank all derive
@@ -229,9 +231,11 @@ extern const lv_font_t lv_font_hc_24;
 extern const lv_font_t lv_font_hc_28;
 extern const lv_font_t lv_font_arvo_28;
 extern const lv_font_t lv_font_arvo_24;
-/* BOLD theme heading/label font -- Jost Bold (OFL, Google Fonts), a free
- * geometric-sans substitute for Futura. Fixed pairing (like GLYPH/PAPER's
- * bespoke fonts) -- the SANS/SLAB FONT setting doesn't apply here. */
+/* This is the heading and label font for the BOLD theme: Jost Bold (OFL
+ * license, Google Fonts). Jost Bold is a free geometric-sans font, in place
+ * of the Futura typeface. This pairing is fixed, in the same way as the
+ * dedicated fonts of the GLYPH and PAPER themes. The SANS/SLAB FONT setting
+ * does not apply to the BOLD theme. */
 extern const lv_font_t lv_font_jost_28;
 extern const lv_font_t lv_font_jost_24;
 #define FONT_SANS  0
@@ -404,29 +408,36 @@ static const theme_t THEME_PAPER  = { 0xE8E0CC, 0xDED4BC, 0x26211A, 0x4A4438, 0x
 /* PAPER dark: the cream sheet photo-negative -- dark sepia "blueprint" ground,
  * parchment ink. The light face keeps the canonical cream. */
 static const theme_t THEME_PAPER_DARK = { 0x211D14, 0x2B2719, 0xE4DCC4, 0xB0A88E, 0x6E6754, 0x4A4434 };
-/* BOLD: Futura-inspired geometric-sans redesign of BASIC. The neutrals sit at
- * the extremes of the scale (true black / true white, not BASIC's softer
- * off-black / warm off-white) so Jost Bold headings read as a poster rather
- * than a tint of BASIC. No art restyling -- BOLD falls through the same
- * is_pixel/is_glyph/is_paper branches as BASIC, i.e. none of them fire.
- * Its shape identity (button + cover radius, chunky progress bar, circular
- * transport keys, uppercase tracked titles) is NOT hardcoded here: it lives in
- * the ui_tune.h shape knobs, read via dv()/dv_radius(), so it is adjustable
- * from Settings > DEVELOPER. Only the FONT swap still tests is_bold_theme()
- * directly (font_lg/font_md). */
+/* BOLD is a geometric-sans redesign of BASIC, in the style of the Futura
+ * typeface. The neutral colours use pure black and pure white. BASIC uses a
+ * softer off-black and a warm off-white. This difference gives the Jost Bold
+ * headings a strong, graphic appearance.
+ *
+ * BOLD applies no special art style. BOLD uses the same is_pixel_theme(),
+ * is_glyph_theme() and is_paper_theme() branches as BASIC, and none of these
+ * branches select BOLD.
+ *
+ * The shape of BOLD (button radius, cover radius, progress bar thickness,
+ * transport key shape, and title case) is not fixed in this file. Each shape
+ * value is a shape control in ui_tune.h. Read each value with dv() or
+ * dv_radius(). The Settings > DEVELOPER page can change each value.
+ *
+ * The font is the one property that still tests is_bold_theme() directly, in
+ * font_lg() and font_md(). */
 static const theme_t THEME_BOLD       = { 0x000000, 0x1C1C1C, 0xFFFFFF, 0xB0B0B0, 0x707070, 0x2C2C2C };
 static const theme_t THEME_BOLD_LIGHT = { 0xFFFFFF, 0xF0F0F0, 0x000000, 0x555555, 0x999999, 0xE0E0E0 };
-/* s_th used to just point at one of the compiled theme_t structs. It is now
- * a mutable "live" copy so GROUND/INK overrides can recolour it without a
- * second code path -- every existing s_th-> read (hundreds of call sites)
- * is unchanged, since s_th is still a const theme_t* to something with the
- * same layout. */
+/* s_th pointed directly at one of the compiled theme_t structs in an earlier
+ * version of this file. s_th now points at a separate, changeable copy. This
+ * design lets a GROUND or INK override change the active colours with no
+ * second code path. Each existing s_th-> read keeps its original form,
+ * because s_th is still a pointer to a theme_t value. */
 static theme_t s_th_live;
 static const theme_t *s_th = &s_th_live;
 
-/* MODE picks the design language (BASIC / GLYPH / PIXEL / PAPER / BOLD); a
- * separate DARK/LIGHT toggle picks which face of that mode's palette pair is
- * live. COLOUR (accent) overlays a single accent on any combination. */
+/* MODE selects the design language: BASIC, GLYPH, PIXEL, PAPER or BOLD. A
+ * separate DARK/LIGHT toggle selects the active face of the palette pair for
+ * that mode. COLOUR (the accent) adds one accent colour to any combination
+ * of mode and face. */
 enum { MODE_BASIC = 0, MODE_GLYPH, MODE_PIXEL, MODE_PAPER, MODE_BOLD, MODE_COUNT };
 static uint8_t s_mode = MODE_BASIC;
 static bool    s_dark = true;
@@ -441,10 +452,11 @@ static const theme_t *const k_mode_palettes[MODE_COUNT][2] = {
 static void apply_palette(void)
 {
     s_th_live = *k_mode_palettes[s_mode][s_dark ? 0 : 1];
-    /* Only recolour when this mode+face actually has a GROUND/INK override --
-     * otherwise every hardware-verified theme (GLYPH/PIXEL/PAPER, all
-     * individually hand-tuned) must render byte-identical to its compiled
-     * palette, never the generic derivation. */
+    /* Apply the derived colours only when this mode and this face have a
+     * GROUND or INK override. Each hardware-verified theme (GLYPH, PIXEL and
+     * PAPER) has an individually adjusted palette. Each of these palettes
+     * must render as an exact copy of its compiled values when no override
+     * is present. */
     int face = s_dark ? 0 : 1;
     bool touched = s_dv_set[s_mode][face][DV_GROUND_R] || s_dv_set[s_mode][face][DV_GROUND_G] ||
                    s_dv_set[s_mode][face][DV_GROUND_B] || s_dv_set[s_mode][face][DV_INK_R]    ||
@@ -465,31 +477,37 @@ static bool s_theme_art = true;
 
 /* ---- Layout knobs, indexed by s_mode (values live in ui_tune.h) ---------- */
 
-/* ---- DEVELOPER knobs: compiled defaults + live per-mode NVS overrides -----
+/* ---- DEVELOPER controls: compiled defaults and live per-mode NVS overrides -
  *
- * Everything here is table-driven off k_dv[]: the DEVELOPER settings page, the
- * NVS blob and the EXPORT dump are all plain loops over that table, so adding a
- * knob is ONE enum entry, ONE k_dv row and ONE call site -- no new UI code, no
- * NVS migration, no export code. Read a knob with dv(DV_xxx) (or dv_radius()
- * for the -1 "full pill" convention); never read a k_dvd_* array directly.
+ * The k_dv[] table controls this system. A loop over this table builds the
+ * DEVELOPER settings page. A loop over this table writes the NVS blob. A loop
+ * over this table creates the EXPORT text. Thus a new control needs only one
+ * enum entry, one k_dv row, and one call site. No new page code, NVS code, or
+ * export code is necessary. Read a control value with dv(DV_xxx). Use
+ * dv_radius() for a radius value, because dv_radius() converts the value -1 to
+ * the full pill radius. Do not read a k_dvd_* array directly.
  *
- * Value type is int32_t, not int16_t, because the set spans px (3) and ms
- * (30000) in the same table.
+ * The value type is int32_t, not int16_t. The stored values include pixel
+ * counts near 3. The stored values also include millisecond counts near
+ * 30000. Both value ranges are in the same table.
  *
- * PER-FACE: a knob flagged per_face stores dark and light independently, while
- * geometry is shared across both faces of a mode -- otherwise changing a radius
- * in dark mode and flipping to light would silently show the old radius.
- * Geometry rows always store at face slot 0.
+ * PER-FACE VALUES: a control with the per_face property stores an independent
+ * value for the dark face and the light face. A geometry control stores one
+ * value for both faces, in face slot 0. Independent storage is necessary for
+ * colour, because a radius change in the dark face must not change the light
+ * face.
  *
- * COMPILE-TIME BOUNDS: a few knobs are capped by arrays sized at build time --
- * DV_PROG_PARTS by PROG_PART_COUNT, DV_CF_MAX_SIDE by CF_CARDS_MAX, and
- * DV_CF_SCALE by CF_COL_MAX. Their ranges only ever REDUCE work; raising them
- * past the compiled bound needs a rebuild (the scratch lives in internal SRAM,
- * which is the scarce resource on this board). */
+ * LIMITS FROM THE BUILD: some controls have a range that a fixed-size array
+ * limits at build time. DV_PROG_PARTS has a limit from PROG_PART_COUNT.
+ * DV_CF_MAX_SIDE has a limit from CF_CARDS_MAX. DV_CF_SCALE has a limit from
+ * CF_COL_MAX. Each of these three controls can only decrease the quantity of
+ * work below the compiled limit. To raise a value past the compiled limit,
+ * build the firmware again. The related memory is in internal SRAM, which has
+ * limited capacity on this board. */
 
-/* Compiled defaults, one int32 array per knob so a single table type covers px
- * and ms alike. These replaced the older int16 k_tune_* arrays -- every
- * consumer now goes through dv(). */
+/* Each control has one compiled-default array of type int32_t. This single
+ * type covers pixel values and millisecond values. These arrays replaced the
+ * earlier int16_t k_tune_* arrays. Each control value now comes from dv(). */
 static const int32_t k_dvd_key_radius[MODE_COUNT]  = TUNE_KEY_RADIUS;
 static const int32_t k_dvd_art_radius[MODE_COUNT]  = TUNE_ART_RADIUS;
 static const int32_t k_dvd_prog_h[MODE_COUNT]      = TUNE_PROG_H;
@@ -550,18 +568,21 @@ static const int32_t k_dvd_pp_guard[MODE_COUNT]    = TUNE_PP_GUARD_MS;
 static const int32_t k_dvd_glyph_cell[MODE_COUNT]  = TUNE_GLYPH_CELL;
 static const int32_t k_dvd_prog_parts[MODE_COUNT]  = TUNE_PROG_PARTS;
 
-/* Number of stored faces per knob (dark, light). Defined here because the
- * GROUND/INK default arrays immediately below are the first consumer -- it
- * used to be defined much later, next to s_dv[], which meant this file only
- * compiled by accident of macro hygiene never having been checked; moved so
- * definition precedes first use like everything else in this block. */
+/* Number of stored faces (dark, light) for each control. This definition is
+ * here because the GROUND and INK default arrays below are the first
+ * consumers of this value. An earlier version of this file defined this
+ * value later, next to s_dv[]. The definition now precedes each use, in
+ * agreement with the rest of this block. */
 #define DV_FACES 2
 
-/* GROUND (bg) / INK (text) decomposed to R/G/B so each can be a plain 0-255
- * slider. Values are read straight off the compiled theme_t table above --
- * dark block first, then light block -- so an unmoved slider reconstructs
- * the exact committed colour; apply_palette() only recomputes the derived
- * slots (surface/text2/dim/track) once a slider has actually been touched. */
+/* GROUND (background) and INK (text) each separate into a red value, a green
+ * value and a blue value. Each colour part can then use a plain slider with a
+ * range from 0 to 255. Each value comes directly from the compiled theme_t
+ * table above. The dark values are first. The light values are second. An
+ * unmoved slider thus produces the exact committed colour.
+ *
+ * apply_palette() computes the derived colours (surface, text2, dim, track)
+ * only after a user changes a slider. */
 static const int32_t k_dvd_ground_r[MODE_COUNT * DV_FACES] = {
     /* dark  */   0,  20,  10,  33,   0,
     /* light */ 236, 237, 226, 232, 255,
@@ -725,16 +746,20 @@ static const dv_meta_t k_dv[DV_COUNT] = {
 #undef DVT
 #undef DVE
 
-/* Override storage. An explicit "is set" flag rather than an in-band sentinel:
- * 0 is a legitimate value for many of these knobs, so zero-initialised static
- * storage MUST mean "no override" or a cold boot would pin every knob to 0 and
- * flatten every theme. It also removes any init-order hazard -- dv() is safe to
- * call before load_settings() runs.
- * Middle index is the FACE (0 = dark, 1 = light); rows with per_face == 0
- * always use slot 0 so geometry does not change when the face is flipped. */
+/* Override storage. Each control uses a separate "is set" flag, not a special
+ * value inside the data. The value 0 is a valid setting for many controls.
+ * Zero-initialised static storage must therefore mean "no override". If this
+ * rule did not apply, a cold boot would set every control to 0 and remove
+ * each theme difference. This design also removes an init-order risk: dv()
+ * gives a correct result even before load_settings() runs.
+ *
+ * The middle array index is the FACE (0 for dark, 1 for light). A row with
+ * per_face == 0 always uses slot 0, so a geometry value does not change when
+ * the user changes the face. */
 static int32_t s_dv[MODE_COUNT][DV_FACES][DV_COUNT];
-/* uint8_t not bool: memcpy'd straight in and out of the NVS blob, so the
- * storage type must be unambiguously one byte on both sides. */
+/* This array uses uint8_t, not bool. The NVS blob copies this array directly
+ * with memcpy(). The storage type must therefore have an exact size of one
+ * byte, on each build target. */
 static uint8_t s_dv_set[MODE_COUNT][DV_FACES][DV_COUNT];
 
 typedef struct {
@@ -787,18 +812,21 @@ static uint32_t mix_hex(uint32_t a, uint32_t b, float t)
     if (c > 255) c = 255;
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)c;
 }
-/* Radius knobs use -1 for "full pill"; translate to LVGL's sentinel. */
+/* A radius control uses -1 for a full pill shape. This function converts -1
+ * to the sentinel value that LVGL uses for a full pill shape. */
 static int32_t dv_radius(int idx)
 {
     int32_t v = dv(idx);
     return (v < 0) ? LV_RADIUS_CIRCLE : v;
 }
 
-/* ASCII-only uppercase fold shared by every role that can be capitalised.
- * Deliberately a-z only: the compiled fonts carry Latin-1 and Extended-A,
- * whose accented letters are MULTI-BYTE UTF-8, and blindly upcasing those
- * bytes would corrupt the sequence into mojibake. Folding just a-z leaves
- * every accented character legible in its original case. */
+/* This function changes a lowercase ASCII letter to uppercase. Each role that
+ * can use uppercase text calls this function. The function changes only the
+ * range a to z, on purpose. The compiled fonts also cover the Latin-1 and
+ * Extended-A ranges. An accented letter in these ranges uses more than one
+ * byte in UTF-8 encoding. A byte-by-byte change to uppercase would damage
+ * this encoding and produce incorrect characters. The a-to-z range keeps
+ * each accented character correct, in its original case. */
 static void dv_apply_case(lv_obj_t *label, const char *txt, int knob)
 {
     if (!label) return;
@@ -1210,10 +1238,12 @@ static lv_obj_t       *s_cf_img = NULL;
 #define NVS_KEY_SOUND         "ui_sound"
 #define NVS_KEY_VOLUME        "ui_vol"
 #define NVS_KEY_SOUND_SET     "ui_sndset"
-/* DEVELOPER shape overrides -- one blob holding the whole [mode][knob] grid
- * plus its set-flags, so adding a knob needs no new key. Versioned: a layout
- * change bumps DEV_TUNE_VER and the stale blob is ignored (falls back to the
- * compiled defaults) instead of being read as garbage. */
+/* This blob holds each DEVELOPER shape override. The blob contains the full
+ * [mode][control] grid and each of its set-flags. A new control therefore
+ * needs no new NVS key. The blob has a version number. A layout change
+ * increases DEV_TUNE_VER. When the read version does not match the current
+ * version, the code ignores the blob and uses the compiled defaults. This
+ * check prevents an incorrect read of an old blob. */
 #define NVS_KEY_DEV_TUNE      "devtune"
 #define DEV_TUNE_VER          3u
 
@@ -1907,15 +1937,13 @@ static void browser_build_cards(void)
             lv_obj_set_style_shadow_opa(card, LV_OPA_40, 0);
             lv_obj_set_style_shadow_offset_y(card, dv(DV_CARD_SHADOW) / 3, 0);
         }
-        /* Frames        lv_obj_set_style_shadow_width(card, dv(DV_CARD_SHADOW), 0);
-        if (dv(DV_CARD_SHADOW) > 0) {
-            lv_obj_set_style_shadow_opa(card, LV_OPA_40, 0);
-            lv_obj_set_style_shadow_offset_y(card, dv(DV_CARD_SHADOW) / 3, 0);
-        } (PAPER ink + playing accent) are baked into the card-pool
-         * pixels above, so they scale with the art in Focus mode -- no object
-         * border here when the pool is live. The container border is the
-         * FALLBACK only (pool alloc failed); it stays full-size in Focus, but
-         * that path is rare. */
+        /* PAPER draws an ink frame, and the playing card gets an accent frame.
+         * The code that fills each card pool tile bakes these frames directly
+         * into the pixels above. Thus these frames scale with the art in
+         * Focus mode, and this loop adds no separate object border when the
+         * pool is active. The object border below is a FALLBACK only, for a
+         * failed pool allocation. This fallback border stays full-size in
+         * Focus mode, but a pool allocation failure is a rare event. */
         if (s_card_pool) {
             lv_obj_set_style_border_width(card, dv(DV_CARD_BORDER), 0);
             lv_obj_set_style_border_color(card, lv_color_hex(s_th->text), 0);
@@ -2115,10 +2143,10 @@ static void browser_build_selection_line(void)
      * is unambiguous even in flat Carousel mode. Toggleable in Settings. */
     s_sel_line = lv_obj_create(s_screen_browser);
     lv_obj_set_size(s_sel_line, dv(DV_SEL_W), dv(DV_SEL_H));
-    /* PAPER keeps its printed hard edge; elsewhere the line caps off into a
-     * capsule, which needs to track the live thickness knob. */
-    /* PAPER keeps its printed hard edge; elsewhere the cap tracks the live
-     * thickness so the line stays a true capsule when made chunky. */
+    /* PAPER keeps its printed hard edge. In each other theme, the end of the
+     * line uses a round cap. This round cap radius follows the live
+     * thickness control, so the line keeps a capsule shape at each
+     * thickness setting. */
     lv_obj_set_style_radius(s_sel_line,
         (dv(DV_PROG_CAP) || is_paper_theme()) ? 0 : dv(DV_SEL_H) / 2, 0);
     lv_obj_set_style_border_width(s_sel_line, 0, 0);
@@ -2473,8 +2501,8 @@ static void np_build_progress_bar(void)
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(accent_color()), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
-    {   /* PROGRESS CAPS: round caps track the live bar height so the capsule
-         * stays a true capsule when the bar is made chunky. */
+    {   /* PROGRESS CAPS: a round cap radius follows the live bar height. This
+         * link keeps a rounded shape when the user sets a large bar height. */
         int32_t pr = (dv(DV_PROG_CAP) || is_paper_theme()) ? 0 : dv(DV_PROG_H) / 2;
         lv_obj_set_style_radius(s_np_progress, pr, LV_PART_MAIN);
         lv_obj_set_style_radius(s_np_progress, pr, LV_PART_INDICATOR);
@@ -3597,8 +3625,9 @@ static void prog_particles_start(lv_obj_t *screen)
 
     int y_lo = PROG_TANK_Y + 4;
     int y_span = PROG_TANK_H - 10;
-    /* The knob only ever REDUCES the count -- s_prog_pts/s_prog_objs are sized
-     * at the compiled PROG_PART_COUNT, so going past it needs a rebuild. */
+    /* This control can only decrease the particle count. The arrays
+     * s_prog_pts and s_prog_objs have the fixed size PROG_PART_COUNT. An
+     * increase past this size needs a new build. */
     for (int i = 0; i < dv(DV_PROG_PARTS) && i < PROG_PART_COUNT; i++) {
         lv_obj_t *dot = lv_obj_create(screen);
         lv_obj_set_size(dot, 3, 3);
@@ -4454,11 +4483,13 @@ static void settings_build_display_browser_style(lv_obj_t *pg_disp)
 
 static void settings_build_display_tail(lv_obj_t *pg_disp)
 {
-    /* FONT chooser: hidden in GLYPH, PAPER and BOLD -- those themes' bespoke
-     * fonts (round-dot / teletype mono / Jost Bold) are fixed and the
-     * SANS/SLAB choice doesn't apply. Clear the refs so refresh_font_selection()
-     * skips the (non-existent) buttons. Everything below flows from y0 so
-     * hiding the section closes its slot instead of leaving a 100px hole. */
+    /* The FONT chooser is hidden in the GLYPH, PAPER and BOLD themes. Each of
+     * these themes has a fixed, dedicated font (round-dot, teletype mono, or
+     * Jost Bold). The SANS/SLAB choice does not apply to these themes. This
+     * code clears the button references, so refresh_font_selection() skips
+     * the buttons that do not exist. Each item below uses y0 as a base
+     * position. Thus, when this section is hidden, the layout closes the
+     * empty slot, instead of leaving a 100 pixel gap. */
     int y0 = 694;   /* base of the post-FONT stack when FONT is shown */
     if (is_glyph_theme() || is_paper_theme() || is_bold_theme()) {
         memset(s_font_btns,   0, sizeof s_font_btns);
@@ -4892,18 +4923,22 @@ static void settings_build_setup_page(lv_obj_t *pg)
 }
 
 /* ============================ DEVELOPER tab ==============================
- * Live shape/type tuning on the real panel. One row per k_dv entry, grouped
- * into sub-pages by category, so this page grows automatically when a knob is
- * added -- there is no per-knob code here.
+ * This page gives live shape and type control on the real panel. The page has
+ * one row for each k_dv entry. Each row belongs to a sub-page, by category.
+ * The page thus grows with each new control. This page has no control-specific
+ * code.
  *
- * Values apply on RELEASE, not on every drag step: a knob change re-skins via
- * apply_theme_cb(), which deletes and rebuilds every screen (~tens of ms), so
- * doing that per slider step would stutter badly and fight the drag. Dragging
- * updates only the numeric readout; letting go commits, persists and re-skins.
+ * A control value applies on release, not during each drag step. A control
+ * change calls apply_theme_cb(), which deletes and rebuilds each screen. This
+ * rebuild takes approximately ten milliseconds. A rebuild on each drag step
+ * would make the drag motion irregular and difficult to control. During a
+ * drag, the code updates only the numeric readout. On release, the code saves
+ * the value and rebuilds each screen.
  *
- * Overrides are PER MODE -- editing BOLD's radius leaves PAPER's alone -- and
- * EXPORT dumps every mode's current values to the serial log as pasteable
- * ui_tune.h lines, so a look you land on here can be moved into git. */
+ * Each override applies to one mode only. A change to the BOLD radius does
+ * not change the PAPER radius. The EXPORT function prints the current values
+ * for each mode to the serial log, as #define lines for ui_tune.h. This
+ * function lets the user save a preferred design in the source file. */
 
 static void dev_row_refresh(int idx)
 {
@@ -4922,8 +4957,9 @@ static void dev_row_refresh(int idx)
         snprintf(b, sizeof b, "%d", (int)v);
         lv_label_set_text(s_dev_val[idx], b);
     }
-    /* Accent-coloured when the value is a live override rather than what is
-     * compiled in, so it is obvious which values have drifted from git. */
+    /* This label uses the accent colour when the value is a live override,
+     * not the compiled value. This colour shows the user each value that
+     * differs from the version in source control. */
     bool overridden = (s_dv_set[s_mode][dv_face_slot(idx)][idx] != 0);
     lv_obj_set_style_text_color(s_dev_val[idx],
         lv_color_hex(overridden ? accent_color() : s_th->text), 0);
@@ -5002,8 +5038,8 @@ static void on_dev_cat(lv_event_t *e)
     if (c >= DVC_CAT_COUNT || c == s_dev_cat) return;
     s_dev_cat = c;
     audio_play(AUDIO_SFX_BACK);
-    /* s_dev_cat and s_set_tab are both statics, so the rebuild lands back on
-     * this tab and the newly selected category. */
+    /* s_dev_cat and s_set_tab each keep their value through the rebuild.
+     * Thus the rebuilt page shows this tab, and shows the new category. */
     lv_async_call(apply_theme_cb, NULL);
 }
 
@@ -5037,13 +5073,16 @@ static void on_dev_reset_all(lv_event_t *e)
 static void on_dev_export(lv_event_t *e)
 {
     (void)e;
-    /* Print the whole grid as ui_tune.h lines so it can be pasted back into the
-     * repo -- including modes with no overrides, which print their compiled
-     * defaults, so the emitted block is always complete and valid. Per-face
-     * knobs print the ACTIVE face; the other face keeps its own stored value.
-     * COLOUR rows are skipped here -- they have no ui_tune.h macro (tune ==
-     * "-"; they compose a hex, not a single #define) and get their own
-     * section below instead. */
+    /* This function prints the full grid as ui_tune.h lines. The user can
+     * copy these lines into the repository. The function prints the compiled
+     * defaults for a mode with no override. The printed block is therefore
+     * always complete and valid. A per-face control prints its value for the
+     * ACTIVE face only; the other face keeps its own stored value.
+     *
+     * The function does not print a COLOUR row here. A COLOUR row has no
+     * matching ui_tune.h macro, because tune equals "-": each COLOUR row
+     * builds a hex value, not one #define. The next section prints each
+     * COLOUR override instead. */
     ESP_LOGI(TAG, "---- paste into components/p4_shared/include/ui_tune.h ----");
     for (int i = 0; i < DV_COUNT; i++) {
         if (k_dv[i].tune[0] == '-') continue;
@@ -5059,9 +5098,10 @@ static void on_dev_export(lv_event_t *e)
     }
     ESP_LOGI(TAG, "---- mode order: BASIC, GLYPH, PIXEL, PAPER, BOLD --------");
 
-    /* COLOUR: no single macro to paste -- print the resulting theme_t hexes
-     * for every mode+face that has an actual GROUND/INK override, so a look
-     * you keep can be hand-copied into the THEME_* line it replaces. */
+    /* COLOUR has no single macro to print. This code prints the resulting
+     * theme_t hex values for each mode and each face that has a GROUND or
+     * INK override. The user can copy a preferred set of values into the
+     * applicable THEME_* line. */
     bool any = false;
     for (int m = 0; m < MODE_COUNT && !any; m++)
         for (int f = 0; f < DV_FACES && !any; f++)
@@ -6407,13 +6447,16 @@ static void load_settings(void)
     }
     uint8_t dk = 1;
     if (nvs_get_u8(h, NVS_KEY_DARK, &dk) == ESP_OK) s_dark = (dk != 0);
-    /* DEVELOPER overrides. Loaded here, BEFORE apply_palette(), because the
-     * GROUND/INK colour knobs live in this blob and apply_palette() reads
-     * s_dv_set to decide whether to derive a live palette or use the compiled
-     * one -- loading it after the first apply_palette() call would silently
-     * ignore any saved colour override until the next rebuild. A short read,
-     * a size change or a version mismatch leaves the arrays zeroed = compiled
-     * defaults, so a stale or corrupt blob can never brick the look. */
+    /* This code loads the DEVELOPER overrides. This code runs BEFORE
+     * apply_palette(). The GROUND and INK colour controls are in this blob.
+     * apply_palette() reads s_dv_set to choose between a live palette and the
+     * compiled palette. If this code ran after the first apply_palette()
+     * call, a saved colour override would have no effect until the next
+     * rebuild.
+     *
+     * A short read, a size change, or a version mismatch leaves each array
+     * at zero, which means the compiled defaults. Thus a damaged or an old
+     * blob can never make the interface unusable. */
     {
         dev_tune_blob_t blob;
         size_t len = sizeof blob;
@@ -6427,10 +6470,12 @@ static void load_settings(void)
     uint8_t ta = 1;
     if (nvs_get_u8(h, NVS_KEY_THEME_ART, &ta) == ESP_OK) s_theme_art = (ta != 0);
     {
-        /* Per-mode accent array (C3). A pre-existing single-accent save (the
-         * old NVS_KEY_ACCENT) migrates onto every mode on first boot after
-         * the upgrade so nobody's pick is silently lost; from then on each
-         * mode is independent and NVS_KEY_ACCENT is no longer written. */
+        /* This code reads the per-mode accent array. An earlier version of
+         * the firmware saved a single accent value, under NVS_KEY_ACCENT.
+         * On the first boot after this update, the code copies that saved
+         * value to each mode. This copy keeps the value from the earlier
+         * version. After this first boot, each mode has an independent
+         * accent, and the code does not write NVS_KEY_ACCENT again. */
         uint8_t legacy = 0xFF;
         bool have_legacy = (nvs_get_u8(h, NVS_KEY_ACCENT, &legacy) == ESP_OK &&
                              legacy < ACCENT_COUNT);
@@ -6507,7 +6552,7 @@ static void save_dark(uint8_t v)                   { nvs_save_u8(NVS_KEY_DARK, v
 static void save_theme_art(uint8_t v)              { nvs_save_u8(NVS_KEY_THEME_ART, v); }
 static void save_accent(uint8_t idx)
 {
-    (void)idx;   /* the write is the whole per-mode array, not just this mode */
+    (void)idx;   /* This function writes the full per-mode array, not one mode. */
     nvs_handle_t h;
     if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_blob(h, NVS_KEY_ACCENT_PM, s_accent, sizeof s_accent);

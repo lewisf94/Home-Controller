@@ -1,21 +1,22 @@
 /*
- * ui_tune.h -- USER-TWEAKABLE layout + colour knobs for the Waveshare UI.
+ * ui_tune.h -- adjustable layout and colour values for the Waveshare UI.
  *
- * Everything here is safe to edit by eye: change a number, rebuild + flash
- * (idf.py build flash), look at the result. Nothing in ui.c needs touching.
+ * You can change each value in this file. Change a number, then build and
+ * flash the firmware with idf.py. No change to ui.c is necessary.
  *
- * Most knobs are per-MODE arrays in this order:
+ * Most values are arrays with one entry for each MODE, in this order:
  *
  *        { BASIC, GLYPH, PIXEL, PAPER, BOLD }
  *
- * so each theme can have its own spacing without affecting the others. BOLD
- * reuses BASIC's geometry throughout (it's a font/palette/radius redesign of
- * BASIC, not a new layout) except TUNE_TITLE_LETTER_SP, where it adds a touch
- * of tracking for the geometric-poster feel.
- * Y values are pixels from the top of the 800x480 landscape panel; X from the
- * left. The album strip is TUNE_SCROLLER_Y tall SCROLLER_H (292) px in every
- * browser style -- BASIC/GLYPH/PIXEL start at y30 (bottom y322); PAPER starts
- * at y54 to clear its header rule (bottom y346).
+ * Each theme thus has independent spacing. BOLD uses the same geometry as
+ * BASIC, because BOLD changes only the font, the palette and the radius.
+ * TUNE_TITLE_LETTER_SP is the one exception. BOLD adds letter spacing there.
+ *
+ * Y values are pixels from the top of the 800x480 landscape panel. X values
+ * are pixels from the left. The album strip is SCROLLER_H (292) pixels tall
+ * in each browser style. BASIC, GLYPH and PIXEL start the strip at y30, and
+ * the strip ends at y322. PAPER starts the strip at y54 to give clearance
+ * below the header rule, and the strip ends at y346.
  */
 #pragma once
 
@@ -38,63 +39,85 @@
 #define TUNE_ACCENT_COLS  8
 
 /* =========================================================================
- * LIVE KNOBS -- every macro from here to the end of the file is ALSO
- * adjustable on the device under Settings > DEVELOPER (grouped into the TYPE /
- * SHAPE / LAYOUT / BROWSER / ART sub-pages). On-device edits are stored as NVS
- * overrides for the mode you edited; the values here stay the compiled
- * defaults and are what a RESET returns to.
+ * ADJUSTABLE VALUES
  *
- * ROUND TRIP: tune on device -> tap EXPORT -> the serial monitor prints these
- * exact #define lines with your values -> paste them back here -> RESET MODE on
- * the device so the compiled defaults are live again -> commit. The printed
- * format is byte-identical to the lines below, so paste-over is safe.
+ * You can also change each macro below on the device. Use the DEVELOPER page
+ * in the Settings menu. The page has these groups: TYPE, COLOUR, SHAPE,
+ * LAYOUT, BROWSER and ART.
  *
- * FORMATTING: the columns are 6 wide because the same formatter emits both
- * these lines and the device's EXPORT. Keep that width if you hand-edit, or
- * the round trip stops being a clean diff.
+ * The device keeps each change in NVS as an override for the applicable mode.
+ * The values in this file stay the compiled defaults. The RESET function on
+ * the device removes the overrides and makes these values operative again.
  *
- * COMPILE-TIME BOUNDS: TUNE_PROG_PARTS, TUNE_CF_MAX_SIDE and TUNE_CF_SCALE are
- * capped by arrays sized at build time (PROG_PART_COUNT, CF_CARDS_MAX,
- * CF_COL_MAX in ui.c). Their on-device sliders only ever REDUCE work; raising
- * them past the compiled bound needs a rebuild, because the scratch lives in
- * internal SRAM, which is the scarce resource on this board.
+ * TRANSFER OF VALUES FROM THE DEVICE TO THIS FILE:
+ *
+ *   1. Change the values on the DEVELOPER page.
+ *   2. Push EXPORT. The serial monitor prints the applicable #define lines.
+ *   3. Copy the printed lines into this file.
+ *   4. Push RESET MODE on the device to remove the overrides.
+ *   5. Commit this file.
+ *
+ * The printed lines have the same format as the lines below. Thus you can
+ * replace a line directly.
+ *
+ * FORMAT: the columns have a width of 6 characters. The same code prints
+ * these lines and the EXPORT lines. If you change a value manually, keep this
+ * width. If the width is different, the two formats do not agree.
+ *
+ * LIMITS FROM THE BUILD: arrays with a fixed size at build time limit
+ * TUNE_PROG_PARTS, TUNE_CF_MAX_SIDE and TUNE_CF_SCALE. The applicable arrays
+ * are PROG_PART_COUNT, CF_CARDS_MAX and CF_COL_MAX in ui.c.
+ *
+ * The sliders for these three values can only decrease the quantity of work.
+ * To increase a value more than the compiled limit, build the firmware again.
+ * The related memory is in internal SRAM, which has limited capacity on this
+ * board.
  * ========================================================================= */
-/* Corner radius (px) of every boxy button/key. -1 means a full pill
- * (LV_RADIUS_CIRCLE). GLYPH's pill and PAPER's hard square are part of those
- * themes' identities -- BOLD's 14 is its rounded-geometric signature. */
+/* Corner radius in pixels of each rectangular button and key. A value of -1
+ * gives a full pill shape (LV_RADIUS_CIRCLE). The pill shape in GLYPH and the
+ * square shape in PAPER are part of the design of those themes. The value 14
+ * gives BOLD its geometric shape. */
 #define TUNE_KEY_RADIUS        {     3,    -1,     3,     0,    14 }
-/* Corner radius (px) of album cards + the now-playing cover. 0 = hard square
- * (every theme's original look); BOLD softens them to match its buttons. */
+/* Corner radius in pixels of the album cards and the now-playing cover. A
+ * value of 0 gives a square corner, which is the initial design of each
+ * theme. BOLD uses a radius that agrees with the BOLD buttons. */
 #define TUNE_ART_RADIUS        {     0,     0,     0,     0,     7 }
-/* Progress-bar thickness (px). BOLD's chunky bar is a deliberate flat block
- * rather than the hairline the other themes use. */
+/* Thickness of the progress bar in pixels. BOLD uses a thick bar. The other
+ * themes use a thin bar. */
 #define TUNE_PROG_H            {     6,     6,     6,     6,    12 }
 /* Selection underline under the centred album: width then thickness (px). */
 #define TUNE_SEL_W             {    88,    88,    88,    88,   120 }
 #define TUNE_SEL_H             {     3,     3,     3,     3,     8 }
-/* 1 = transport keys (prev/play/next) are drawn as true circles regardless of
- * TUNE_KEY_RADIUS. Futura's defining shape is the perfect circle, so BOLD
- * takes it; the others keep their square-ish keys. */
+/* A value of 1 makes the transport keys circular. The transport keys are the
+ * previous, play and next keys. This value has precedence over
+ * TUNE_KEY_RADIUS. The circle is a primary shape of the Futura typeface, thus
+ * BOLD uses circular keys. The other themes use rectangular keys. */
 #define TUNE_TKEY_CIRCLE       {     0,     0,     0,     0,     1 }
-/* 1 = force album/track TITLES to uppercase (artist stays as supplied -- the
- * caps/mixed pairing is the point). LVGL has no text-transform, so ui.c
- * upcases the string itself; ASCII a-z only, so accented metadata survives. */
+/* A value of 1 changes each album title and track title to uppercase. The
+ * artist name does not change, because the difference between the two lines
+ * is intentional.
+ *
+ * LVGL has no text-transform function. Thus ui.c changes the characters in
+ * the string. ui.c changes only the ASCII characters a to z. Accented
+ * characters stay in their initial form. */
 #define TUNE_TITLE_UPPER       {     0,     0,     0,     0,     1 }
 
 /* ---- TYPE ---------------------------------------------------------------
- * Letter spacing is per ROLE, so a tracked title can sit over an untracked
- * artist line. Uppercase is likewise per role. */
+ * Each text role has an independent letter spacing value. Thus a title with
+ * added letter spacing can be above an artist name with no added letter
+ * spacing. Each text role also has an independent uppercase value. */
 #define TUNE_ARTIST_LSP        {     0,     0,     0,     0,     1 }
 #define TUNE_HEADER_LSP        {     2,     2,     2,     2,     3 }
 #define TUNE_ARTIST_UPPER      {     0,     0,     0,     0,     0 }
 /* Extra px between wrapped lines (LVGL text_line_space). */
 #define TUNE_LINE_SPACE        {     0,     0,     0,     0,     0 }
-/* Marquee: full scroll cycle in ms, and 1 = only scroll when the text is
- * actually too wide (0 = always scroll, LVGL's default circular behaviour). */
+/* Duration in milliseconds of one full marquee cycle. A TUNE_MARQUEE_FIT_ONLY
+ * value of 1 moves the text only when the text is too wide for the label. A
+ * value of 0 always moves the text, which is the default LVGL function. */
 #define TUNE_MARQUEE_MS        { 30000, 30000, 30000, 30000, 30000 }
 #define TUNE_MARQUEE_FIT_ONLY  {     1,     1,     1,     1,     1 }
-/* Title block alignment: 0 = centred, 1 = left, 2 = right. Left-aligned with
- * tracking is the classic geometric-poster setting. */
+/* Alignment of the title text: 0 gives centre, 1 gives left, 2 gives right.
+ * Left alignment with added letter spacing gives a geometric appearance. */
 #define TUNE_TITLE_ALIGN       {     0,     0,     0,     0,     0 }
 /* Overflow handling for titles: 0 = marquee, 1 = ellipsis, 2 = hard clip. */
 #define TUNE_TITLE_LONG        {     0,     0,     0,     0,     0 }
@@ -102,13 +125,13 @@
 /* ---- SHAPE --------------------------------------------------------------- */
 /* Gap between the three transport keys (px). */
 #define TUNE_TKEY_GAP          {    28,    28,    28,    28,    28 }
-/* Border thickness (px) on album cards and on buttons. These carry theme
- * identity -- PAPER's printed 2 px rule, GLYPH's 1 px hairline -- so changing
- * them changes how "drawn" the UI reads. 0 = borderless. */
+/* Border thickness in pixels on the album cards and on the buttons. These
+ * borders are part of the design of each theme. PAPER uses a 2 pixel border
+ * and GLYPH uses a 1 pixel border. A value of 0 removes the border. */
 #define TUNE_CARD_BORDER       {     0,     0,     0,     2,     0 }
 #define TUNE_BTN_BORDER        {     0,     1,     0,     2,     0 }
-/* Drop shadow depth (px) under the centred album card. 0 = flat (the default
- * everywhere -- flat is a deliberate choice, not an omission). */
+/* Depth in pixels of the shadow below the centred album card. A value of 0
+ * removes the shadow. Each theme uses 0, which is intentional. */
 #define TUNE_CARD_SHADOW       {     0,     0,     0,     0,     0 }
 /* Progress bar end caps: 0 = rounded, 1 = square. */
 #define TUNE_PROG_CAP          {     0,     0,     0,     1,     0 }
@@ -136,7 +159,7 @@
 /* Screen transition duration (ms) when the style is not NONE. */
 #define TUNE_TRANS_MS          {   300,   300,   300,   300,   300 }
 /* Auto-dim: seconds of inactivity before each stage, then the two backlight
- * levels (% of the user's brightness). */
+ * levels as a percentage of the brightness that the user selected. */
 #define TUNE_DIM_AFTER_S       {    60,    60,    60,    60,    60 }
 #define TUNE_DIM_DEEP_S        {   300,   300,   300,   300,   300 }
 #define TUNE_DIM_LEVEL         {    30,    30,    30,    30,    30 }
@@ -171,9 +194,9 @@
  * start lower (strip bottom y346) so their title/artist follow to 362/404. */
 #define TUNE_BR_TITLE_Y        {   362,   342,   342,   362,   362 }
 #define TUNE_BR_ARTIST_Y       {   404,   384,   384,   404,   404 }
-/* Extra letter spacing (px) on the browser + now-playing title text. BOLD
- * gets real tracking on its Jost Bold headings -- the geometric-poster
- * feel Futura/Bauhaus titling leans on. */
+/* Added letter spacing in pixels on the browser title and the now-playing
+ * title. BOLD uses added letter spacing on the Jost Bold headings, because
+ * the Futura and Bauhaus typefaces use wide letter spacing on titles. */
 #define TUNE_TITLE_LETTER_SP   {     0,     0,     0,     0,     3 }
 /* Selection underline: px below the strip bottom (TUNE_SCROLLER_Y + 292). */
 #define TUNE_SEL_LINE_DY       {     4,     4,     4,     4,     4 }
