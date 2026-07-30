@@ -954,6 +954,9 @@ a native Sendspin player.
 ## Coding conventions for this codebase
 
 - **No emojis in code or commit messages** (Lewis preference)
+- **Simplified Technical English:** Write all new or changed explanatory text
+  in ASD-STE100 Simplified Technical English, Issue 9. Follow
+  [`docs/WRITING-STANDARD.md`](docs/WRITING-STANDARD.md).
 - **Create dynamic workflows when the task warrants it** — use TodoWrite (or
   similar live task lists) for any multi-step job, and adapt the plan as scope
   shifts rather than grinding through a fixed sequence. Triage first, group
