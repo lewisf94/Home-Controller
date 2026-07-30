@@ -386,13 +386,30 @@ What's in `ui.c` as committed:
   `s_mode`; edit a number, rebuild, look — no `ui.c` changes needed.
 - **Settings > DEVELOPER tab + the live-knob layer (2026-07-30) — NOT YET
   HARDWARE-VERIFIED.** A 4th settings tab (`SET_TAB_COUNT=4`) for tuning the
-  look on the real panel instead of rebuilding. **59 knobs**, each with a
+  look on the real panel instead of rebuilding. **65 knobs**, each with a
   compiled per-MODE default in `ui_tune.h` and a live **per-mode** NVS override,
-  grouped into five sub-pages (`DVC_TYPE / DVC_SHAPE / DVC_LAYOUT / DVC_BROWSER
-  / DVC_ART`) because one flat list of 59 rows is unusable:
+  grouped into six sub-pages (`DVC_TYPE / DVC_COLOUR / DVC_SHAPE / DVC_LAYOUT /
+  DVC_BROWSER / DVC_ART`) because one flat list of 65 rows is unusable:
   - **TYPE** — per-role tracking (title/artist/header), line spacing, uppercase
     title + artist (independent, so caps-title over mixed-artist stays possible),
     marquee speed, scroll-only-if-long, title alignment, title overflow mode.
+  - **COLOUR** — GROUND (bg) and INK (text) as six R/G/B 0-255 sliders (three
+    each), **per-face** (`per_face=1`) so dark and light are tuned
+    independently. `surface`/`text2`/`dim`/`track` are never edited directly:
+    `apply_palette()` derives them from GROUND/INK with the same mix ratios
+    (0.110 / 0.305 / 0.560 / 0.172) validated against `tools/theme-bench.html`.
+    Critically, this only fires when GROUND or INK has an actual override for
+    the active mode+face — a standalone harness proves all 10 mode×face
+    combinations reconstruct their compiled `theme_t` byte-for-byte when
+    untouched, so GLYPH/PIXEL/PAPER's hand-tuned, hardware-verified palettes
+    cannot silently drift. EXPORT prints these as `bg=/surface=/text=/...`
+    hex lines (not a `ui_tune.h` macro — there's no single `#define` for a
+    derived palette) for hand-copying into the `THEME_*` line it replaces.
+    **Accent went per-mode in the same pass (C3):** `s_accent` is now
+    `s_accent[MODE_COUNT]`, NVS blob `accent_pm`; a pre-existing single-accent
+    save migrates onto every mode once, then each mode is independent. The
+    DISPLAY tab's existing 8-swatch COLOUR picker is unchanged UI, now
+    writing/reading the active mode's slot.
   - **SHAPE** — button + cover radius, progress height and end caps, selection
     width/height, round transport keys, transport size + gap, card and button
     border, card shadow, screen padding.
@@ -407,26 +424,44 @@ What's in `ui.c` as committed:
     page, the NVS blob and the EXPORT dump as plain loops, so adding a knob is
     one enum entry + one `k_dv` row + one call site — no new UI or persistence
     code. Read a knob with `dv(DV_xxx)` (or `dv_radius()`, which maps the `-1`
-    "full pill" convention to `LV_RADIUS_CIRCLE`); never read `k_tune_*`
-    directly for these eight.
-  - **Override storage uses an explicit `s_dv_set[][]` flag, not an in-band
+    "full pill" convention to `LV_RADIUS_CIRCLE`); never read `k_dvd_*`
+    directly. Colour rows use `tune = "-"` (no `ui_tune.h` macro exists for a
+    derived palette) — EXPORT skips those and prints them separately.
+  - **Override storage uses an explicit `s_dv_set[][][]` flag, not an in-band
     sentinel** — `0` is legitimate for several knobs (COVER RADIUS 0, both
     toggles), so zero-initialised statics MUST mean "compiled default" or a cold
     boot would pin every knob to 0 and flatten every theme. This also removes
-    any init-order hazard: `dv()` is safe to call before `load_settings()`.
+    any init-order hazard: `dv()` is safe to call before `load_settings()` —
+    which matters because the DEVELOPER blob load was moved to happen
+    **before** the first `apply_palette()` call in `load_settings()` (it used
+    to load last); otherwise a saved GROUND/INK override would render as the
+    compiled default for one frame, or on themes never rebuilt, forever.
   - **Persistence:** one versioned blob (`NVS_KEY_DEV_TUNE` / `DEV_TUNE_VER`,
-    now **v2**, ~2.9 KB) in the existing `settings` namespace. A short read, a
+    now **v3**, ~3.3 KB) in the existing `settings` namespace. A short read, a
     size change or a version mismatch leaves the arrays zeroed = compiled
     defaults, so a stale blob can never brick the look. **Bump `DEV_TUNE_VER`
-    whenever the enum or the value type changes** — v1 was int16 and had no
-    face dimension, so it is deliberately rejected rather than misread.
+    whenever the enum or the value type changes** — v1 was int16 with no face
+    dimension, v2 had 59 rows; both are deliberately rejected rather than
+    misread now that `DV_COUNT` = 65 changes `sizeof(dev_tune_blob_t)`.
   - **Value type is `int32_t`,** not int16: the set spans px (3), ms (30000)
     and seconds (3600) in one table.
   - **Per-face storage** (`s_dv[mode][face][knob]`) with a `per_face` flag per
-    row: colour-ish knobs would store dark and light independently, while
-    geometry shares face slot 0 — otherwise changing a radius in dark mode and
-    flipping to light would silently show the old value. No row sets the flag
-    yet (the colour knobs are the pending batch); the storage is in place.
+    row: the six COLOUR knobs are the first to set it, storing dark and light
+    independently; geometry shares face slot 0 so a radius edited in dark mode
+    doesn't silently change when flipping to light. **Compiled defaults are
+    now also face-indexed** (`defaults[face*MODE_COUNT + mode]`, a
+    `[MODE_COUNT*DV_FACES]`-sized array for `per_face` rows) — this was added
+    alongside COLOUR; the 59 pre-existing rows are unaffected because
+    `dv_of()` forces `face=0` when `per_face` is unset, reading the same
+    `[MODE_COUNT]`-sized array at the same index as before.
+  - **No-regression guarantee for COLOUR, checked by a standalone harness:**
+    with no override set, `apply_palette()` must reconstruct every mode's
+    compiled `theme_t` — `bg`/`text` AND the derived `surface`/`text2`/`dim`/
+    `track` — byte-for-byte, for both faces. GLYPH/PIXEL/PAPER are each
+    hand-tuned per hex value, not by the mix-ratio formula, so this is the
+    guard against the derivation silently overwriting a verified look the
+    moment the knobs exist. Confirmed for all 10 mode×face combinations, plus
+    that touching BOLD/dark leaves BOLD/light and BASIC untouched.
   - **Compile-time bounds:** `TUNE_PROG_PARTS`, `TUNE_CF_MAX_SIDE` and
     `TUNE_CF_SCALE` are capped by arrays sized at build time
     (`PROG_PART_COUNT`, `CF_CARDS_MAX`, `CF_COL_MAX`). Their sliders only ever
@@ -460,9 +495,9 @@ What's in `ui.c` as committed:
   - **Not yet wired (deliberately left out rather than shipped dead):** button
     label tracking/uppercase, artist-line style variants, and selection-
     indicator style variants all need call-site work that this pass did not do.
-    Colour (ground/ink/per-slot/per-mode accent), audio SFX parameters, the
-    knob-haptic block and the TOOLS items (IMPORT, presets, hold-to-preview,
-    on-screen overlay, HTTP export) are the pending batches.
+    Accent-on-what toggles (which elements take the accent), audio SFX
+    parameters, the knob-haptic block and the TOOLS items (IMPORT, presets,
+    hold-to-preview, on-screen overlay, HTTP export) are the pending batches.
 - **`tools/theme-bench.html` — browser design bench (no build step).** Renders
   the 800x480 UI from the firmware's own numbers (coordinates from `ui_tune.h`,
   palettes from `theme_t`, the real Jost Bold face subset in `tools/fonts/`)

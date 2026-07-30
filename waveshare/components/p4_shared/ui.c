@@ -416,7 +416,13 @@ static const theme_t THEME_PAPER_DARK = { 0x211D14, 0x2B2719, 0xE4DCC4, 0xB0A88E
  * directly (font_lg/font_md). */
 static const theme_t THEME_BOLD       = { 0x000000, 0x1C1C1C, 0xFFFFFF, 0xB0B0B0, 0x707070, 0x2C2C2C };
 static const theme_t THEME_BOLD_LIGHT = { 0xFFFFFF, 0xF0F0F0, 0x000000, 0x555555, 0x999999, 0xE0E0E0 };
-static const theme_t *s_th = &THEME_BLACK;
+/* s_th used to just point at one of the compiled theme_t structs. It is now
+ * a mutable "live" copy so GROUND/INK overrides can recolour it without a
+ * second code path -- every existing s_th-> read (hundreds of call sites)
+ * is unchanged, since s_th is still a const theme_t* to something with the
+ * same layout. */
+static theme_t s_th_live;
+static const theme_t *s_th = &s_th_live;
 
 /* MODE picks the design language (BASIC / GLYPH / PIXEL / PAPER / BOLD); a
  * separate DARK/LIGHT toggle picks which face of that mode's palette pair is
@@ -432,7 +438,27 @@ static const theme_t *const k_mode_palettes[MODE_COUNT][2] = {
     [MODE_PAPER] = { &THEME_PAPER_DARK, &THEME_PAPER },
     [MODE_BOLD]  = { &THEME_BOLD,       &THEME_BOLD_LIGHT },
 };
-static void apply_palette(void) { s_th = k_mode_palettes[s_mode][s_dark ? 0 : 1]; }
+static void apply_palette(void)
+{
+    s_th_live = *k_mode_palettes[s_mode][s_dark ? 0 : 1];
+    /* Only recolour when this mode+face actually has a GROUND/INK override --
+     * otherwise every hardware-verified theme (GLYPH/PIXEL/PAPER, all
+     * individually hand-tuned) must render byte-identical to its compiled
+     * palette, never the generic derivation. */
+    int face = s_dark ? 0 : 1;
+    bool touched = s_dv_set[s_mode][face][DV_GROUND_R] || s_dv_set[s_mode][face][DV_GROUND_G] ||
+                   s_dv_set[s_mode][face][DV_GROUND_B] || s_dv_set[s_mode][face][DV_INK_R]    ||
+                   s_dv_set[s_mode][face][DV_INK_G]    || s_dv_set[s_mode][face][DV_INK_B];
+    if (touched) {
+        uint32_t g = dv_ground_hex(), k = dv_ink_hex();
+        s_th_live.bg      = g;
+        s_th_live.text    = k;
+        s_th_live.surface = mix_hex(g, k, 0.110f);
+        s_th_live.text2   = mix_hex(k, g, 0.305f);
+        s_th_live.dim     = mix_hex(k, g, 0.560f);
+        s_th_live.track   = mix_hex(g, k, 0.172f);
+    }
+}
 /* THEME ALBUM ART: when off, PIXEL/PAPER keep their chrome but the covers stay
  * unstyled (no dither/pixelation). NVS-persisted. */
 static bool s_theme_art = true;
@@ -524,6 +550,43 @@ static const int32_t k_dvd_pp_guard[MODE_COUNT]    = TUNE_PP_GUARD_MS;
 static const int32_t k_dvd_glyph_cell[MODE_COUNT]  = TUNE_GLYPH_CELL;
 static const int32_t k_dvd_prog_parts[MODE_COUNT]  = TUNE_PROG_PARTS;
 
+/* Number of stored faces per knob (dark, light). Defined here because the
+ * GROUND/INK default arrays immediately below are the first consumer -- it
+ * used to be defined much later, next to s_dv[], which meant this file only
+ * compiled by accident of macro hygiene never having been checked; moved so
+ * definition precedes first use like everything else in this block. */
+#define DV_FACES 2
+
+/* GROUND (bg) / INK (text) decomposed to R/G/B so each can be a plain 0-255
+ * slider. Values are read straight off the compiled theme_t table above --
+ * dark block first, then light block -- so an unmoved slider reconstructs
+ * the exact committed colour; apply_palette() only recomputes the derived
+ * slots (surface/text2/dim/track) once a slider has actually been touched. */
+static const int32_t k_dvd_ground_r[MODE_COUNT * DV_FACES] = {
+    /* dark  */   0,  20,  10,  33,   0,
+    /* light */ 236, 237, 226, 232, 255,
+};
+static const int32_t k_dvd_ground_g[MODE_COUNT * DV_FACES] = {
+    /* dark  */   0,  20,  12,  29,   0,
+    /* light */ 234, 235, 230, 224, 255,
+};
+static const int32_t k_dvd_ground_b[MODE_COUNT * DV_FACES] = {
+    /* dark  */   0,  18,  10,  20,   0,
+    /* light */ 230, 231, 222, 204, 255,
+};
+static const int32_t k_dvd_ink_r[MODE_COUNT * DV_FACES] = {
+    /* dark  */ 250, 240, 230, 228, 255,
+    /* light */  26,  20,  16,  38,   0,
+};
+static const int32_t k_dvd_ink_g[MODE_COUNT * DV_FACES] = {
+    /* dark  */ 250, 238, 230, 220, 255,
+    /* light */  26,  20,  20,  33,   0,
+};
+static const int32_t k_dvd_ink_b[MODE_COUNT * DV_FACES] = {
+    /* dark  */ 250, 232, 230, 196, 255,
+    /* light */  26,  20,  15,  26,   0,
+};
+
 enum {
     /* TYPE */
     DV_TITLE_LSP = 0, DV_ARTIST_LSP, DV_HEADER_LSP, DV_LINE_SPACE,
@@ -544,13 +607,15 @@ enum {
     DV_DIM_LEVEL, DV_DIM_DEEP_LVL, DV_VOL_STEP, DV_TAP_TOL, DV_PP_GUARD,
     /* THEME ART */
     DV_GLYPH_CELL, DV_PROG_PARTS,
+    /* COLOUR -- per-face, so dark and light are tuned independently */
+    DV_GROUND_R, DV_GROUND_G, DV_GROUND_B, DV_INK_R, DV_INK_G, DV_INK_B,
     DV_COUNT
 };
 
 /* Sub-page categories -- without these the page is one endless scroll. */
-enum { DVC_TYPE = 0, DVC_SHAPE, DVC_LAYOUT, DVC_BROWSER, DVC_ART, DVC_CAT_COUNT };
+enum { DVC_TYPE = 0, DVC_COLOUR, DVC_SHAPE, DVC_LAYOUT, DVC_BROWSER, DVC_ART, DVC_CAT_COUNT };
 static const char *const k_dv_cat[DVC_CAT_COUNT] = {
-    "TYPE", "SHAPE", "LAYOUT", "BROWSER", "ART",
+    "TYPE", "COLOUR", "SHAPE", "LAYOUT", "BROWSER", "ART",
 };
 static uint8_t s_dev_cat = DVC_TYPE;
 
@@ -647,6 +712,13 @@ static const dv_meta_t k_dv[DV_COUNT] = {
     /* ---- THEME ART ---- */
     DVR(DV_GLYPH_CELL,  "TUNE_GLYPH_CELL",       "GLYPH DOT PITCH",   k_dvd_glyph_cell,    3,    16, DVC_ART),
     DVR(DV_PROG_PARTS,  "TUNE_PROG_PARTS",       "GLYPH PARTICLES",   k_dvd_prog_parts,    0,    44, DVC_ART),
+    /* ---- COLOUR (per-face; not printed by EXPORT -- see the note there) ---- */
+    [DV_GROUND_R] = { "-", "GROUND RED",   k_dvd_ground_r, 0, 255, DVC_COLOUR, DVK_SLIDER, 1, NULL, 0 },
+    [DV_GROUND_G] = { "-", "GROUND GREEN", k_dvd_ground_g, 0, 255, DVC_COLOUR, DVK_SLIDER, 1, NULL, 0 },
+    [DV_GROUND_B] = { "-", "GROUND BLUE",  k_dvd_ground_b, 0, 255, DVC_COLOUR, DVK_SLIDER, 1, NULL, 0 },
+    [DV_INK_R]    = { "-", "INK RED",      k_dvd_ink_r,    0, 255, DVC_COLOUR, DVK_SLIDER, 1, NULL, 0 },
+    [DV_INK_G]    = { "-", "INK GREEN",    k_dvd_ink_g,    0, 255, DVC_COLOUR, DVK_SLIDER, 1, NULL, 0 },
+    [DV_INK_B]    = { "-", "INK BLUE",     k_dvd_ink_b,    0, 255, DVC_COLOUR, DVK_SLIDER, 1, NULL, 0 },
 };
 
 #undef DVR
@@ -660,7 +732,6 @@ static const dv_meta_t k_dv[DV_COUNT] = {
  * call before load_settings() runs.
  * Middle index is the FACE (0 = dark, 1 = light); rows with per_face == 0
  * always use slot 0 so geometry does not change when the face is flipped. */
-#define DV_FACES 2
 static int32_t s_dv[MODE_COUNT][DV_FACES][DV_COUNT];
 /* uint8_t not bool: memcpy'd straight in and out of the NVS blob, so the
  * storage type must be unambiguously one byte on both sides. */
@@ -678,10 +749,44 @@ static int dv_face_slot(int idx)
 }
 static int32_t dv_of(uint8_t mode, int face, int idx)
 {
-    return s_dv_set[mode][face][idx] ? s_dv[mode][face][idx]
-                                     : k_dv[idx].defaults[mode];
+    /* Non-per_face rows keep the old [MODE_COUNT] layout (face forced to 0,
+       so this is byte-identical to the pre-colour-batch behaviour). Per-face
+       rows use a [MODE_COUNT*DV_FACES] layout, dark block then light block. */
+    int      fidx = k_dv[idx].per_face ? face : 0;
+    int32_t  d = k_dv[idx].defaults[fidx * MODE_COUNT + mode];
+    return s_dv_set[mode][face][idx] ? s_dv[mode][face][idx] : d;
 }
 static int32_t dv(int idx) { return dv_of(s_mode, dv_face_slot(idx), idx); }
+
+static uint32_t dv_ground_hex(void)
+{
+    return ((uint32_t)dv(DV_GROUND_R) << 16) | ((uint32_t)dv(DV_GROUND_G) << 8) |
+           (uint32_t)dv(DV_GROUND_B);
+}
+static uint32_t dv_ink_hex(void)
+{
+    return ((uint32_t)dv(DV_INK_R) << 16) | ((uint32_t)dv(DV_INK_G) << 8) |
+           (uint32_t)dv(DV_INK_B);
+}
+/* Same derivation the browser design bench uses (tools/theme-bench.html),
+ * validated there to reproduce the committed BOLD palette to within 1 LSB per
+ * channel: surface/text2/dim/track are never edited directly, only derived
+ * from GROUND + INK once the user has actually touched one of the six sliders. */
+static uint32_t mix_hex(uint32_t a, uint32_t b, float t)
+{
+    int ar = (int)((a >> 16) & 0xFF), ag = (int)((a >> 8) & 0xFF), ab = (int)(a & 0xFF);
+    int br = (int)((b >> 16) & 0xFF), bg = (int)((b >> 8) & 0xFF), bb = (int)(b & 0xFF);
+    int r = (int)(ar + (br - ar) * t + 0.5f);
+    int g = (int)(ag + (bg - ag) * t + 0.5f);
+    int c = (int)(ab + (bb - ab) * t + 0.5f);
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (c < 0) c = 0;
+    if (c > 255) c = 255;
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)c;
+}
 /* Radius knobs use -1 for "full pill"; translate to LVGL's sentinel. */
 static int32_t dv_radius(int idx)
 {
@@ -750,9 +855,14 @@ static void apply_title_text_style(lv_obj_t *label)
  * INDEX scheme is unchanged) but aren't shown as choices. */
 #define ACCENT_SHOWN_FIRST TUNE_ACCENT_COLS   /* first index of the DEEP row (8) */
 #define ACCENT_SHOWN_COUNT TUNE_ACCENT_COLS   /* 8 hues, single row */
-static uint8_t s_accent = ACCENT_SHOWN_FIRST;   /* deep orange -- first DEEP swatch */
+/* One accent per MODE (C3) -- BOLD can run a different hue than PAPER. All
+ * five default to the same deep orange, matching the old single global. */
+static uint8_t s_accent[MODE_COUNT] = {
+    ACCENT_SHOWN_FIRST, ACCENT_SHOWN_FIRST, ACCENT_SHOWN_FIRST,
+    ACCENT_SHOWN_FIRST, ACCENT_SHOWN_FIRST,
+};
 static const uint32_t k_accents[ACCENT_COUNT] = TUNE_ACCENTS;
-static uint32_t accent_color(void) { return k_accents[s_accent]; }
+static uint32_t accent_color(void) { return k_accents[s_accent[s_mode]]; }
 
 /* Browser styles:
  *  - CAROUSEL:  flat row, all cards same size (the original).
@@ -1090,7 +1200,8 @@ static lv_obj_t       *s_cf_img = NULL;
 #define NVS_KEY_MODE          "ui_mode"
 #define NVS_KEY_DARK          "ui_dark"
 #define NVS_KEY_THEME_ART     "ui_themeart"
-#define NVS_KEY_ACCENT        "accent"
+#define NVS_KEY_ACCENT        "accent"       /* legacy; migrated then unused */
+#define NVS_KEY_ACCENT_PM     "accent_pm"    /* uint8_t[MODE_COUNT] */
 #define NVS_KEY_BROWSER_STYLE "browser_style"
 #define NVS_KEY_SEL_LINE      "sel_line"
 #define NVS_KEY_BRIGHTNESS    "brightness"
@@ -1104,7 +1215,7 @@ static lv_obj_t       *s_cf_img = NULL;
  * change bumps DEV_TUNE_VER and the stale blob is ignored (falls back to the
  * compiled defaults) instead of being read as garbage. */
 #define NVS_KEY_DEV_TUNE      "devtune"
-#define DEV_TUNE_VER          2u
+#define DEV_TUNE_VER          3u
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
@@ -2714,7 +2825,7 @@ static void refresh_accent_selection(void)
 {
     for (int i = 0; i < ACCENT_COUNT; i++) {
         if (!s_accent_btns[i] || !s_accent_labels[i]) continue;
-        bool sel = (i == (int)s_accent);
+        bool sel = (i == (int)s_accent[s_mode]);
         lv_obj_set_style_bg_color(s_accent_btns[i], lv_color_hex(k_accents[i]), 0);
         lv_obj_set_style_border_width(s_accent_btns[i], sel ? 3 : 0, 0);
         lv_obj_set_style_border_color(s_accent_btns[i], lv_color_hex(s_th->text), 0);
@@ -4929,9 +5040,13 @@ static void on_dev_export(lv_event_t *e)
     /* Print the whole grid as ui_tune.h lines so it can be pasted back into the
      * repo -- including modes with no overrides, which print their compiled
      * defaults, so the emitted block is always complete and valid. Per-face
-     * knobs print the ACTIVE face; the other face keeps its own stored value. */
+     * knobs print the ACTIVE face; the other face keeps its own stored value.
+     * COLOUR rows are skipped here -- they have no ui_tune.h macro (tune ==
+     * "-"; they compose a hex, not a single #define) and get their own
+     * section below instead. */
     ESP_LOGI(TAG, "---- paste into components/p4_shared/include/ui_tune.h ----");
     for (int i = 0; i < DV_COUNT; i++) {
+        if (k_dv[i].tune[0] == '-') continue;
         char line[192];
         int  n = snprintf(line, sizeof line, "#define %-22s {", k_dv[i].tune);
         for (int m = 0; m < MODE_COUNT && n > 0 && n < (int)sizeof line; m++) {
@@ -4943,6 +5058,34 @@ static void on_dev_export(lv_event_t *e)
         ESP_LOGI(TAG, "%s", line);
     }
     ESP_LOGI(TAG, "---- mode order: BASIC, GLYPH, PIXEL, PAPER, BOLD --------");
+
+    /* COLOUR: no single macro to paste -- print the resulting theme_t hexes
+     * for every mode+face that has an actual GROUND/INK override, so a look
+     * you keep can be hand-copied into the THEME_* line it replaces. */
+    bool any = false;
+    for (int m = 0; m < MODE_COUNT && !any; m++)
+        for (int f = 0; f < DV_FACES && !any; f++)
+            if (s_dv_set[m][f][DV_GROUND_R] || s_dv_set[m][f][DV_INK_R]) any = true;
+    if (any) {
+        ESP_LOGI(TAG, "---- colour overrides (hand-copy into the THEME_* line) ---");
+        for (int m = 0; m < MODE_COUNT; m++)
+            for (int f = 0; f < DV_FACES; f++) {
+                if (!s_dv_set[m][f][DV_GROUND_R] && !s_dv_set[m][f][DV_INK_R]) continue;
+                uint32_t g = (uint32_t)dv_of((uint8_t)m, f, DV_GROUND_R) << 16 |
+                             (uint32_t)dv_of((uint8_t)m, f, DV_GROUND_G) << 8 |
+                             (uint32_t)dv_of((uint8_t)m, f, DV_GROUND_B);
+                uint32_t k = (uint32_t)dv_of((uint8_t)m, f, DV_INK_R) << 16 |
+                             (uint32_t)dv_of((uint8_t)m, f, DV_INK_G) << 8 |
+                             (uint32_t)dv_of((uint8_t)m, f, DV_INK_B);
+                uint32_t sf = mix_hex(g, k, 0.110f), t2 = mix_hex(k, g, 0.305f);
+                uint32_t dm = mix_hex(k, g, 0.560f), tr = mix_hex(g, k, 0.172f);
+                ESP_LOGI(TAG, "%s/%s: bg=0x%06X surface=0x%06X text=0x%06X "
+                         "text2=0x%06X dim=0x%06X track=0x%06X",
+                         k_mode_names[m], f ? "light" : "dark",
+                         (unsigned)g, (unsigned)sf, (unsigned)k,
+                         (unsigned)t2, (unsigned)dm, (unsigned)tr);
+            }
+    }
     audio_play(AUDIO_SFX_CONNECT);
 }
 
@@ -4950,13 +5093,15 @@ static void settings_build_dev_page(lv_obj_t *pg)
 {
     memset(s_dev_val, 0, sizeof s_dev_val);
 
-    /* Category chips: with ~60 knobs a single list is unusable, so each row
-     * belongs to a sub-page and only the active category is built. */
+    /* Category chips: with ~65 knobs a single list is unusable, so each row
+     * belongs to a sub-page and only the active category is built. Sized for
+     * 6 categories (6 x 118 + 5 x 6 gaps = 738, inside the 800 px panel); the
+     * original 148/154 pitch was set for 5 and would overflow at 6. */
     for (int c = 0; c < DVC_CAT_COUNT; c++) {
         lv_obj_t *chip = lv_button_create(pg);
-        lv_obj_set_size(chip, 148, 40);
+        lv_obj_set_size(chip, 118, 40);
         lv_obj_align(chip, LV_ALIGN_TOP_MID,
-                     (int)((c - (DVC_CAT_COUNT - 1) / 2.0f) * 154.0f), 0);
+                     (int)((c - (DVC_CAT_COUNT - 1) / 2.0f) * 124.0f), 0);
         style_key_btn(chip);
         style_button_press(chip);
         bool sel = (c == (int)s_dev_cat);
@@ -6060,8 +6205,8 @@ static void on_art_toggle(lv_event_t *e)
 static void on_accent_option(lv_event_t *e)
 {
     uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-    if (idx >= ACCENT_COUNT || idx == s_accent) return;
-    s_accent = idx;
+    if (idx >= ACCENT_COUNT || idx == s_accent[s_mode]) return;
+    s_accent[s_mode] = idx;
     save_accent(idx);
     audio_play(AUDIO_SFX_SELECT);
     ESP_LOGI(TAG, "accent -> #%06X (swatch %d)", (unsigned)k_accents[idx], (int)idx);
@@ -6262,14 +6407,43 @@ static void load_settings(void)
     }
     uint8_t dk = 1;
     if (nvs_get_u8(h, NVS_KEY_DARK, &dk) == ESP_OK) s_dark = (dk != 0);
+    /* DEVELOPER overrides. Loaded here, BEFORE apply_palette(), because the
+     * GROUND/INK colour knobs live in this blob and apply_palette() reads
+     * s_dv_set to decide whether to derive a live palette or use the compiled
+     * one -- loading it after the first apply_palette() call would silently
+     * ignore any saved colour override until the next rebuild. A short read,
+     * a size change or a version mismatch leaves the arrays zeroed = compiled
+     * defaults, so a stale or corrupt blob can never brick the look. */
+    {
+        dev_tune_blob_t blob;
+        size_t len = sizeof blob;
+        if (nvs_get_blob(h, NVS_KEY_DEV_TUNE, &blob, &len) == ESP_OK &&
+            len == sizeof blob && blob.ver == DEV_TUNE_VER) {
+            memcpy(s_dv,     blob.val, sizeof s_dv);
+            memcpy(s_dv_set, blob.set, sizeof s_dv_set);
+        }
+    }
     apply_palette();
     uint8_t ta = 1;
     if (nvs_get_u8(h, NVS_KEY_THEME_ART, &ta) == ESP_OK) s_theme_art = (ta != 0);
-    uint8_t ac = 0;
-    if (nvs_get_u8(h, NVS_KEY_ACCENT, &ac) == ESP_OK && ac < ACCENT_COUNT) {
-        /* Only the DEEP row is offered now; fold any prior vivid/soft pick onto
-         * the same hue in that row so the selection ring stays visible. */
-        s_accent = ACCENT_SHOWN_FIRST + (ac % TUNE_ACCENT_COLS);
+    {
+        /* Per-mode accent array (C3). A pre-existing single-accent save (the
+         * old NVS_KEY_ACCENT) migrates onto every mode on first boot after
+         * the upgrade so nobody's pick is silently lost; from then on each
+         * mode is independent and NVS_KEY_ACCENT is no longer written. */
+        uint8_t legacy = 0xFF;
+        bool have_legacy = (nvs_get_u8(h, NVS_KEY_ACCENT, &legacy) == ESP_OK &&
+                             legacy < ACCENT_COUNT);
+        uint8_t pm[MODE_COUNT];
+        size_t  pm_len = sizeof pm;
+        if (nvs_get_blob(h, NVS_KEY_ACCENT_PM, pm, &pm_len) == ESP_OK &&
+            pm_len == sizeof pm) {
+            for (int m = 0; m < MODE_COUNT; m++)
+                if (pm[m] < ACCENT_COUNT) s_accent[m] = pm[m];
+        } else if (have_legacy) {
+            uint8_t folded = ACCENT_SHOWN_FIRST + (legacy % TUNE_ACCENT_COLS);
+            for (int m = 0; m < MODE_COUNT; m++) s_accent[m] = folded;
+        }
     }
     uint8_t bs = BROWSER_CAROUSEL;
     if (nvs_get_u8(h, NVS_KEY_BROWSER_STYLE, &bs) == ESP_OK && bs < BROWSER_STYLE_COUNT) {
@@ -6296,18 +6470,6 @@ static void load_settings(void)
     uint8_t ss = 0;        /* 0 = AUTO, else named-set index + 1 */
     if (nvs_get_u8(h, NVS_KEY_SOUND_SET, &ss) == ESP_OK)
         audio_set_set(ss == 0 ? -1 : (int)ss - 1);
-    /* DEVELOPER overrides. A short read, a version mismatch or a size change
-     * all leave s_dv/s_dv_set zeroed, which means "compiled defaults" -- the
-     * safe state, so a stale or corrupt blob can never brick the look. */
-    {
-        dev_tune_blob_t blob;
-        size_t len = sizeof blob;
-        if (nvs_get_blob(h, NVS_KEY_DEV_TUNE, &blob, &len) == ESP_OK &&
-            len == sizeof blob && blob.ver == DEV_TUNE_VER) {
-            memcpy(s_dv,     blob.val, sizeof s_dv);
-            memcpy(s_dv_set, blob.set, sizeof s_dv_set);
-        }
-    }
     nvs_close(h);
     apply_audio_theme();   /* AUTO target follows the restored MODE */
 }
@@ -6343,7 +6505,15 @@ static void save_transition(ui_transition_t style) { nvs_save_u8(NVS_KEY_TRANSIT
 static void save_theme(uint8_t idx)                { nvs_save_u8(NVS_KEY_MODE, idx); }
 static void save_dark(uint8_t v)                   { nvs_save_u8(NVS_KEY_DARK, v); }
 static void save_theme_art(uint8_t v)              { nvs_save_u8(NVS_KEY_THEME_ART, v); }
-static void save_accent(uint8_t idx)               { nvs_save_u8(NVS_KEY_ACCENT, idx); }
+static void save_accent(uint8_t idx)
+{
+    (void)idx;   /* the write is the whole per-mode array, not just this mode */
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, NVS_KEY_ACCENT_PM, s_accent, sizeof s_accent);
+    nvs_commit(h);
+    nvs_close(h);
+}
 static void save_browser_style(uint8_t idx)        { nvs_save_u8(NVS_KEY_BROWSER_STYLE, idx); }
 static void save_sel_line(uint8_t v)               { nvs_save_u8(NVS_KEY_SEL_LINE, v); }
 static void save_brightness(uint8_t v)             { nvs_save_u8(NVS_KEY_BRIGHTNESS, v); }
@@ -8024,7 +8194,7 @@ static void ui_log_stats(void)
     ESP_LOGI(TAG,
         "theme=%s appearance=%s theme_art=%s accent=%u(0x%06X) browser=%s font=%s",
         k_mode_names[s_mode], s_dark ? "DARK" : "LIGHT", s_theme_art ? "ON" : "OFF",
-        (unsigned)s_accent, (unsigned)k_accents[s_accent],
+        (unsigned)s_accent[s_mode], (unsigned)k_accents[s_accent[s_mode]],
         k_browser_style_names[s_browser_style],
         s_font_choice == FONT_SLAB ? "SLAB" : "SANS");
     ESP_LOGI(TAG,
