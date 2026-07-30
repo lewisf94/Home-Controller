@@ -1,129 +1,122 @@
-# cyd/platformio — Arduino/PlatformIO build (Phase 1, maintenance)
+# CYD Arduino and PlatformIO Build
 
-The original PlatformIO + Arduino-framework build of the Music Controller. Reached feature parity at the end of Phase 1.5 on TFT_eSPI direct-draw, then was rewritten on top of LVGL 9.5 to match the IDF look (centre-snap carousel, volume HUD, WiFi bars, embedded thumbnails). Active development has moved to [`../esp-idf/`](../esp-idf/), but this folder still takes perf and reliability fixes when they apply.
+This folder contains the original CYD firmware. The current interface uses
+LVGL 9.5 with TFT_eSPI as its display driver.
 
-**Status:** the LVGL rewrite is committed and so is the 05-24 / 05-26 review perf + reliability batch (TLS keep-alive on the poll, filtered JSON parse via `DeserializationOption::Filter`, adaptive 2 s / 15 s poll backoff, dead code stub cleanup in `download_album_art`, deleted `ui_fancy_backup.cpp`). Neither the LVGL port nor the perf batch has been **re-flashed** since the changes landed — colours/byte-order, touch, heap, TLS handshake under the new keep-alive client are all owed a smoke test. See [`../../docs/TESTING.md`](../../docs/TESTING.md) under "CYD Arduino".
+The build compiles, but the LVGL port requires a new hardware verification.
+Use the ESP-IDF build for primary CYD development.
 
----
+## Main Functions
 
-## What's running on it (Phase 1 + 1.5)
+- Embedded album browser.
+- Now-playing view.
+- Spotify Web API control.
+- MCP23017 buttons and rotary encoder.
+- Volume overlay.
+- Wi-Fi signal indicator.
+- Adaptive player-state polling.
+- Persistent TLS connection for player-state requests.
 
-Everything below is verified on hardware and lives on the `main` branch.
+The firmware uses separate tasks for the network, input, and MCP23017 polling.
+Do not run a blocking Spotify request in an input task.
 
-**Album browser**
-- SD-card-driven grid of 80×80 RGB565 thumbnails (pre-converted by [`../../scripts/`](../../scripts/))
-- Scroll with RE1 (one detent ≈ one row)
-- Tap a tile to start that album playing
-- Layout constants gathered at the top of `src/ui.cpp` under `BROWSER_*` defines
+## Hardware
 
-**Now-playing screen**
-- JPEG album art (`nowplaying.jpg` on SD), decoded via JPEGDEC
-- Title / artist / album / progress bar
-- Vinyl-style toggle between square art and a round "label" view
-- Persistent mute badge top-right when muted
-- Play/pause flash overlay for 1.5 s when state changes
+The target is an `ESP32-2432S028R` or a compatible CYD:
 
-**Spotify Web API client (`spotify.cpp`)**
-- `WiFiClientSecure` HTTPS with the Spotify root CA bundled (was `setInsecure()` — now properly verified against the embedded cert bundle).
-- Refresh-token OAuth flow (one-time setup via [`../../SPOTIFY_SETUP.md`](../../SPOTIFY_SETUP.md)).
-- Player-state poll with a **persistent keep-alive `WiFiClientSecure`** (`setReuse(true)` — TLS session is negotiated once and reused instead of re-handshaking every poll). Reconnect-on-failure drops the client on a connection-level error so the next poll opens a fresh socket.
-- Poll cadence is **adaptive**: 2 s while playing, 15 s when paused / 204. Button presses still act immediately via the one-shot command path; only the background poll is lazier when nothing's happening.
-- Player JSON parsed with **`DeserializationOption::Filter`** — only the ~10 fields actually used (is_playing, shuffle_state, progress_ms, item.name, item.duration_ms, item.artists[0].name, item.album.name, item.album.images[0].url, device.id, device.volume_percent) are kept; the rest of the large `/me/player` response is discarded during parse.
-- 404 wake-on-play: caches the last-seen `device.id`; on a 404 from `/me/player/play`, transfers playback back to it (which also starts it), so an idled phone Just Works.
-- play / pause / next / prev / seek / shuffle / volume endpoints.
+| Item | Configuration |
+|---|---|
+| Display | ILI9341, 320 x 240 |
+| Touch | XPT2046 |
+| SD card chip select | GPIO 5 |
+| Input expander | MCP23017 at address `0x20` |
 
-**MCP23017 input (`mcp_input.cpp`)**
-- I2C on the default Wire bus (SDA 27, SCL 22 @ 400 kHz; address `0x20`)
-- Gray-code state machine for RE1 (CLK on GPA4, DT on GPA5) — inherently rejects single-pin glitches
-- 30 ms stable-state debounce for SW1..SW4
-- INTA → ESP32 GPIO 35 (active-LOW, interrupt-on-CHANGE on all Port A pins) for low-latency event delivery; poll path runs alongside to keep debounce timers ticking
+Use [CLAUDE.md](../../CLAUDE.md) as the source for complete pin assignments.
 
-**HUD overlays (`ui.cpp`)**
-- Volume bar with percentage at the top of the screen, auto-hides after 2 s of encoder inactivity
-- WiFi signal indicator (4-bar icon, polled every 5 s via `WiFi.RSSI()`, only repaints when bar count changes)
-- SW4 hold + RE1 → manual scrub preview (`SEEK +M:SS`) above the progress bar
+## Build Procedure
 
-**Debounced volume (`input.cpp`)**
-- RE2 turns update local state instantly; the HTTP `PUT /me/player/volume` fires once after 300 ms of encoder inactivity. Keeps the UI responsive even though the HTTPS call blocks the loop for 0.5..2 s.
+1. Open a terminal in this folder.
+2. Build:
 
----
+   ```powershell
+   pio run
+   ```
 
-## Hardware target
+3. Connect the CYD.
+4. Upload:
 
-CYD (ESP32-2432S028R or compatible clone): ESP32-WROOM, 2.8" ILI9341 SPI TFT (landscape 320×240), XPT2046 resistive touch on a second SPI bus, on-board SD slot. Plus an external CJMCU-2317 (MCP23017) breakout for the physical control panel.
+   ```powershell
+   pio run -t upload
+   ```
 
-Pin tables, I2C addresses, and per-input mapping live in [`../../CLAUDE.md`](../../CLAUDE.md) — that's the source of truth. Don't duplicate them here.
+5. Open the serial monitor:
 
----
+   ```powershell
+   pio device monitor -b 115200
+   ```
 
-## Build / flash / monitor
+To remove generated build output, run:
 
-This is a standard PlatformIO project. Open this directory in VS Code with the PlatformIO extension installed, or use the CLI:
-
-```bash
-cd cyd/platformio
-pio run                          # build
-pio run -t upload                # build + flash
-pio device monitor -b 115200     # serial monitor
-pio run -t clean                 # nuke build artefacts if things look stale
+```powershell
+pio run -t clean
 ```
 
-The PlatformIO toolbar buttons (build / upload / serial monitor) map to those commands.
+## First Setup
 
-### First-time setup
+1. Install PlatformIO.
+2. Create the private credential file from its example.
+3. Add the Wi-Fi and Spotify credentials.
+4. Prepare the SD card if the selected code path requires it.
+5. Connect the CYD.
+6. Identify its serial port.
+7. Upload the firmware.
 
-1. Install PlatformIO (or open this folder in VS Code with the PlatformIO extension — it'll prompt to install everything).
-2. Create [`include/secrets.h`](include/) with your WiFi credentials and Spotify OAuth tokens. The exact format is documented in [`../../SPOTIFY_SETUP.md`](../../SPOTIFY_SETUP.md). This file is gitignored.
-3. Populate the SD card. Output of [`../../scripts/`](../../scripts/) goes at the SD root: `metadata.csv` plus one 12,800-byte `.bin` per album (80×80 RGB565), plus `nowplaying.jpg` as the now-playing fallback art.
-4. Plug the CYD in over USB. Identify its COM port (`pio device list`). PlatformIO auto-detects on most systems; if not, set `upload_port` in `platformio.ini`.
-5. `pio run -t upload` — builds and flashes. First build takes a few minutes (downloads framework + libraries); subsequent ones are seconds.
+Refer to [SPOTIFY_SETUP.md](../../SPOTIFY_SETUP.md) for Spotify authorization.
 
-### Project structure
+## Project Layout
 
-```
-src/                         Main application source
-  main.cpp                   setup() / loop(), SPI bus init, SD mount, touch read
-  app.cpp                    WiFi setup, top-level wiring
-  ui.cpp                     All rendering: browser, now-playing, HUDs, overlays
-  input.cpp                  High-level dispatcher: encoder/button -> Spotify calls
-  mcp_input.cpp              Low-level MCP23017 driver: encoders, buttons, debounce
-  spotify.cpp                Spotify Web API client over HTTPS
-include/
-  secrets.h                  WiFi + Spotify credentials (gitignored)
-  pins.h                     Pin defines pulled from CLAUDE.md
-  ...                        Other shared headers
-lib/                         Local libraries (currently empty)
-test/                        PlatformIO tests (none yet)
-platformio.ini               Board, framework, build flags, library deps
-```
+| Path | Function |
+|---|---|
+| `src/main.cpp` | Setup, loop, display, and touch |
+| `src/ui.cpp` | LVGL interface |
+| `src/input.cpp` | Input dispatcher |
+| `src/mcp_input.cpp` | MCP23017 driver |
+| `src/spotify.cpp` | Spotify Web API client |
+| `src/albums.cpp` | Generated album metadata |
+| `src/album_thumbs.cpp` | Embedded album thumbnails |
+| `platformio.ini` | Board and library configuration |
 
-### Build flags worth knowing about
+Do not edit generated album files manually.
 
-`platformio.ini` sets `board = esp32dev` and configures TFT_eSPI via `build_flags`. The TFT pins (MISO/MOSI/SCLK/CS/DC/RST/BL = 12/13/14/15/2/-1/21) and 40 MHz pixel clock are baked in there. PSRAM is **not** currently enabled — enabling it is a stretch item under Phase 2 album-browser perf (see `docs/ROADMAP.md` Option D).
+## Known Limitations
 
----
+### Album Art After a Second Visit
 
-## Known issues (Phase 1 — still open)
+The older JPEG path can fail after it reuses one decoder object. Create a new
+decoder for each operation if this failure returns.
 
-Confirmed root causes with clear fixes; pick one if you want a short PR. Full analysis in [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md) Phase 1.
+### Mobile Volume
 
-1. **Album art blank on second visit to now-playing.** JPEGDEC library state-corruption bug on consecutive `open()` / `decode()` calls on the same `JPEGDEC` instance. The fix in `src/ui.cpp:draw_now_playing()` is to make `jpeg_np` a local heap allocation per call (a stack local is too large for the loop task's default stack and crashes SW4 hold).
-2. **Encoder feels sluggish on fast spin.** `mcp_input_update()` hot-path `Serial.printf` calls flood the TX FIFO and block the loop ~60 ms per event. Gate all `[INTA]` / `[POLL]` / `[HB]` / `[EVT]` / `[ENC]` prints behind `#define MCP_DEBUG`. Already done.
-3. **Volume PUT doesn't change phone volume.** Confirmed Spotify Web API limitation on Android / iOS — `volume_percent` GET always returns 100 and SET is silently ignored. Works on desktop / Spotify Connect speakers. Fixed in Phase 3 by routing volume through Home Assistant instead.
+Spotify can ignore volume requests for Android and iOS devices. Desktop and
+Spotify Connect devices can accept the same request.
 
----
+### Display Tearing
 
-## Coding conventions (this folder)
+The display does not expose a usable tearing-effect signal. Fast browser
+movement can show tearing.
 
-- No emojis in code or commit messages
-- No `// removed comments` / dead-code stubs — delete cleanly
-- UI magic numbers gathered at the top of `ui.cpp`; reuse existing `NP_*` / `BROWSER_*` defines rather than inlining new constants
-- Spotify HTTPS calls are blocking — every `spotify_*()` stalls the loop for 0.5..2 s. New API calls must be rate-limited or debounced if the user might rapid-fire them
-- Keep `ui.cpp` as direct-draw (the off-screen Sprite was removed for TLS heap headroom). Don't reintroduce it without a hardware-verified plan
-- Don't fork the MCP driver into a FreeRTOS task without explicit ask — there are shared-state hazards around `current_track_info`
+## Development Rules
 
----
+- Use LVGL for all interface drawing.
+- Hold the LVGL lock when a task accesses an LVGL object.
+- Send Spotify commands through the command queue.
+- Keep the MCP polling task independent from player state.
+- Put layout constants with the existing interface constants.
+- Do not add dead-code comments.
+- Follow [WRITING-STANDARD.md](../../docs/WRITING-STANDARD.md).
 
-## Project memory
+## Related Documents
 
-Hardware details, full architecture, and the rationale behind decisions live in [`../../CLAUDE.md`](../../CLAUDE.md). The phased plan is in [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md).
+- [Project memory](../../CLAUDE.md)
+- [Roadmap](../../docs/ROADMAP.md)
+- [Pending tests](../../docs/PENDING.md)

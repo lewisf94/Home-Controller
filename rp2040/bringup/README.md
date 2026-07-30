@@ -1,59 +1,51 @@
-# RP2040 native-SDK bring-up
+# RP2040 Native SDK Bring-Up
 
-Native Raspberry Pi Pico C/C++ SDK hardware test harness for the SmartKnob
-prototype. It proves the Pico and MT6701 breakout independently before the
-TMC6300 or motor is connected.
+This Pico SDK harness tests the SmartKnob prototype in controlled checkpoints.
+It does not replace the production firmware.
 
-This is deliberately separate from the production haptic-knob firmware in the
-parent `rp2040/` project. That firmware already contains the SimpleFOC motor
-loop, MT6701 SSI path, controls, and P4 protocol. This harness is the safe place
-to validate breakout wiring and can also inform a later native-SDK migration;
-it does not replace the production firmware yet.
+## Checkpoint Status
 
-## Checkpoints
-
-Checkpoint 1 is hardware-verified on the Pico-layout RP2040 clone:
-
-- USB CDC serial prints a one-second heartbeat.
-- The standard Pico GPIO25 LED pulses when the clone has one fitted.
-- No MT6701, TMC6300, motor, or load-cell pins are configured.
-
-Checkpoint 2 is hardware-verified. It adds the MT6701 over I2C while leaving
-every motor-driver output unconfigured. With a centred diametric magnet it
-samples cleanly at 1 kHz and reports angle plus I2C timing statistics once per
-second (`1000` reads, `0` errors measured on the prototype). While undetected,
-it reports the live SDA/SCL levels and scans the I2C address space every five
-seconds.
-
-Checkpoint 3 is build-verified but not yet hardware-verified. It is a separate
-TMC6300 motor-test UF2: all six bridge inputs and VIO are forced LOW before USB
-starts, the driver requires an explicit arm command, arming expires after 10
-seconds, and the motor routine is limited to 2.4 seconds at 12% duty. DIAG or
-the stop command immediately turns every bridge input off and pulls VIO LOW.
-
-## MT6701 test wiring
-
-Unplug USB before changing any wire.
-
-| MT6701 breakout | Pico signal | Pico board marking |
+| Checkpoint | Function | Status |
 |---|---|---|
-| VDD | 3V3(OUT) | `3V3` (not `3V3_EN`) |
-| GND | GND | `GND` |
-| SDA | GP4 / I2C0 SDA | `GP4` |
-| SCL | GP5 / I2C0 SCL | `GP5` |
-| Analog/PWM | Not connected | - |
+| 1 | RP2040 USB serial and heartbeat | Hardware-verified |
+| 2 | MT6701 I2C angle measurement | Hardware-verified |
+| 3 | TMC6300 motor test | Build-verified |
 
-Use 3.3 V, not VBUS/5 V. The sensor accepts 5 V, but a breakout's I2C pull-ups
-can then put 5 V on RP2040 GPIO and damage it. Keep the four signal wires short.
-The firmware enables the RP2040's weak internal pull-ups as a fallback; fit
-external 4.7k pull-ups from SDA and SCL to 3.3 V if the breakout does not already
-have them.
+Checkpoint 2 measured 1000 successful reads per second with no errors. The test
+used a centered diametric magnet.
 
-The MT6701 requires a diametrically magnetized two-pole magnet. For a temporary
-test, centre a 6 mm diameter magnet over the IC with a 0.5-2.0 mm air gap using
-non-magnetic card/plastic and reusable putty away from the sensing face.
+Checkpoint 3 starts with VIO and all bridge inputs LOW. The firmware does not
+start the motor at boot.
 
-Expected serial output with a connected sensor:
+The arm command expires after 10 seconds. The test runs for 2.4 seconds at
+12 percent duty.
+
+## MT6701 Wiring
+
+> **WARNING:** Disconnect USB before you change a wire. An incorrect supply
+> connection can damage the RP2040.
+
+| MT6701 breakout | Pico connection |
+|---|---|
+| VDD | `3V3` |
+| GND | `GND` |
+| SDA | `GP4` |
+| SCL | `GP5` |
+| Analog/PWM | Not connected |
+
+Do not connect VDD to VBUS or 5 V. A 5 V pull-up can put an unsafe voltage on
+an RP2040 input.
+
+Keep the four wires short. Fit 4.7 kOhm pull-up resistors if the breakout does
+not contain suitable resistors.
+
+Use a diametrically magnetized two-pole magnet. Put its center above the center
+of the MT6701 package.
+
+Use an air gap between 0.5 mm and 2.0 mm. Use non-magnetic material to hold the
+magnet during this temporary test.
+
+Expected output:
 
 ```text
 SMARTKNOB_RP2040_OK sdk=2.3.0 clock=125000000Hz
@@ -61,15 +53,15 @@ MT6701_I2C address=0x06 sda=GP4 scl=GP5 baud=100000Hz
 mt6701=OK raw=8192 angle=180.00deg reads=1000 errors=0 read_us=821/821/830
 ```
 
-## TMC6300 motor test
+## TMC6300 Wiring
 
-The motor-test firmware uses GP4 and GP5 for the W-phase bridge controls.
-Disconnect the MT6701 SDA/SCL wires before flashing the motor-test UF2. Do not
-try to run the I2C sensor and this motor test simultaneously.
+> **WARNING:** Secure the motor before you enable the driver. An unsecured motor
+> can move suddenly and damage its wires.
 
-The production six-PWM pin map is used:
+> **CAUTION:** Disconnect the MT6701 wires before you flash the motor-test UF2.
+> GP4 and GP5 become motor-control outputs.
 
-| TMC6300 breakout | Pico |
+| TMC6300 | Pico |
 |---|---|
 | UH | GP0 |
 | UL | GP1 |
@@ -83,75 +75,91 @@ The production six-PWM pin map is used:
 | SEN | Not connected |
 | VCP | Not connected |
 
-Motor power is separate from Pico USB power:
+Connect motor power separately:
 
-| TMC6300 breakout | Connection |
+| TMC6300 | Connection |
 |---|---|
-| VIN | Verified 5 V motor rail |
-| GND | Motor-rail ground and Pico ground |
+| VIN | Verified 5 V motor supply |
+| GND | Motor-supply ground and Pico ground |
 | U | Motor red phase |
 | V | Motor yellow phase |
 | W | Motor light-blue phase |
 
-The phase order is arbitrary for the first test; swapping any two reverses
-direction. The prototype motor measured 7.8 ohms across all three phase pairs
-and open circuit from every phase to its metal body.
+The initial phase order is not critical. Interchange two motor phases to reverse
+the direction.
 
-The Elegoo MB-V2 is suitable only for this brief low-duty test. Set its rail to
-5 V and verify voltage and polarity with a multimeter before connecting VIN.
-Its nominal 700 mA maximum is too close to the motor's approximately 640 mA
-5 V locked phase-to-phase current for sustained or full-duty operation.
+The prototype motor measured 7.8 ohms between each phase pair. Each phase was
+open circuit to the motor body.
 
-Bring-up order:
+Use the Elegoo MB-V2 only for the short low-duty test. Its nominal current limit
+is close to the motor's measured locked-phase current.
 
-1. Leave the TMC6300 and motor disconnected. Flash `smartknob_motor_test.uf2`
-   and confirm serial reports `startup=SAFE`.
-2. Unplug everything. Wire GP0-GP7 and common ground to the TMC6300, but leave
-   U/V/W empty. Connect the verified 5 V motor rail to VIN.
-3. Power the Pico and motor rail. Press `E` in the monitor. Confirm the standby
-   LED turns on, DIAG remains off, and serial reports `tmc6300=ARMED`.
-4. Press `X`; confirm standby turns off. Then remove all power.
-5. Connect motor U/V/W, secure the motor, restore power, press `E`, then `T`.
-   Press `X` immediately for any unexpected sound, heat, or movement.
+## Motor Test Procedure
 
-The test never spins at boot. `E` only enables VIO with all bridge inputs off;
-`T` is rejected unless the driver was armed first.
+1. Disconnect the TMC6300 and the motor.
+2. Flash `smartknob_motor_test.uf2`.
+3. Start the serial monitor.
+4. Make sure that serial shows `startup=SAFE`.
+5. Disconnect all power.
+6. Connect GP0 through GP7 to the TMC6300.
+7. Connect the Pico ground to the motor-supply ground.
+8. Leave U, V, and W disconnected.
+9. Connect the verified 5 V supply to VIN.
+10. Apply power to the Pico and the motor supply.
+11. Press `E`.
+12. Make sure that serial shows `tmc6300=ARMED`.
+13. Make sure that DIAG remains inactive.
+14. Press `X`.
+15. Make sure that the driver becomes disabled.
+16. Disconnect all power.
+17. Connect the three motor phases.
+18. Secure the motor.
+19. Apply power.
+20. Press `E`.
+21. Press `T`.
+22. Press `X` immediately if you detect unexpected movement, sound, or heat.
+
+The `E` command enables VIO but keeps all bridge inputs off. The `T` command is
+rejected until the driver is armed.
 
 ## Build
 
-The official Raspberry Pi Pico VS Code extension and its matching Pico SDK
-2.3.0, ARM GCC 15.2, CMake, Ninja, pioasm, and picotool packages are installed
-under `%USERPROFILE%\.pico-sdk`.
+The build script uses Pico SDK 2.3.0 and the installed ARM toolchain.
 
 ```powershell
 cd "C:\Users\lewis\Documents\home-controller\rp2040\bringup"
 .\build.ps1
 ```
 
-The results are:
+The script creates these files:
 
-- `build\release\smartknob_rp2040.uf2` - MT6701 sensor test
-- `build\release\smartknob_motor_test.uf2` - fail-safe TMC6300 motor test
+- `build\release\smartknob_rp2040.uf2`
+- `build\release\smartknob_motor_test.uf2`
 
 ## Monitor
 
-The monitor enables DTR/RTS, shows output, and sends the single-key safety
-commands:
+Run:
 
 ```powershell
 .\monitor.ps1 -PortName COM4
 ```
 
-Keys: `E` arm, `T` run the 2.4-second test, `X` stop/disable, `S` status,
-`H` help, `Q` close the monitor.
+| Key | Function |
+|---|---|
+| `E` | Arm the driver |
+| `T` | Run the motor test |
+| `X` | Stop and disable |
+| `S` | Show status |
+| `H` | Show help |
+| `Q` | Close the monitor |
 
 ## Flash
 
 1. Disconnect all prototype wiring.
-2. Hold BOOTSEL while connecting the known-working USB-A to USB-C cable.
-3. Copy `build\release\smartknob_rp2040.uf2` to the `RPI-RP2` drive.
-4. The drive disconnects and the board restarts automatically.
-5. Open the new USB serial COM port at 115200 baud.
+2. Hold BOOTSEL.
+3. Connect the tested USB-A to USB-C cable.
+4. Copy the required UF2 file to the `RPI-RP2` drive.
+5. Wait for the board to restart.
+6. Open the new serial port.
 
-The USB CDC link does not depend on the selected baud rate, but 115200 keeps
-serial tools configured consistently.
+Use 115200 baud for consistent serial-tool settings.

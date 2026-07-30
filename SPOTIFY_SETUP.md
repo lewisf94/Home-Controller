@@ -1,75 +1,110 @@
-# Spotify API Setup Guide
+# Spotify API Setup
 
-To control Spotify directly from the device (without a Home-Assistant
-intermediary), the device needs Spotify Web API credentials and a refresh
-token. Same Spotify steps for every direct-Spotify build — only the file
-path for `secrets.h` differs per build.
+Use this procedure for each firmware build that connects directly to Spotify.
+The Home Assistant builds use different credentials.
 
-> **Keep your credentials private.** Your WiFi password, Spotify client secret,
-> and refresh token are real, reusable credentials. Put them **only** in the
-> build's gitignored `secrets.h` — listed below per build. Do **not** paste
-> them into any tracked source file; that would publish them to git history.
-> Every build uses TLS against the device's embedded root-CA bundle, but
-> still: only set this up on a network you trust.
+> **WARNING:** Keep all credentials private. A published secret can give another
+> person access to your Spotify account or network.
 
-## Where `secrets.h` lives, per build
+> **CAUTION:** Put credentials only in the applicable `secrets.h` file. Do not
+> put credentials in a tracked file.
 
-| Build | Path to `secrets.h` (gitignored) | Example template |
-|---|---|---|
-| CYD Arduino (`cyd/platformio/`) | `cyd/platformio/include/secrets.h` | `secrets.h.example` alongside |
-| CYD ESP-IDF (`cyd/esp-idf/`) | `cyd/esp-idf/include/secrets.h` | `secrets.h.example` alongside |
-| CYD ESP-IDF HA (`cyd/esp-idf-ha/`) | `cyd/esp-idf-ha/include/secrets.h` — *needs HA_HOST/HA_PORT/HA_TOKEN/HA_ENTITY instead of SPOTIFY_*, see `secrets.h.example`* | as the file says |
-| Waveshare ESP32-P4 (`waveshare/esp-idf/`) | `waveshare/esp-idf/include/secrets.h` | `secrets.h.example` alongside |
+## Credential Files
 
-## Step 0: Create your secrets file
+| Build | Credential file |
+|---|---|
+| CYD Arduino | `cyd/platformio/include/secrets.h` |
+| CYD ESP-IDF | `cyd/esp-idf/include/secrets.h` |
+| CYD Home Assistant | `cyd/esp-idf-ha/include/secrets.h` |
+| Waveshare ESP32-P4 | `waveshare/esp-idf/include/secrets.h` |
 
-1. Copy the build's `include/secrets.h.example` to `include/secrets.h` in the
-   same folder. (The example shows exactly which `#define`s the build expects.)
-2. Fill in the values as you obtain them in the steps below.
+Each folder has a `secrets.h.example` template. The real credential file is
+not tracked by Git.
 
-> The `include/` folder is gitignored as a whole on the IDF builds, which is
-> why `secrets.h` is safe to put there. On Arduino, only `secrets.h` itself
-> is gitignored — don't move other files into `include/` expecting them to be
-> ignored.
+## Create the Credential File
 
-## Step 1: Create a Spotify App
-1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
-2. Log in and click **Create app**.
-3. Fill in the required details:
-    *   **App Name:** (e.g., "CYD Music Controller")
-    *   **App Description:** (Whatever you like)
-    *   **Redirect URI:** Enter exactly `http://127.0.0.1:8888/callback` (no quotes).
-        > *Note: use `127.0.0.1`, not `localhost` — Spotify rejects `localhost`.*
-4. Once created, click **Settings** on your app page.
-5. Copy the **Client ID** and **Client Secret** (click "View client secret").
-    * Put these in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `secrets.h`.
+1. Copy `secrets.h.example` to `secrets.h` in the same folder.
+2. Open the new `secrets.h` file.
+3. Add each value when this procedure tells you to add it.
 
-## Step 2: Get a Refresh Token
-Since the CYD cannot open a web browser to log you in, generate a "Refresh
-Token" once on your computer.
+## Create a Spotify App
 
-1. Open a terminal in this project folder.
-2. Install the required library:
-   `pip install spotipy`
-3. Run the helper script:
-   `python get_spotify_token.py`
-4. The script will ask for your **Client ID** and **Client Secret**. Paste them in.
-5. A browser opens asking you to connect to Spotify. Click **Agree**.
-6. The script prints your **Refresh Token**.
-   * Put it in `SPOTIFY_REFRESH_TOKEN` in `secrets.h`.
-   * The script may leave a `.cache` file in the folder — it contains the
-     refresh token, so delete it when done (it is gitignored, but don't share it).
+1. Open the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. Sign in to Spotify.
+3. Select **Create app**.
+4. Enter a name for the app.
+5. Enter a description for the app.
+6. Set the redirect URI to `http://127.0.0.1:8888/callback`.
+7. Save the app.
+8. Open **Settings** for the app.
+9. Copy the client ID to `SPOTIFY_CLIENT_ID`.
+10. Copy the client secret to `SPOTIFY_CLIENT_SECRET`.
 
-## Step 3: Add WiFi & Build
-1. Set `WIFI_SSID` and `WIFI_PASSWORD` in `secrets.h`.
-2. Build + flash whichever build you're using:
-   - Arduino: PlatformIO build/upload button (or `pio run -t upload`).
-   - ESP-IDF (CYD or Waveshare): `idf.py build flash monitor` from the build's
-     folder. For the waveshare, make sure you've run
-     `idf.py set-target esp32p4` first; for CYD, `idf.py set-target esp32`.
+Use `127.0.0.1` in the redirect URI. Spotify does not accept `localhost` for
+this procedure.
 
-## HA build doesn't need any of this
+## Get a Refresh Token
 
-The HA-backend build (`cyd/esp-idf-ha/`) talks to Home Assistant, not Spotify
-directly. It needs `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` in its
-`secrets.h`, not the Spotify credentials above. See its README for setup.
+The controller cannot open the Spotify authorization page. Use a computer to
+get one refresh token.
+
+1. Open a terminal in the repository root.
+2. Install Spotipy:
+
+   ```powershell
+   pip install spotipy
+   ```
+
+3. Run the token tool:
+
+   ```powershell
+   python get_spotify_token.py
+   ```
+
+4. Enter the client ID when the tool requests it.
+5. Enter the client secret when the tool requests it.
+6. Complete the authorization in the browser.
+7. Copy the displayed token to `SPOTIFY_REFRESH_TOKEN`.
+8. Delete the `.cache` file after the procedure.
+
+The `.cache` file can contain the refresh token. Do not publish or share this
+file.
+
+## Add Wi-Fi Credentials
+
+1. Set `WIFI_SSID` in `secrets.h`.
+2. Set `WIFI_PASSWORD` in `secrets.h`.
+3. Save the file.
+
+## Build and Flash
+
+For a CYD Arduino build, run:
+
+```powershell
+pio run -t upload
+```
+
+For a CYD ESP-IDF build, run:
+
+```powershell
+idf.py set-target esp32
+idf.py build flash monitor
+```
+
+For a Waveshare ESP32-P4 build, run:
+
+```powershell
+idf.py set-target esp32p4
+idf.py build flash monitor
+```
+
+You only have to set the target during the first setup or after a clean
+configuration.
+
+## Home Assistant Builds
+
+The Home Assistant builds do not use Spotify API credentials. They use
+`HA_HOST`, `HA_PORT`, `HA_TOKEN`, and `HA_ENTITY`.
+
+Refer to [docs/HA-SETUP.md](docs/HA-SETUP.md) for the Home Assistant
+procedure.

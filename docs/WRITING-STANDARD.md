@@ -2,8 +2,10 @@
 
 ## Requirement
 
-All new or changed English technical text must follow ASD-STE100
+All repository-owned English technical text must follow ASD-STE100
 Simplified Technical English (STE), Issue 9.
+
+This requirement applies to existing text and future text.
 
 This requirement applies to these types of text:
 
@@ -11,25 +13,30 @@ This requirement applies to these types of text:
 - Agent instructions, issue text, pull request text, and commit messages.
 - Code comments, user help, warnings, errors, and diagnostic explanations.
 
-Existing text enters this scope when a change affects its meaning.
+The official standard is the source of truth.
 
-The official standard is the source of truth. Use the
-[Issue 9 standard](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf)
-and the [official FAQ](https://www.asd-ste100.org/STE_faq.html).
+Use the
+[Issue 9 standard](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf).
+
+Use the [official FAQ](https://www.asd-ste100.org/STE_faq.html).
 
 This file is a project checklist. It does not replace the official standard
 or its controlled dictionary.
 
 ## Exclusions
 
-Do not change these items only to make them comply with STE:
+These items are outside the rewrite scope:
 
 - Source code, identifiers, commands, file paths, API names, and protocol names.
 - Exact log output and data that comes from a device or a tool.
 - Direct quotations, license text, generated text, and third-party text.
+- Vendored components and upstream reference projects.
+- Private configuration files and protected configuration folders.
 
 Preserve these items exactly when accuracy or compatibility requires their
 original form.
+
+Code comments and repository-owned user messages remain in scope.
 
 ## Writing Rules
 
@@ -78,8 +85,9 @@ Do these checks:
 6. Check that each condition, warning, and caution is in the correct position.
 7. Read the text for ambiguity.
 
-A language tool can help with this review. The writer and reviewer remain
-responsible for compliance.
+A language tool can help with this review.
 
-Do not state that text has formal or certified STE compliance unless a qualified
-reviewer checks it against the full standard.
+The writer and reviewer remain responsible for compliance.
+
+Do not claim formal STE compliance without a qualified review of the full
+standard.

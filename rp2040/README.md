@@ -1,69 +1,85 @@
-# rp2040 — haptic knob co-MCU firmware
+# RP2040 Haptic Knob Firmware
 
-Firmware for the custom **RP2040 daughterboard** that acts as the SmartKnob-style
-haptic input for the Waveshare ESP32-P4 build. The RP2040 runs all the
-real-time work (FOC motor control, strain-gauge press, LEDs, sensor reads) and
-talks to the ESP32-P4 over a single UART. The P4 sends haptic config; the RP2040
-sends back knob position and button events.
+This folder contains firmware for the RP2040 haptic-knob controller. The
+controller sends input events to the ESP32-P4 through UART.
 
-> This is **our own firmware**, written fresh. Scott Bezek's
-> [SmartKnob](https://github.com/scottbez1/smartknob) is used as the reference for
-> the FOC + detent physics only (Apache 2.0 — see [`../NOTICE`](../NOTICE) and the
-> per-file change notices on `src/motor_task.*`).
+The RP2040 controls all time-critical hardware:
+
+- Field-oriented motor control.
+- MT6701 magnetic encoder.
+- Strain-gauge press input.
+- Four switches.
+- RGBW LEDs and button LEDs.
+- Ambient-light and battery sensors.
+
+The ESP32-P4 sends haptic settings to the RP2040. The RP2040 sends position and
+button events to the ESP32-P4.
+
+This project uses SmartKnob as an engineering reference. The firmware in this
+folder is project-specific firmware.
 
 ## Hardware
 
-TMC6300 gate driver + gimbal motor (FOC via SimpleFOC), MT6701QT magnetic encoder
-(SSI), BF350 full-bridge strain gauges + HX711 (knob press), 4× MX hot-swap
-buttons, SK6812 RGBW ring + 4 button LEDs, VEML7700 ambient light, MAX17048
-battery gauge. Full hardware design is in [`../docs/DESIGN_NOTES.md`](../docs/DESIGN_NOTES.md).
+| Function | Part |
+|---|---|
+| Motor driver | TMC6300 |
+| Motor | Gimbal brushless motor |
+| Angle sensor | MT6701QT |
+| Press sensor | Four BF350 strain gauges and HX711 |
+| Buttons | Four MX switches |
+| Lighting | SK6812 RGBW ring and four button LEDs |
+| Ambient sensor | VEML7700 |
+| Battery gauge | MAX17048 |
 
-## Architecture (arduino-pico dual-core)
+Refer to [DESIGN_NOTES.md](../docs/DESIGN_NOTES.md) for hardware decisions.
 
+## Architecture
+
+The firmware uses both RP2040 cores:
+
+```text
+Core 0: UART protocol, buttons, press input, LEDs, and I2C sensors
+Core 1: Motor control, detents, and end stops
 ```
-core 0  setup()/loop()   — interface_task: UART protocol, HX711, MX buttons,
-                           SK6812 LEDs, I2C sensors
-core 1  setup1()/loop1() — motor_task: SimpleFOC FOC torque loop + per-menu
-                           detent/endstop physics (__not_in_flash_func hot path)
-```
 
-Cross-core state uses a pico-sdk `critical_section_t`. `motor_shared_init()` runs
-first in core-0 `setup()` because `setup()` and `setup1()` run concurrently.
+Cross-core data uses a Pico SDK critical section. Call
+`motor_shared_init()` before either core accesses shared motor data.
 
 ## Build
 
-```bash
+Run these commands:
+
+```powershell
 cd rp2040
-pio run                 # build
-pio run -t upload       # flash via BOOTSEL (drag-drop .uf2 also works)
+pio run
 ```
 
-**Compile status: GREEN** (first `pio run` 2026-07-14 — RAM 4.6%, Flash 4.6%;
-output at `.pio/build/rp2040/firmware.uf2`, drag-drop onto the BOOTSEL drive).
-On Windows PlatformIO lives at `~/.platformio` (`pio.exe` under
-`penv/Scripts`).
+To upload with PlatformIO, run:
 
-nanopb is vendored at `lib/nanopb/` (not a registry dep). Generated protocol
-files live in `src/proto_gen/` (copies of `../proto/`).
+```powershell
+pio run -t upload
+```
 
-## Pin assignments and protocol
+The UF2 file is `.pio/build/rp2040/firmware.uf2`.
 
-The pin map (verified conflict-free), the UART framing
-(nanopb + CRC32 + COBS @ 921600 baud), and the SimpleFOC / MT6701 implementation
-facts are all documented in [`../docs/KNOB-NOTES.md`](../docs/KNOB-NOTES.md) — read
-that before changing pins. Key constraint: the motor 6-PWM pairs (GPIO0/1, 2/3,
-4/5) must stay on their PWM slices, and the UART is on UART1 (GPIO8/9), NOT UART0
-(whose default GPIO0/1 collide with the motor U-phase).
+The project vendors nanopb in `lib/nanopb/`. Generated protocol files are in
+`src/proto_gen/`.
 
-The matching P4-side driver is `waveshare/components/p4_shared/knob.c` +
-`knob_input.c` (shared by both waveshare builds), gated behind `KNOB_ENABLED`
-(`idf.py build -DKNOB_ENABLED=1`). Wiring table + first-flash bring-up order:
-[`../docs/KNOB-NOTES.md`](../docs/KNOB-NOTES.md).
+## Motor and UART Pins
 
-## Native-SDK hardware bring-up
+The six motor-control pins use GPIO0 through GPIO5. Keep each PWM pair on its
+assigned PWM slice.
 
-`bringup/` is a separate Raspberry Pi Pico C/C++ SDK harness for proving the
-Pico-layout prototype and MT6701 breakout before any motor hardware is
-connected. It does not replace this production SimpleFOC firmware. See
-[`bringup/README.md`](bringup/README.md) for the sensor-only wiring and build
-steps.
+UART1 uses GPIO8 and GPIO9. Do not move the protocol to the default UART0 pins.
+The default UART0 pins conflict with the motor U phase.
+
+The ESP32-P4 driver uses `KNOB_ENABLED`. Set this CMake option to `1` to include
+the driver.
+
+## Native SDK Bring-Up
+
+The `bringup/` folder contains a separate Pico SDK test harness. Use it before
+you connect the production motor-control hardware.
+
+The harness tests the RP2040, MT6701, and TMC6300 in separate checkpoints.
+Refer to [bringup/README.md](bringup/README.md) for the procedure.

@@ -1,228 +1,349 @@
-# Hardware Verification Checklist
+# Hardware Test Checklist
 
-The active list of what to check after flashing each build. Items are grouped
-by build; tick them off as you go. If something fails, capture the symptom +
-serial log and we'll fix before the next pass.
+Run the applicable checklist after a firmware or hardware change.
 
-For the rolling list of which commits have been written but not yet flashed,
-see [`PENDING.md`](PENDING.md) — that doc is the verification debt; this one
-is the test script you run against it.
+Stop after the first unexpected result.
 
----
+Use [PENDING.md](PENDING.md) to identify tests that still need evidence.
 
-## Waveshare ESP32-P4 (`waveshare/esp-idf/`)
+## Test Record
 
-Latest commits to verify against: `434d3ea` (auto-dim) on top of all the
-05-30 / 05-29 / 05-28 / 05-27 / 05-26 / 05-24 work. Board in hand, just
-needs a fresh flash.
+Record these values before each test:
 
-### Smoke test — must pass before anything else
+| Field | Value |
+|---|---|
+| Date | |
+| Git commit | |
+| Build | |
+| Board revision | |
+| Serial port | |
+| Power source | |
+| Network | |
+| Playback output | |
 
-- [ ] Boot: serial shows `now playing: <artist> -- <title>` within ~10 s
-      of WiFi connect (or `no active playback (or fetch failed)` if nothing
-      is playing).
-- [ ] Touch responds: tap an album card and the carousel snaps it centre;
-      tap again and now-playing opens.
-- [ ] Display: full 800×480, no tearing, no black cards on scroll
-      (Cover Flow specifically).
+## Waveshare Common Smoke Test
 
-### Reliability (05-27 / 05-28 batches)
+- [ ] The board completes one boot.
+- [ ] The display uses 800 x 480 landscape.
+- [ ] The colors are correct.
+- [ ] Touch coordinates match the contact point.
+- [ ] Wi-Fi connects.
+- [ ] The configured backend authenticates.
+- [ ] The current track appears.
+- [ ] Album art appears.
+- [ ] The progress indicator advances.
+- [ ] Play and pause work.
+- [ ] Next and previous work.
+- [ ] Seek works.
+- [ ] Volume works.
+- [ ] The browser opens.
+- [ ] The browser selects the active album.
+- [ ] Carousel renders correctly.
+- [ ] Focus renders correctly.
+- [ ] Cover Flow renders correctly.
+- [ ] Cover Flow side covers remain visible.
+- [ ] No album card becomes black.
+- [ ] Settings open and close.
+- [ ] Saved settings survive a reboot.
 
-- [ ] **WiFi reconnect** — power on with the router off, wait 30 s, then
-      switch the router on. Controller reconnects within ~20 s without a
-      power-cycle. Used to be a dead end after 5 retries; serial should now
-      show "arming background reconnect every 20 s" then a successful join.
-- [ ] **404 wake-on-play** — let your active Spotify device (phone) sit idle
-      until it drops the slot (~30 min). Tap a play button on the controller;
-      should wake the same device and resume. Serial: `play returned 404 --
-      waking last device`.
-- [ ] **Failed-decode tracking** — hard to trigger in the wild; if you spot
-      a "art decode failed, not retrying this url" log, confirm the device
-      doesn't keep re-fetching the same broken JPEG every 5 s.
-- [ ] **Cmd queue alloc** — not testable in normal use (heap exhaustion at
-      boot). If it ever fires, expect a clean `cmd queue alloc failed` log
-      with no panic backtrace.
-- [ ] **`esp_littlefs_info` warning** — boot log shows real KB total/used,
-      not "0 KB total, 0 KB used". If you see the latter with a distinct
-      warning about `esp_littlefs_info failed`, something's wrong with the
-      partition table.
+## Waveshare Theme Test
 
-### Sonos integration (05-26 + recent fixes)
+Test each mode in both appearances.
 
-- [ ] **Album-on-Sonos** — pick a Sonos from device selector, tap an album
-      from the browser. Serial shows the queue populating + transport
-      pointing at `x-rincon-queue:<uuid>#0` (the `#0` fix; was `:0` before),
-      then `Play -> 200`. Sonos plays the album.
-- [ ] **Sonos transport** — once playing, prev/next/seek/volume on the
-      controller drive the Sonos (UPnP, not Spotify Web API).
-- [ ] **Sonos now-playing** — the title/artist/album/progress reflect what
-      the Sonos is actually playing (from UPnP `GetPositionInfo`), even
-      though Spotify's `/me/player` returns 204.
-- [ ] **Unreachable Sonos doesn't stall the UI** (commit `56e1a9b`) — pick a
-      Sonos from the device selector, then power it off (or pull its network).
-      The controller must stay responsive: the screen falls back to the
-      Spotify/idle view and at most briefly pauses (~2 s, one SOAP timeout) about
-      every ~10 s while it retries -- NOT a freeze on every poll. Power the
-      speaker back on; within ~10 s it resumes showing the Sonos.
+- [ ] BASIC dark.
+- [ ] BASIC light.
+- [ ] GLYPH dark.
+- [ ] GLYPH light.
+- [ ] PIXEL dark.
+- [ ] PIXEL light.
+- [ ] PAPER dark.
+- [ ] PAPER light.
+- [ ] BOLD dark.
+- [ ] BOLD light.
+- [ ] Theme album art enabled.
+- [ ] Theme album art disabled.
+- [ ] Every compiled font renders.
+- [ ] Long titles scroll without overlap.
+- [ ] The progress indicator matches the mode.
+- [ ] The volume control matches the mode.
+- [ ] Interface sounds match the selected set.
 
-### UX (05-30 batches)
+Watch the serial output during repeated mode changes.
 
-- [ ] **OFFLINE** — pull WiFi during use. Within ~5 s the now-playing title
-      flips to "OFFLINE". Restore WiFi; title comes back on the next
-      successful poll.
-- [ ] **Empty album list** — temporarily ship an empty
-      `spotify-albums-list.txt`. Browser shows "No albums configured / edit
-      spotify-albums-list.txt + reflash" instead of a blank screen.
-- [ ] **Volume HUD before first poll** — boot, immediately try the volume
-      slider before any Spotify poll lands. Should not nudge the speaker from
-      a guessed 50 %. After the first poll, normal behaviour.
-- [ ] **JPEG SOI marker** — hard to trigger; if a CDN ever serves a non-JPEG
-      body, the log says "downloaded bytes are not JPEG (magic XX XX) --
-      discarding" and the next poll retries (instead of showing last-track
-      art forever).
-- [ ] **MAX_CARDS warning** — add more albums than the cap (`MAX_CARDS = 128`);
-      top of the browser shows an amber `+N more (raise MAX_CARDS)` label.
-- [ ] **No-device toast** — disconnect all Spotify devices, tap an album
-      from the browser. Toast appears at the bottom of now-playing: "No
-      active Spotify device" (or "Sonos play failed" if routed to Sonos).
-- [ ] **Restricted-device 403 toast** (commit `ad9b9b9`) — make a restricted
-      device the active one (a phone/tablet in Spotify Connect), then tap
-      play/pause/next/volume. Instead of a silent no-op, a toast reads
-      "Active device is restricted -- transfer first".
-- [ ] **Auto-snap to playing album** — change track from your phone. Open
-      the browser; carousel should land on the currently-playing album with
-      an accent-coloured border. Continues to track as the album changes.
-- [ ] **Auto-dim** — sit idle 60 s, screen should dim to ~30 % of your
-      Settings brightness; idle 5 min, ~10 %. Any touch should snap back
-      within 1 s. Floored at 2 % so the screen never reads as dead.
+No allocation failure or reset is permitted.
 
-### Perf / decode experiments (flash these to gather data)
+## Waveshare Developer-Control Test
 
-- [ ] **Cover Flow profiler** (commit `99605ed`) — turn FPS display ON in
-      Settings, switch the browser to Cover Flow, and flick-scroll hard. The
-      serial log prints `cf_prof: clear=.. us  rast=.. us  frame=.. us` every
-      30 frames. Capture those numbers -- they decide whether the per-frame
-      canvas clear or the rasterise dominates, before any Cover Flow perf rework.
-- [ ] **openRAM A/B** (commit `9bdd80a`) — set `#define ART_DECODE_RAM 1` in
-      `main.c` (~line 131), rebuild, flash, and play several albums with
-      different covers. If every cover renders correctly, `JPEG_openRAM` handles
-      Spotify's streams and LittleFS + VFS can be dropped; any blank/garbled
-      cover means keep the file path (set it back to 0). Serial logs the SOF
-      marker per cover.
+- [ ] TYPE opens.
+- [ ] COLOUR opens.
+- [ ] SHAPE opens.
+- [ ] LAYOUT opens.
+- [ ] BROWSER opens.
+- [ ] ART opens.
+- [ ] A zero value remains a valid override.
+- [ ] Dark and light color overrides remain independent.
+- [ ] Each mode keeps its own accent.
+- [ ] Slider movement changes only the readout.
+- [ ] Slider release applies the new value.
+- [ ] EXPORT TO SERIAL produces complete values.
+- [ ] RESET MODE restores the compiled values.
+- [ ] A reboot preserves an override.
+- [ ] The browser bench gives an approximate visual match.
 
-### Settings (commits `540df95`, plus earlier theme/transition work)
+## Waveshare Reliability Test
 
-- [ ] **Brightness slider** — drag the Settings brightness slider 10-100 %;
-      panel dims live. Reboot; level is restored from NVS.
-- [ ] **Theme / Accent / Browser Style / Transition** — change each in
-      Settings; persists across reboot.
-- [ ] **`ledc: GPIO 26 is not usable`** warning at boot — benign (BSP
-      double-init of the backlight LEDC channel); dimming still works.
+### Wi-Fi Recovery
 
----
+1. Power off the router.
+2. Power on the controller.
+3. Wait 30 seconds.
+4. Power on the router.
 
-## CYD ESP-IDF (`cyd/esp-idf/`) — board not currently available
+Expected result:
 
-When the CYD is back, run [`PENDING.md`](PENDING.md)'s CYD checklist. The
-verify-pending memory has the full per-finding sanity tests. Headline items:
+- The controller connects without a power cycle.
+- The interface remains responsive.
+- The offline indicator clears.
 
-- [ ] **Builds at all** — `idf.py reconfigure && idf.py build` after the
-      `cyd_shared` extraction (`2f7accd` + `1731a6a`). If configure fails on
-      a missing `cyd_shared` source or unresolved component, see
-      [`PENDING.md`](PENDING.md).
-- [ ] **Volume base from device** — start the speaker at e.g. 80 %, boot the
-      controller, confirm the HUD/encoder base is 80 % not 50 %. Used to
-      always start at 50.
-- [ ] **WiFi reconnect** — same as the waveshare check above.
-- [ ] **MCP re-probe** — unplug the MCP I2C wires during boot; plug back
-      after 10 s. Buttons/encoder should come online within ~5 s without
-      rebooting (5 s retry tick in `mcp_input_update`).
-- [ ] **404 wake-on-play** — same as the waveshare check above.
-- [ ] **Empty album list / OFFLINE / no-device toast / auto-snap** — same
-      as waveshare (they live in shared `ui.c`).
-- [ ] **MAX_CARDS warning** — CYD cap is 32; same on-screen label.
-- [ ] **Auto-dim** — *not yet implemented on CYD* (needs LEDC PWM init on
-      the BL pin; deferred — see [`PENDING.md`](PENDING.md)).
+### Home Assistant Recovery
 
----
+1. Start normal playback.
+2. Stop Home Assistant.
+3. Wait 60 seconds.
+4. Start Home Assistant.
 
-## CYD ESP-IDF HA (`cyd/esp-idf-ha/`) — never hardware-tested
+Expected result:
 
-A first-flash on a CYD with a Pi 5 running HA OS is owed. The UI / input /
-art code is byte-shared with `cyd/esp-idf/` via `cyd_shared` so all the
-reliability/UX features above land here too. Only the backend differs:
-`ha_client.c` instead of `spotify.c`.
+- The WebSocket reconnects.
+- Authentication completes.
+- Track state returns.
+- Sendspin reconnects when configured.
 
-- [ ] **Builds** — `idf.py reconfigure && idf.py build` after the
-      `cyd_shared` extraction.
-- [ ] **WebSocket connect** — boot log shows the WebSocket handshake to
-      `ws://<HA_HOST>:<HA_PORT>/api/websocket`, then `auth_ok`, then
-      subscribe to `state_changed` for `HA_ENTITY`.
-- [ ] **First state push** — within seconds, the UI shows the current track
-      from `HA_ENTITY` (Music Assistant or Spotify integration via HA).
-- [ ] **Commands round-trip** — buttons / touch trigger HA `media_player.*`
-      service calls; play/pause/next/prev/seek/volume reflected on the
-      speaker.
-- [ ] **Album art** — fetched from the HA-proxied `entity_picture` URL
-      (local network, no TLS round-trip).
+### Idle Link Recovery
 
----
+1. Leave the controller idle for five minutes.
+2. Disconnect the network.
+3. Wait 60 seconds.
+4. Restore the network.
 
-## CYD Arduino (`cyd/platformio/`) — never re-flashed since LVGL port
+Expected result:
 
-Phase 1 + 1.5 features were shipped on TFT_eSPI direct draw. The build was
-since rewritten on top of LVGL 9.5 + perf/reliability fixes from the
-2026-05-24 / 05-26 reviews. The new code compiles and fits but has never
-been on hardware. Smoke test first, then run the full Phase 1.5 list below.
+- The heartbeat detects the failed link.
+- The connection returns without user input.
 
-- [ ] **Smoke test** — boots, display lights, LVGL screen renders without
-      colour swap or rotation issues. Touch works for scrolling the
-      carousel and tapping cards.
-- [ ] **TLS handshake** — `setCACertBundle(...)` is in use (not the old
-      `setInsecure()`); Spotify HTTPS connects, token refreshes.
-- [ ] **Perf changes** — `setReuse(true)` keeps the poll connection alive
-      between cycles; `DeserializationOption::Filter` keeps the parsed JSON
-      small; adaptive 2 s / 15 s poll cadence.
-- [ ] **MCP inputs** — buttons + encoder work on dedicated `mcp_input_task`.
+### Automatic Dimming
 
-### Phase 1.5 features (originally shipped on TFT_eSPI; verify still work
-on the LVGL port)
+1. Leave the controller untouched for 60 seconds.
+2. Observe the first dim level.
+3. Leave the controller untouched for five minutes.
+4. Observe the second dim level.
+5. Touch the display.
 
-- [ ] **Volume HUD** — turn the volume encoder, "VOL XX%" bar at top
-      auto-hides after 2 s.
-- [ ] **Mute badge** — press the encoder switch; HUD shows "MUTED" red for
-      2 s, persistent badge in the top-right of now-playing while muted.
-- [ ] **Play/pause flash** — press SW2; ▶ or ⏸ overlays the art for 1.5 s.
-- [ ] **WiFi indicator** — 4-bar icon top-left, updates with RSSI.
-- [ ] **SW4 seek preview** — hold SW4 + turn RE1 for `SEEK +M:SS` overlay.
-      *(05-30 review flagged this might have been lost in the LVGL port —
-      verify against the documented behaviour or remove from the doc.)*
+Expected result:
 
----
+- The first level is approximately 30 percent.
+- The second level is approximately 10 percent.
+- Touch restores the configured brightness.
 
-## Cross-build — edge cases worth poking
+### Memory Soak
 
-- [ ] **Rapid play-pause spam** — press SW2 10 times in 2 s; no UI lag, no
-      duplicate flashes, Spotify keeps up.
-- [ ] **Volume during pause** — adjust volume while paused; HUD updates,
-      PUT fires 300 ms after last detent.
-- [ ] **Seek to end** — drag the progress bar (touch) or hold SW4 + RE1 to
-      seek past the track end; should clamp to duration, not overflow.
-- [ ] **Seek before start** — same, before 0; should clamp at 0.
-- [ ] **WiFi disconnect mid-press** — yank WiFi just as you press next;
-      command fails cleanly, dispatcher log fires, no crash.
-- [ ] **Spotify token expiry** — let the token expire (~1 h), press a
-      button; first attempt may return 401, `_do_cmd` clears the cached
-      token, next call refreshes — press should work shortly after with no
-      visible failure.
+Run these actions for 60 minutes:
 
----
+- Scroll Cover Flow.
+- Change themes.
+- Change outputs.
+- Change volume.
+- Add and remove queue items.
+- Control lights.
+- Add one runtime album.
+- Change tracks repeatedly.
 
-## When something fails
+Record:
 
-1. Note the symptom (what you saw, what you expected) and grab the serial
-   log around the failure.
-2. Open Claude Code in VS Code, paste both into chat, point at the relevant
-   feature in this checklist.
-3. The session will read `CLAUDE.md`, `docs/PENDING.md`, `docs/ROADMAP.md`
-   automatically and know the codebase.
+- Lowest internal-memory total.
+- Lowest DMA-capable total.
+- Largest DMA-capable block.
+- Allocation failures.
+- Watchdog resets.
+- SDIO errors.
+
+Then run eight hours of playback and idle operation.
+
+## Waveshare Direct Backend
+
+- [ ] Spotify refreshes its access token.
+- [ ] Player-state requests use the active device.
+- [ ] Spotify Connect device selection works.
+- [ ] A dormant device wakes on play.
+- [ ] A restricted device shows useful feedback.
+- [ ] Spotify rate limiting changes the request delay.
+- [ ] Sonos appears in the device selector.
+- [ ] Sonos album start sets the queue URI.
+- [ ] Sonos receives the Play command.
+- [ ] Sonos transport controls work.
+- [ ] Sonos volume works.
+- [ ] Sonos now-playing data appears.
+- [ ] An unreachable pinned Sonos does not stall every request.
+
+## Waveshare Home Assistant Backend
+
+- [ ] The WebSocket returns `auth_ok`.
+- [ ] The configured output appears.
+- [ ] Music Assistant outputs appear under SPEAKERS.
+- [ ] Spotify Connect sources appear in their own section.
+- [ ] Duplicate output names do not hide the real speaker.
+- [ ] Output selection returns to Now Playing.
+- [ ] Sendspin completes its handshake.
+- [ ] Built-in audio decodes without a reset.
+- [ ] Local playback progress advances smoothly.
+- [ ] Queue refresh works.
+- [ ] Queue album addition works.
+- [ ] Queue song search works.
+- [ ] Queue clear works.
+- [ ] Light power control works.
+- [ ] Light brightness control works.
+- [ ] Light color control works.
+- [ ] Light state refresh shows the accepted value.
+- [ ] A rejected token starts a visible retry cycle.
+
+## Runtime Album Test
+
+- [ ] Saved-album browsing returns candidates.
+- [ ] Search updates while text changes.
+- [ ] Existing albums show `ADDED`.
+- [ ] A new album enters the combined catalogue.
+- [ ] The new album has a runtime cover.
+- [ ] The cover survives a reboot.
+- [ ] Unicode metadata renders correctly.
+- [ ] A failed cover download does not remove metadata.
+- [ ] Cover repair restores a missing cover.
+- [ ] The catalogue remains alphabetically ordered.
+
+## OTA And Crash Test
+
+> WARNING: Keep a USB cable available for recovery.
+
+### OTA
+
+1. Host a known compatible application image.
+2. Enter the firmware URL.
+3. Start the update.
+4. Wait for the reboot.
+
+Expected result:
+
+- Download progress appears.
+- The inactive slot receives the image.
+- The device boots the new image.
+- Saved settings remain.
+
+### Crash Report
+
+1. Flash a test build with a controlled crash.
+2. Trigger the crash.
+3. Wait for the reboot.
+4. Capture the boot report.
+5. Reboot once more.
+
+Expected result:
+
+- The first boot reports the crashed task and program counter.
+- The report is absent after it is cleared.
+
+## RP2040 Sensor Test
+
+- [ ] The Pico enters BOOTSEL.
+- [ ] The UF2 file flashes.
+- [ ] USB serial appears.
+- [ ] The I2C scan finds address `0x06`.
+- [ ] The MT6701 reports valid angles.
+- [ ] Manual rotation crosses zero degrees continuously.
+- [ ] A centered magnet gives stable data.
+- [ ] Removing the magnet produces a clear sensor failure.
+
+The bench I2C path uses GP4 for SDA and GP5 for SCL.
+
+## RP2040 Motor Test
+
+> DANGER: Keep the motor clear of loose objects during this test.
+
+> WARNING: Use a current-limited supply.
+
+- [ ] All three motor phase resistances match.
+- [ ] Every phase is open-circuit to the motor body.
+- [ ] TMC6300 VIO is correct.
+- [ ] TMC6300 VIN is correct.
+- [ ] Every bridge input is low at boot.
+- [ ] The bridge remains disabled before arming.
+- [ ] The arm command expires after 10 seconds.
+- [ ] The test starts only after a valid arm.
+- [ ] The test stops after 2.4 seconds.
+- [ ] Duty remains at or below 12 percent.
+- [ ] DIAG causes an immediate stop.
+- [ ] The motor and driver remain cool.
+
+Use the detailed sequence in
+[rp2040/bringup/README.md](../rp2040/bringup/README.md).
+
+## CYD Direct ESP-IDF
+
+- [ ] The build configures.
+- [ ] The build links.
+- [ ] The display orientation is correct.
+- [ ] The display colors are correct.
+- [ ] Touch calibration covers the complete screen.
+- [ ] Spotify authenticates.
+- [ ] Album art changes on a track change.
+- [ ] The MCP23017 appears after a late connection.
+- [ ] Buttons remain responsive during HTTPS.
+- [ ] The encoder remains responsive during HTTPS.
+- [ ] Wi-Fi reconnects after router loss.
+- [ ] The initial volume matches the active output.
+
+## CYD Home Assistant
+
+- [ ] The build configures.
+- [ ] The build links.
+- [ ] Home Assistant authenticates.
+- [ ] The configured entity state appears.
+- [ ] Music Assistant commands work.
+- [ ] Album art appears.
+- [ ] Physical controls work.
+- [ ] The WebSocket returns after a server restart.
+
+## CYD Arduino
+
+- [ ] PlatformIO builds the firmware.
+- [ ] The display color order is correct.
+- [ ] The display orientation is correct.
+- [ ] Touch orientation is correct.
+- [ ] Spotify TLS verification succeeds.
+- [ ] The current track appears.
+- [ ] Embedded thumbnails appear.
+- [ ] The MCP input task remains responsive.
+
+## Cross-Build Edge Cases
+
+- [ ] Ten rapid play-pause requests do not reset the device.
+- [ ] Volume works while playback is paused.
+- [ ] Seek clamps at zero.
+- [ ] Seek clamps at track duration.
+- [ ] Network loss during a command causes a controlled failure.
+- [ ] Token expiry causes a refresh.
+- [ ] Empty album data produces a useful message.
+- [ ] Album count above the limit produces a warning.
+
+## Failure Report
+
+Record these items:
+
+1. Expected result.
+2. Actual result.
+3. Exact reproduction steps.
+4. Firmware commit.
+5. Complete serial output around the failure.
+6. Reset reason.
+7. Relevant memory values.
+8. Photograph or video when the failure is visual.
+
+Do not continue a destructive or thermal test after an unexpected result.

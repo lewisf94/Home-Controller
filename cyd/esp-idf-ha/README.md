@@ -1,111 +1,109 @@
-# cyd/esp-idf-ha — ESP-IDF build, Home Assistant backend
+# CYD ESP-IDF Home Assistant Build
 
-The Home Assistant variant of the CYD-IDF firmware. Shares its UI, input,
-album-art and storage code with `../esp-idf/` via the
-[`cyd_shared`](../components/cyd_shared/README.md) component — the only
-build-local code is `main.c` (board bring-up + WebSocket task) and
-`ha_client.{c,h}` (the WebSocket client to Music Assistant). Hardware is
-identical to the direct-Spotify build.
+This firmware uses the CYD interface with a Home Assistant backend. It receives
+player state through a WebSocket connection.
 
-> **STATUS: never hardware-tested.** All the UI/input/reliability features
-> that landed on `cyd/esp-idf/` ride along here for free (because they're in
-> `cyd_shared`), but no one has yet flashed this build, brought up a Pi 5
-> with HA OS, and confirmed the WebSocket handshake / state push / service
-> calls actually work end-to-end. First-flash checklist is in
-> [`../../docs/TESTING.md`](../../docs/TESTING.md) under "CYD ESP-IDF HA".
+The build is not hardware-verified. Complete the first-flash checks in
+[TESTING.md](../../docs/TESTING.md).
 
-## What's different from `cyd/esp-idf/`
+## Differences from the Spotify Build
 
-| Concern | `cyd/esp-idf/` (Spotify) | `cyd/esp-idf-ha/` (HA) |
+| Function | Direct Spotify | Home Assistant |
 |---|---|---|
-| Backend file | `main/spotify.c` | `main/ha_client.c` |
-| Backend header | `main/spotify.h` (struct + API) | `main/spotify.h` (thin wrapper — see below) + `main/ha_client.h` |
-| Transport | HTTPS to `api.spotify.com` (`esp_http_client` + cert bundle) | WebSocket to `ws://<HA_HOST>:<HA_PORT>/api/websocket` (`esp_websocket_client`) |
-| Auth | OAuth refresh-token flow, persisted to NVS | One static long-lived access token in `secrets.h` |
-| State updates | `GET /me/player` poll every 5 s (adaptive 15 s when paused) | `state_changed` push from HA — real-time |
-| Album art | Spotify CDN over TLS | HA-proxied `entity_picture` over local HTTP (faster, no TLS) |
-| Volume on phones | Limited by Spotify Web API on mobile (knob no-ops on Android/iOS) | Works (HA handles device targeting) |
-| Secrets file | `WIFI_*` + `SPOTIFY_*` | `WIFI_*` + `HA_HOST` / `HA_PORT` / `HA_TOKEN` / `HA_ENTITY` |
-| Extra IDF requirements | `esp_http_client` | `esp_websocket_client` |
+| Backend source | `main/spotify.c` | `main/ha_client.c` |
+| Transport | HTTPS | Home Assistant WebSocket |
+| Authorization | Spotify refresh token | Home Assistant access token |
+| State updates | Periodic request | `state_changed` event |
+| Album art | Spotify CDN | Home Assistant proxy |
+| Volume control | Spotify device limits apply | Home Assistant selects the device |
 
-The `main/spotify.h` here is a thin wrapper that just `#include "player.h"`
-(from `cyd_shared`) so `ha_client.c` and the shared UI both see the same
-`spotify_track_t` struct. The HA build doesn't actually link any Spotify Web
-API client — the file's filename is historical.
+The file `main/spotify.h` includes the shared player contract. Its name remains
+for compatibility.
 
-## Shared with `cyd/esp-idf/` (via `cyd_shared`)
+## Shared Functions
 
-Everything in the table below comes for free in this build because it lives
-in [`../components/cyd_shared/`](../components/cyd_shared/README.md):
+The [`cyd_shared`](../components/cyd_shared/README.md) component supplies:
 
-- LVGL UI: album browser, now-playing screen, volume HUD, OFFLINE indicator,
-  auto-snap to playing album, MAX_CARDS truncation warning, toast widget,
-  WiFi-bars indicator.
-- Input: MCP23017 driver (with re-probe-on-failure), debounced buttons +
-  RE1 encoder, volume base seeded from device, mute toggle.
-- Storage: LittleFS scratch partition mount.
-- Album art: JPEGDEC decode of the now-playing image to RGB565.
+- LVGL album browser and now-playing view.
+- Volume and network overlays.
+- MCP23017 input handling.
+- Button and encoder debounce.
+- LittleFS storage.
+- JPEG album-art decoding.
 
-What the HA `ha_client.c` is responsible for filling in:
-- The `spotify_track_t` struct (call `ui_set_track_info` after every
-  `state_changed` event).
-- The album-art URL field, pointing at the HA-proxied `entity_picture`.
-- Implementing the same set of `*_play_album` / `*_toggle_play_pause` /
-  `*_next` / `*_prev` / `*_seek` / `*_set_volume` / `*_get_devices` /
-  `*_transfer_playback` semantics that the dispatcher in `main.c` expects.
+The Home Assistant client must publish a complete `spotify_track_t` value after
+each applicable state event.
 
-## Setup (HA side)
+The client must implement the control functions that `main.c` requests. Keep
+all network calls outside the LVGL and input tasks.
 
-1. Install HA OS on a Pi 5. Add the Spotify (or Music Assistant) integration.
-   Note the entity ID: typically `media_player.spotify_<username>` or
-   `media_player.<mass_user>`.
-2. Create a long-lived access token: HA Profile → Long-Lived Access Tokens
-   → Create. Store in `include/secrets.h` as `HA_TOKEN`.
-3. Confirm Pi 5 is reachable on the LAN at a stable IP or hostname. Set
-   `HA_HOST` + `HA_PORT` (default 8123) + `HA_ENTITY` to your media-player
-   entity id.
+## Home Assistant Setup
 
-## Setup (device side)
+1. Install Home Assistant OS.
+2. Install Music Assistant or the required media integration.
+3. Find the applicable `media_player` entity.
+4. Create a long-lived Home Assistant access token.
+5. Record the server address and port.
+6. Complete [HA-SETUP.md](../../docs/HA-SETUP.md).
 
-1. `cp include/secrets.h.example include/secrets.h` and fill in
-   `WIFI_SSID` / `WIFI_PASSWORD` / `HA_HOST` / `HA_PORT` / `HA_TOKEN` /
-   `HA_ENTITY`. File is gitignored.
-2. Make sure `idf.py set-target esp32` has been run at least once.
-3. `idf.py build flash monitor` — first build downloads `esp_websocket_client`
-   and the rest of the managed-component graph.
+## Device Setup
 
-## Build / flash / monitor
+1. Create the private credential file from its example.
+2. Set `WIFI_SSID`.
+3. Set `WIFI_PASSWORD`.
+4. Set `HA_HOST`.
+5. Set `HA_PORT`.
+6. Set `HA_TOKEN`.
+7. Set `HA_ENTITY`.
 
-Same as `cyd/esp-idf/` — open this folder in VS Code with the ESP-IDF
-extension (the extension wants the IDF project at the workspace root, not
-the repo root), set target `esp32`, pick the COM port, click the flame icon
-to build + flash + monitor.
+Do not commit the credential file.
 
-From the IDF PowerShell:
+## Build Procedure
 
-```powershell
-idf.py set-target esp32           # first time only
-idf.py build
-idf.py -p COM5 flash monitor      # replace COM5 with your port
-```
+1. Open an ESP-IDF 6.0 terminal.
+2. Change to this folder.
+3. Set the target:
 
-## Build configuration
+   ```powershell
+   idf.py set-target esp32
+   ```
 
-The CMake wiring matches `cyd/esp-idf/` after the `cyd_shared` extraction:
+4. Build:
 
-- Top-level `CMakeLists.txt` adds `list(APPEND EXTRA_COMPONENT_DIRS ../components)`
-  before the `project()` call so IDF discovers `cyd_shared`.
-- `main/CMakeLists.txt` lists `cyd_shared` in `REQUIRES`; the only sources
-  it builds itself are `main.c`, `ha_client.c`, `albums.c` (generated), and
-  `album_thumbs.c` (with `EMBED_FILES "album_thumbs.bin"`).
+   ```powershell
+   idf.py build
+   ```
 
-## Project memory
+5. Flash and monitor:
 
-- Hardware pin map, I2C addresses, architecture, coding conventions:
-  [`../../CLAUDE.md`](../../CLAUDE.md).
-- Phased plan (incl. Phase 3 HA backend rationale):
-  [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md).
-- IDF port gotchas: [`../../docs/PORT-NOTES.md`](../../docs/PORT-NOTES.md).
-- What's not yet verified and deferred work:
-  [`../../docs/PENDING.md`](../../docs/PENDING.md).
-- Test plan: [`../../docs/TESTING.md`](../../docs/TESTING.md).
+   ```powershell
+   idf.py -p COM5 flash monitor
+   ```
+
+Replace `COM5` with the correct port.
+
+The first build can download the WebSocket component and other managed
+components.
+
+## First Hardware Check
+
+Confirm these results in order:
+
+1. The display starts.
+2. Touch input operates.
+3. Wi-Fi gets an address.
+4. The WebSocket connects.
+5. Home Assistant accepts the token.
+6. The configured entity exists.
+7. Player state appears.
+8. Album art appears.
+9. Each control sends the expected service call.
+10. The controller reconnects after a network interruption.
+
+## Related Documents
+
+- [Home Assistant setup](../../docs/HA-SETUP.md)
+- [Hardware tests](../../docs/TESTING.md)
+- [Project memory](../../CLAUDE.md)
+- [Roadmap](../../docs/ROADMAP.md)
+- [Pending work](../../docs/PENDING.md)
