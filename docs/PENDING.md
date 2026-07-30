@@ -168,6 +168,14 @@ Deep-dive queue (one at a time, Lewis's request): **A concurrency — DONE (clea
 - The short 100 kHz bench bus works with the Pico's internal pull-ups, but the
   final PCB should retain the datasheet's 4.7 kΩ SDA/SCL pull-ups. The TMC6300
   and motor remained disconnected throughout this sensor-only checkpoint.
+- The OT-EM3215BLDC motor's three phase-to-phase measurements are balanced at
+  7.8 ohms, with every phase open-circuit to the motor body. Straight headers
+  are fitted to the SparkFun TMC6300 breakout.
+- Checkpoint 3 is build-verified at `rp2040/bringup/`: a separate
+  `smartknob_motor_test.uf2` uses the production GP0-GP7 motor pin map, boots
+  with VIO and all bridge inputs LOW, requires explicit arm then test commands,
+  expires the arm after 10 seconds, limits the test to 2.4 seconds at 12% duty,
+  and shuts down on DIAG. Hardware verification is pending.
 
 ### RP2040 knob - pre-hardware setup pass, 2026-07-14 (Claude Code session)
 
