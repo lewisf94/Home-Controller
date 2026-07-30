@@ -38,39 +38,121 @@
 #define TUNE_ACCENT_COLS  8
 
 /* =========================================================================
- * SHAPE KNOBS -- also live-adjustable on the device.
- *
- * Everything in this block is exposed as a slider/toggle in
- * Settings > DEVELOPER, so you can tune it on the panel and see it instantly
- * instead of rebuilding. Those on-device edits are stored as NVS overrides
- * (namespace "uiset", key "devtune") and only override the mode you edited.
+ * LIVE KNOBS -- every macro from here to the end of the file is ALSO
+ * adjustable on the device under Settings > DEVELOPER (grouped into the TYPE /
+ * SHAPE / LAYOUT / BROWSER / ART sub-pages). On-device edits are stored as NVS
+ * overrides for the mode you edited; the values here stay the compiled
+ * defaults and are what a RESET returns to.
  *
  * ROUND TRIP: tune on device -> tap EXPORT -> the serial monitor prints these
- * exact #define lines with your values -> paste them back here -> RESET on the
- * device so the compiled defaults are live again -> commit. That way a value
- * you liked ends up in git rather than living only in one board's flash.
+ * exact #define lines with your values -> paste them back here -> RESET MODE on
+ * the device so the compiled defaults are live again -> commit. The printed
+ * format is byte-identical to the lines below, so paste-over is safe.
+ *
+ * FORMATTING: the columns are 6 wide because the same formatter emits both
+ * these lines and the device's EXPORT. Keep that width if you hand-edit, or
+ * the round trip stops being a clean diff.
+ *
+ * COMPILE-TIME BOUNDS: TUNE_PROG_PARTS, TUNE_CF_MAX_SIDE and TUNE_CF_SCALE are
+ * capped by arrays sized at build time (PROG_PART_COUNT, CF_CARDS_MAX,
+ * CF_COL_MAX in ui.c). Their on-device sliders only ever REDUCE work; raising
+ * them past the compiled bound needs a rebuild, because the scratch lives in
+ * internal SRAM, which is the scarce resource on this board.
  * ========================================================================= */
 /* Corner radius (px) of every boxy button/key. -1 means a full pill
  * (LV_RADIUS_CIRCLE). GLYPH's pill and PAPER's hard square are part of those
  * themes' identities -- BOLD's 14 is its rounded-geometric signature. */
-#define TUNE_KEY_RADIUS        {   3,  -1,   3,   0,  14 }
+#define TUNE_KEY_RADIUS        {     3,    -1,     3,     0,    14 }
 /* Corner radius (px) of album cards + the now-playing cover. 0 = hard square
  * (every theme's original look); BOLD softens them to match its buttons. */
-#define TUNE_ART_RADIUS        {   0,   0,   0,   0,   7 }
+#define TUNE_ART_RADIUS        {     0,     0,     0,     0,     7 }
 /* Progress-bar thickness (px). BOLD's chunky bar is a deliberate flat block
  * rather than the hairline the other themes use. */
-#define TUNE_PROG_H            {   6,   6,   6,   6,  12 }
+#define TUNE_PROG_H            {     6,     6,     6,     6,    12 }
 /* Selection underline under the centred album: width then thickness (px). */
-#define TUNE_SEL_W             {  88,  88,  88,  88, 120 }
-#define TUNE_SEL_H             {   3,   3,   3,   3,   8 }
+#define TUNE_SEL_W             {    88,    88,    88,    88,   120 }
+#define TUNE_SEL_H             {     3,     3,     3,     3,     8 }
 /* 1 = transport keys (prev/play/next) are drawn as true circles regardless of
  * TUNE_KEY_RADIUS. Futura's defining shape is the perfect circle, so BOLD
  * takes it; the others keep their square-ish keys. */
-#define TUNE_TKEY_CIRCLE       {   0,   0,   0,   0,   1 }
+#define TUNE_TKEY_CIRCLE       {     0,     0,     0,     0,     1 }
 /* 1 = force album/track TITLES to uppercase (artist stays as supplied -- the
  * caps/mixed pairing is the point). LVGL has no text-transform, so ui.c
  * upcases the string itself; ASCII a-z only, so accented metadata survives. */
-#define TUNE_TITLE_UPPER       {   0,   0,   0,   0,   1 }
+#define TUNE_TITLE_UPPER       {     0,     0,     0,     0,     1 }
+
+/* ---- TYPE ---------------------------------------------------------------
+ * Letter spacing is per ROLE, so a tracked title can sit over an untracked
+ * artist line. Uppercase is likewise per role. */
+#define TUNE_ARTIST_LSP        {     0,     0,     0,     0,     1 }
+#define TUNE_HEADER_LSP        {     2,     2,     2,     2,     3 }
+#define TUNE_ARTIST_UPPER      {     0,     0,     0,     0,     0 }
+/* Extra px between wrapped lines (LVGL text_line_space). */
+#define TUNE_LINE_SPACE        {     0,     0,     0,     0,     0 }
+/* Marquee: full scroll cycle in ms, and 1 = only scroll when the text is
+ * actually too wide (0 = always scroll, LVGL's default circular behaviour). */
+#define TUNE_MARQUEE_MS        { 30000, 30000, 30000, 30000, 30000 }
+#define TUNE_MARQUEE_FIT_ONLY  {     1,     1,     1,     1,     1 }
+/* Title block alignment: 0 = centred, 1 = left, 2 = right. Left-aligned with
+ * tracking is the classic geometric-poster setting. */
+#define TUNE_TITLE_ALIGN       {     0,     0,     0,     0,     0 }
+/* Overflow handling for titles: 0 = marquee, 1 = ellipsis, 2 = hard clip. */
+#define TUNE_TITLE_LONG        {     0,     0,     0,     0,     0 }
+
+/* ---- SHAPE --------------------------------------------------------------- */
+/* Gap between the three transport keys (px). */
+#define TUNE_TKEY_GAP          {    28,    28,    28,    28,    28 }
+/* Border thickness (px) on album cards and on buttons. These carry theme
+ * identity -- PAPER's printed 2 px rule, GLYPH's 1 px hairline -- so changing
+ * them changes how "drawn" the UI reads. 0 = borderless. */
+#define TUNE_CARD_BORDER       {     0,     0,     0,     2,     0 }
+#define TUNE_BTN_BORDER        {     0,     1,     0,     2,     0 }
+/* Drop shadow depth (px) under the centred album card. 0 = flat (the default
+ * everywhere -- flat is a deliberate choice, not an omission). */
+#define TUNE_CARD_SHADOW       {     0,     0,     0,     0,     0 }
+/* Progress bar end caps: 0 = rounded, 1 = square. */
+#define TUNE_PROG_CAP          {     0,     0,     0,     1,     0 }
+/* Screen edge inset (px) for text that can scroll to the edges. */
+#define TUNE_PAD               {     6,     6,     6,     6,     6 }
+
+/* ---- LAYOUT (now-playing album art) -------------------------------------- */
+#define TUNE_ART_W             {   256,   256,   256,   256,   256 }
+#define TUNE_ART_Y             {    44,    44,    44,    44,    44 }
+
+/* ---- BROWSER + MOTION ---------------------------------------------------- */
+/* Carousel/Focus card slot size and gap (px). Cover Flow uses its own step. */
+#define TUNE_CARD_SIZE         {   286,   286,   286,   286,   286 }
+#define TUNE_CARD_GAP          {    28,    28,    28,    28,    28 }
+/* Focus mode falloff: how fast side cards shrink and dim per slot away from
+ * centre. Larger = more dramatic. */
+#define TUNE_FOCUS_SCALE       {    76,    76,    76,    76,    76 }
+#define TUNE_FOCUS_DIM         {    95,    95,    95,    95,    95 }
+/* Cover Flow. SCALE is x100 (130 = 1.30). MAX_SIDE caps how many covers are
+ * rasterised per side -- RAISING IT COSTS REAL FRAME TIME, the whole fan is
+ * redrawn on every scroll event. LEAN_FLIP mirrors the tilt direction. */
+#define TUNE_CF_SCALE          {   130,   130,   130,   130,   130 }
+#define TUNE_CF_MAX_SIDE       {     3,     3,     3,     3,     3 }
+#define TUNE_CF_LEAN_FLIP      {     0,     0,     0,     0,     0 }
+/* Screen transition duration (ms) when the style is not NONE. */
+#define TUNE_TRANS_MS          {   300,   300,   300,   300,   300 }
+/* Auto-dim: seconds of inactivity before each stage, then the two backlight
+ * levels (% of the user's brightness). */
+#define TUNE_DIM_AFTER_S       {    60,    60,    60,    60,    60 }
+#define TUNE_DIM_DEEP_S        {   300,   300,   300,   300,   300 }
+#define TUNE_DIM_LEVEL         {    30,    30,    30,    30,    30 }
+#define TUNE_DIM_DEEP_LEVEL    {    10,    10,    10,    10,    10 }
+/* Volume step (%) for the +/- keys and the knob. */
+#define TUNE_VOL_STEP          {     5,     5,     5,     5,     5 }
+/* Cover Flow centre-tap tolerance (px) and the optimistic play/pause icon
+ * hold (ms) before server state is trusted again. */
+#define TUNE_TAP_TOL           {   140,   140,   140,   140,   140 }
+#define TUNE_PP_GUARD_MS       {  2000,  2000,  2000,  2000,  2000 }
+
+/* ---- THEME ART ----------------------------------------------------------- */
+/* GLYPH dot-matrix pitch (px): smaller = finer, denser dots. */
+#define TUNE_GLYPH_CELL        {     5,     5,     5,     5,     5 }
+/* GLYPH gas-tank progress: number of drifting ink particles. */
+#define TUNE_PROG_PARTS        {    44,    44,    44,    44,    44 }
 
 /* =========================================================================
  * BROWSER (album list) -- text + furniture          { BASIC, GLYPH, PIXEL, PAPER }
@@ -82,33 +164,33 @@
  * comes from its header rule (TUNE_PAPER_RULE_Y). TKEY_SZ: PAPER's transport
  * keys were shrunk to clear the art's lower rule; the others are untouched.
  * Strip height (SCROLLER_H, ui.c) is a flat 292 for every theme. */
-#define TUNE_SCROLLER_Y        {  54,  30,  30,  54,  54 }
-#define TUNE_TKEY_SZ           {  56,  56,  56,  48,  56 }
+#define TUNE_SCROLLER_Y        {    54,    30,    30,    54,    54 }
+#define TUNE_TKEY_SZ           {    56,    56,    56,    48,    56 }
 /* Album title / artist baseline Y. Tracks TUNE_SCROLLER_Y per mode: GLYPH/PIXEL
  * keep the 16px gap below their y322 strip bottom (342/384); BASIC and PAPER
  * start lower (strip bottom y346) so their title/artist follow to 362/404. */
-#define TUNE_BR_TITLE_Y        { 362, 342, 342, 362, 362 }
-#define TUNE_BR_ARTIST_Y       { 404, 384, 384, 404, 404 }
+#define TUNE_BR_TITLE_Y        {   362,   342,   342,   362,   362 }
+#define TUNE_BR_ARTIST_Y       {   404,   384,   384,   404,   404 }
 /* Extra letter spacing (px) on the browser + now-playing title text. BOLD
  * gets real tracking on its Jost Bold headings -- the geometric-poster
  * feel Futura/Bauhaus titling leans on. */
-#define TUNE_TITLE_LETTER_SP   {   0,   0,   0,   0,   3 }
+#define TUNE_TITLE_LETTER_SP   {     0,     0,     0,     0,     3 }
 /* Selection underline: px below the strip bottom (TUNE_SCROLLER_Y + 292). */
-#define TUNE_SEL_LINE_DY       {   4,   4,   4,   4,   4 }
+#define TUNE_SEL_LINE_DY       {     4,     4,     4,     4,     4 }
 /* FPS readout position (top-left). GLYPH starts further right so it clears
  * the 4-dot WiFi meter. PAPER: Y=17 centres mono_16 on the ~y25 header row;
  * X=64 clears the WiFi cluster now that it's inset further right (x0=20). */
-#define TUNE_FPS_X             {  44,  64,  44,  64,  44 }
-#define TUNE_FPS_Y             {   6,   6,   6,  17,   6 }
+#define TUNE_FPS_X             {    44,    64,    44,    64,    44 }
+#define TUNE_FPS_Y             {     6,     6,     6,    17,     6 }
 /* WiFi bar cluster: X of the leftmost bar, Y of the bars' shared bottom edge.
  * GLYPH's slot is unused (it shows an orbiting dot cluster instead of bars). */
-#define TUNE_WIFI_X0           {   6,   6,   6,  20,   6 }
-#define TUNE_WIFI_BOT          {  22,  22,  22,  34,  22 }
+#define TUNE_WIFI_X0           {     6,     6,     6,    20,     6 }
+#define TUNE_WIFI_BOT          {    22,    22,    22,    34,    22 }
 /* Settings cog / devices buttons (top-right corner): Y of both buttons,
  * and the X inset of each (negative = from the right edge). PAPER's Y=8
  * puts the TOPBTN_H-tall (34px, ui.c) button at y8..42, clearing the header
  * rule at y46 (icon centred ~y25, no longer cut off at the bottom). */
-#define TUNE_TOPBTN_Y          {   0,   0,   0,   8,   0 }
+#define TUNE_TOPBTN_Y          {     0,     0,     0,     8,     0 }
 #define TUNE_GEAR_X            (-6)
 #define TUNE_DEVBTN_X          (-56)
 #define TUNE_LIGHTSBTN_X       (-106)   /* one more 50px slot left of DEVBTN */
@@ -148,17 +230,17 @@
  * NOW PLAYING                                       { BASIC, GLYPH, PIXEL, PAPER }
  * ========================================================================= */
 /* Track title / artist Y (art occupies y44..300). */
-#define TUNE_NP_TITLE_Y        { 308, 308, 308, 308, 308 }
-#define TUNE_NP_ARTIST_Y       { 348, 348, 348, 348, 348 }
+#define TUNE_NP_TITLE_Y        {   308,   308,   308,   308,   308 }
+#define TUNE_NP_ARTIST_Y       {   348,   348,   348,   348,   348 }
 /* Progress bar Y. PAPER sits higher: its tick ruler needs room above the
  * transport keys. Timestamps, seek overlay and the GLYPH gas-tank all derive
  * from this value automatically. */
-#define TUNE_PROG_Y            { 392, 392, 392, 378, 392 }
+#define TUNE_PROG_Y            {   392,   392,   392,   378,   392 }
 /* Width of each timestamp label. Wide enough that "-12:34" stays on ONE line:
  * Montserrat needs ~64, the chunky PIXEL / PAPER mono digits need ~104. */
-#define TUNE_TS_W              {  64,  64, 104, 104,  64 }
+#define TUNE_TS_W              {    64,    64,   104,   104,    64 }
 /* Transport keys (prev/play/next) Y. */
-#define TUNE_TKEY_Y            { 414, 414, 414, 414, 414 }
+#define TUNE_TKEY_Y            {   414,   414,   414,   414,   414 }
 /* Vertical volume fader: X, top Y, track height (width is FADER_W, ui.c).
  * The square knob overhangs the track ends by ~26px at 0%/100% -- PAPER's
  * shorter, lower-started track keeps the knob clear of the LEVEL label
@@ -169,9 +251,9 @@
  * whole column stays clear of the art at ART_X=272. X=80 centres the fader +
  * button cluster (fader_x .. fader_x+108) in the 0..272 left zone -- was 36,
  * which hugged the left edge and left a lopsided ~128px gap before the art. */
-#define TUNE_FADER_X           {  80,  80,  80,  80,  80 }
-#define TUNE_FADER_Y           {  66,  66,  66, 106,  66 }
-#define TUNE_FADER_H           { 236, 236, 236, 160, 236 }
+#define TUNE_FADER_X           {    80,    80,    80,    80,    80 }
+#define TUNE_FADER_Y           {    66,    66,    66,   106,    66 }
+#define TUNE_FADER_H           {   236,   236,   236,   160,   236 }
 /* PAPER only: "VOLUME" fader corner-label geometry, centred on the fader's
  * mid-x (FADER_W/2, ui.c). Y=58 matches OUTPUT's clearance below the y42
  * top rule. W=132: the mono font is ~16px/char, so "VOLUME" + letter-spacing

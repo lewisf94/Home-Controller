@@ -151,7 +151,7 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri,
  * over the 286px card. BR_TITLE_Y tracks each mode's own strip bottom so it
  * stays clear of the covers + selection line without dragging BASIC/GLYPH/
  * PIXEL's already-verified layout down with it. */
-#define SCROLLER_Y    (k_tune_scroller_y[s_mode])
+#define SCROLLER_Y    (dv(DV_SCROLLER_Y))
 #define SCROLLER_H    292
 
 /* Now-playing layout, 8px grid. Art is centred up top; below it the title,
@@ -172,7 +172,7 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri,
 #define PROG_X         ((SCREEN_W - PROG_W) / 2)
 /* Per-mode (ticks, timestamps, seek overlay and the GLYPH gas-tank all derive
  * from PROG_Y automatically). Values live in ui_tune.h. */
-#define PROG_Y        (k_tune_prog_y[s_mode])
+#define PROG_Y        (dv(DV_PROG_Y))
 
 /* Generous touch band around the thin progress bar: a drag that starts here is
  * a scrub, not a screen swipe. Wider than the bar so 0%/100% are easy to grab.
@@ -185,14 +185,14 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri,
 
 /* Elapsed / remaining timestamps either side of the bar (width per mode in
  * ui_tune.h -- mono/pixel digits are ~2x as wide as Montserrat's). */
-#define TS_W          (k_tune_ts_w[s_mode])
+#define TS_W          (dv(DV_TS_W))
 #define TS_Y          (PROG_Y - 14)
 
 /* Transport keys: three squares (size per-mode -- PAPER alone was shrunk to
  * keep clear of the art's lower rule), gap 28, centred (group centre = 400). */
-#define TKEY_SZ       (k_tune_tkey_sz[s_mode])
-#define TKEY_GAP       28
-#define TKEY_Y        (k_tune_tkey_y[s_mode])
+#define TKEY_SZ       (dv(DV_TKEY_SZ))
+#define TKEY_GAP      (dv(DV_TKEY_GAP))
+#define TKEY_Y        (dv(DV_TKEY_Y))
 
 /* Volume fader track width, every mode (only its X/Y/H vary -- ui_tune.h). */
 #define FADER_W        44
@@ -205,16 +205,16 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri,
 #define THUMB_W        14
 #define THUMB_H        26
 
-#define NP_TITLE_Y    (k_tune_np_title_y[s_mode])
-#define NP_ARTIST_Y   (k_tune_np_artist_y[s_mode])
+#define NP_TITLE_Y    (dv(DV_NP_TITLE_Y))
+#define NP_ARTIST_Y   (dv(DV_NP_ARTIST_Y))
 #define NP_DEVICE_Y   374   /* small device-name text below artist */
 
 /* All browser styles share one strip geometry (SCROLLER_Y/H, per-mode -- the
  * 286px cover sits centred in it, 3px inset each side), so title/artist sit
  * at one per-mode position below it -- see ui_tune.h. CF_* kept equal for
  * the per-style call sites. */
-#define BR_TITLE_Y    (k_tune_br_title_y[s_mode])
-#define BR_ARTIST_Y   (k_tune_br_artist_y[s_mode])
+#define BR_TITLE_Y    (dv(DV_BR_TITLE_Y))
+#define BR_ARTIST_Y   (dv(DV_BR_ARTIST_Y))
 #define CF_TITLE_Y    BR_TITLE_Y
 #define CF_ARTIST_Y   BR_ARTIST_Y
 
@@ -438,121 +438,267 @@ static void apply_palette(void) { s_th = k_mode_palettes[s_mode][s_dark ? 0 : 1]
 static bool s_theme_art = true;
 
 /* ---- Layout knobs, indexed by s_mode (values live in ui_tune.h) ---------- */
-static const int16_t k_tune_scroller_y[MODE_COUNT]  = TUNE_SCROLLER_Y;
-static const int16_t k_tune_tkey_sz[MODE_COUNT]     = TUNE_TKEY_SZ;
-static const int16_t k_tune_br_title_y[MODE_COUNT]  = TUNE_BR_TITLE_Y;
-static const int16_t k_tune_br_artist_y[MODE_COUNT] = TUNE_BR_ARTIST_Y;
-static const int16_t k_tune_title_lsp[MODE_COUNT]   = TUNE_TITLE_LETTER_SP;
-static const int16_t k_tune_sel_dy[MODE_COUNT]      = TUNE_SEL_LINE_DY;
-static const int16_t k_tune_fps_x[MODE_COUNT]       = TUNE_FPS_X;
-static const int16_t k_tune_fps_y[MODE_COUNT]       = TUNE_FPS_Y;
-static const int16_t k_tune_wifi_x0[MODE_COUNT]     = TUNE_WIFI_X0;
-static const int16_t k_tune_wifi_bot[MODE_COUNT]    = TUNE_WIFI_BOT;
-static const int16_t k_tune_topbtn_y[MODE_COUNT]    = TUNE_TOPBTN_Y;
-static const int16_t k_tune_np_title_y[MODE_COUNT]  = TUNE_NP_TITLE_Y;
-static const int16_t k_tune_np_artist_y[MODE_COUNT] = TUNE_NP_ARTIST_Y;
-static const int16_t k_tune_prog_y[MODE_COUNT]      = TUNE_PROG_Y;
-static const int16_t k_tune_ts_w[MODE_COUNT]        = TUNE_TS_W;
-static const int16_t k_tune_tkey_y[MODE_COUNT]      = TUNE_TKEY_Y;
-static const int16_t k_tune_fader_x[MODE_COUNT]     = TUNE_FADER_X;
-static const int16_t k_tune_fader_y[MODE_COUNT]     = TUNE_FADER_Y;
-static const int16_t k_tune_fader_h[MODE_COUNT]     = TUNE_FADER_H;
 
-/* ---- DEVELOPER shape knobs: compiled defaults + live NVS overrides -------
+/* ---- DEVELOPER knobs: compiled defaults + live per-mode NVS overrides -----
  *
- * The values below are the ones worth judging by eye on the real panel, so
- * Settings > DEVELOPER exposes each as a slider (or ON/OFF) and stores the
- * result as a per-mode override. Everything is table-driven off k_dv: the
- * DEVELOPER page, the NVS blob and the EXPORT dump are all plain loops over
- * it, so adding a knob is one enum entry, one k_dv row, and one call site --
- * no new UI or persistence code. Read a knob with dv(DV_xxx); it returns the
- * override for the ACTIVE mode when one is set, else the ui_tune.h default. */
-static const int16_t k_tune_key_radius[MODE_COUNT]  = TUNE_KEY_RADIUS;
-static const int16_t k_tune_art_radius[MODE_COUNT]  = TUNE_ART_RADIUS;
-static const int16_t k_tune_prog_h[MODE_COUNT]      = TUNE_PROG_H;
-static const int16_t k_tune_sel_w[MODE_COUNT]       = TUNE_SEL_W;
-static const int16_t k_tune_sel_h[MODE_COUNT]       = TUNE_SEL_H;
-static const int16_t k_tune_tkey_circle[MODE_COUNT] = TUNE_TKEY_CIRCLE;
-static const int16_t k_tune_title_upper[MODE_COUNT] = TUNE_TITLE_UPPER;
+ * Everything here is table-driven off k_dv[]: the DEVELOPER settings page, the
+ * NVS blob and the EXPORT dump are all plain loops over that table, so adding a
+ * knob is ONE enum entry, ONE k_dv row and ONE call site -- no new UI code, no
+ * NVS migration, no export code. Read a knob with dv(DV_xxx) (or dv_radius()
+ * for the -1 "full pill" convention); never read a k_dvd_* array directly.
+ *
+ * Value type is int32_t, not int16_t, because the set spans px (3) and ms
+ * (30000) in the same table.
+ *
+ * PER-FACE: a knob flagged per_face stores dark and light independently, while
+ * geometry is shared across both faces of a mode -- otherwise changing a radius
+ * in dark mode and flipping to light would silently show the old radius.
+ * Geometry rows always store at face slot 0.
+ *
+ * COMPILE-TIME BOUNDS: a few knobs are capped by arrays sized at build time --
+ * DV_PROG_PARTS by PROG_PART_COUNT, DV_CF_MAX_SIDE by CF_CARDS_MAX, and
+ * DV_CF_SCALE by CF_COL_MAX. Their ranges only ever REDUCE work; raising them
+ * past the compiled bound needs a rebuild (the scratch lives in internal SRAM,
+ * which is the scarce resource on this board). */
+
+/* Compiled defaults, one int32 array per knob so a single table type covers px
+ * and ms alike. These replaced the older int16 k_tune_* arrays -- every
+ * consumer now goes through dv(). */
+static const int32_t k_dvd_key_radius[MODE_COUNT]  = TUNE_KEY_RADIUS;
+static const int32_t k_dvd_art_radius[MODE_COUNT]  = TUNE_ART_RADIUS;
+static const int32_t k_dvd_prog_h[MODE_COUNT]      = TUNE_PROG_H;
+static const int32_t k_dvd_sel_w[MODE_COUNT]       = TUNE_SEL_W;
+static const int32_t k_dvd_sel_h[MODE_COUNT]       = TUNE_SEL_H;
+static const int32_t k_dvd_tkey_circle[MODE_COUNT] = TUNE_TKEY_CIRCLE;
+static const int32_t k_dvd_title_upper[MODE_COUNT] = TUNE_TITLE_UPPER;
+static const int32_t k_dvd_title_lsp[MODE_COUNT]   = TUNE_TITLE_LETTER_SP;
+static const int32_t k_dvd_artist_lsp[MODE_COUNT]  = TUNE_ARTIST_LSP;
+static const int32_t k_dvd_header_lsp[MODE_COUNT]  = TUNE_HEADER_LSP;
+static const int32_t k_dvd_artist_upper[MODE_COUNT]= TUNE_ARTIST_UPPER;
+static const int32_t k_dvd_line_space[MODE_COUNT]  = TUNE_LINE_SPACE;
+static const int32_t k_dvd_marquee_ms[MODE_COUNT]  = TUNE_MARQUEE_MS;
+static const int32_t k_dvd_marquee_fit[MODE_COUNT] = TUNE_MARQUEE_FIT_ONLY;
+static const int32_t k_dvd_title_align[MODE_COUNT] = TUNE_TITLE_ALIGN;
+static const int32_t k_dvd_title_long[MODE_COUNT]  = TUNE_TITLE_LONG;
+static const int32_t k_dvd_tkey_gap[MODE_COUNT]    = TUNE_TKEY_GAP;
+static const int32_t k_dvd_card_border[MODE_COUNT] = TUNE_CARD_BORDER;
+static const int32_t k_dvd_btn_border[MODE_COUNT]  = TUNE_BTN_BORDER;
+static const int32_t k_dvd_card_shadow[MODE_COUNT] = TUNE_CARD_SHADOW;
+static const int32_t k_dvd_prog_cap[MODE_COUNT]    = TUNE_PROG_CAP;
+static const int32_t k_dvd_pad[MODE_COUNT]         = TUNE_PAD;
+static const int32_t k_dvd_scroller_y[MODE_COUNT]  = TUNE_SCROLLER_Y;
+static const int32_t k_dvd_br_title_y[MODE_COUNT]  = TUNE_BR_TITLE_Y;
+static const int32_t k_dvd_br_artist_y[MODE_COUNT] = TUNE_BR_ARTIST_Y;
+static const int32_t k_dvd_np_title_y[MODE_COUNT]  = TUNE_NP_TITLE_Y;
+static const int32_t k_dvd_np_artist_y[MODE_COUNT] = TUNE_NP_ARTIST_Y;
+static const int32_t k_dvd_prog_y[MODE_COUNT]      = TUNE_PROG_Y;
+static const int32_t k_dvd_tkey_y[MODE_COUNT]      = TUNE_TKEY_Y;
+static const int32_t k_dvd_tkey_sz[MODE_COUNT]     = TUNE_TKEY_SZ;
+static const int32_t k_dvd_fader_x[MODE_COUNT]     = TUNE_FADER_X;
+static const int32_t k_dvd_fader_y[MODE_COUNT]     = TUNE_FADER_Y;
+static const int32_t k_dvd_fader_h[MODE_COUNT]     = TUNE_FADER_H;
+static const int32_t k_dvd_art_w[MODE_COUNT]       = TUNE_ART_W;
+static const int32_t k_dvd_art_y[MODE_COUNT]       = TUNE_ART_Y;
+static const int32_t k_dvd_ts_w[MODE_COUNT]        = TUNE_TS_W;
+static const int32_t k_dvd_sel_dy[MODE_COUNT]      = TUNE_SEL_LINE_DY;
+static const int32_t k_dvd_fps_x[MODE_COUNT]       = TUNE_FPS_X;
+static const int32_t k_dvd_fps_y[MODE_COUNT]       = TUNE_FPS_Y;
+static const int32_t k_dvd_wifi_x[MODE_COUNT]      = TUNE_WIFI_X0;
+static const int32_t k_dvd_wifi_y[MODE_COUNT]      = TUNE_WIFI_BOT;
+static const int32_t k_dvd_topbtn_y[MODE_COUNT]    = TUNE_TOPBTN_Y;
+static const int32_t k_dvd_card_size[MODE_COUNT]   = TUNE_CARD_SIZE;
+static const int32_t k_dvd_card_gap[MODE_COUNT]    = TUNE_CARD_GAP;
+static const int32_t k_dvd_focus_scale[MODE_COUNT] = TUNE_FOCUS_SCALE;
+static const int32_t k_dvd_focus_dim[MODE_COUNT]   = TUNE_FOCUS_DIM;
+static const int32_t k_dvd_cf_scale[MODE_COUNT]    = TUNE_CF_SCALE;
+static const int32_t k_dvd_cf_max_side[MODE_COUNT] = TUNE_CF_MAX_SIDE;
+static const int32_t k_dvd_cf_lean[MODE_COUNT]     = TUNE_CF_LEAN_FLIP;
+static const int32_t k_dvd_trans_ms[MODE_COUNT]    = TUNE_TRANS_MS;
+static const int32_t k_dvd_dim_after[MODE_COUNT]   = TUNE_DIM_AFTER_S;
+static const int32_t k_dvd_dim_deep[MODE_COUNT]    = TUNE_DIM_DEEP_S;
+static const int32_t k_dvd_dim_level[MODE_COUNT]   = TUNE_DIM_LEVEL;
+static const int32_t k_dvd_dim_deep_lvl[MODE_COUNT]= TUNE_DIM_DEEP_LEVEL;
+static const int32_t k_dvd_vol_step[MODE_COUNT]    = TUNE_VOL_STEP;
+static const int32_t k_dvd_tap_tol[MODE_COUNT]     = TUNE_TAP_TOL;
+static const int32_t k_dvd_pp_guard[MODE_COUNT]    = TUNE_PP_GUARD_MS;
+static const int32_t k_dvd_glyph_cell[MODE_COUNT]  = TUNE_GLYPH_CELL;
+static const int32_t k_dvd_prog_parts[MODE_COUNT]  = TUNE_PROG_PARTS;
 
 enum {
-    DV_KEY_RADIUS = 0,
-    DV_ART_RADIUS,
-    DV_PROG_H,
-    DV_SEL_W,
-    DV_SEL_H,
-    DV_TITLE_LSP,
-    DV_TKEY_CIRCLE,
-    DV_TITLE_UPPER,
+    /* TYPE */
+    DV_TITLE_LSP = 0, DV_ARTIST_LSP, DV_HEADER_LSP, DV_LINE_SPACE,
+    DV_TITLE_UPPER, DV_ARTIST_UPPER, DV_MARQUEE_MS, DV_MARQUEE_FIT,
+    DV_TITLE_ALIGN, DV_TITLE_LONG,
+    /* SHAPE */
+    DV_KEY_RADIUS, DV_ART_RADIUS, DV_PROG_H, DV_PROG_CAP, DV_SEL_W, DV_SEL_H,
+    DV_TKEY_CIRCLE, DV_TKEY_SZ, DV_TKEY_GAP, DV_CARD_BORDER, DV_BTN_BORDER,
+    DV_CARD_SHADOW, DV_PAD,
+    /* LAYOUT */
+    DV_SCROLLER_Y, DV_BR_TITLE_Y, DV_BR_ARTIST_Y, DV_SEL_DY, DV_NP_TITLE_Y,
+    DV_NP_ARTIST_Y, DV_PROG_Y, DV_TS_W, DV_TKEY_Y, DV_FADER_X, DV_FADER_Y,
+    DV_FADER_H, DV_ART_W, DV_ART_Y, DV_FPS_X, DV_FPS_Y, DV_WIFI_X, DV_WIFI_Y,
+    DV_TOPBTN_Y,
+    /* BROWSER + MOTION */
+    DV_CARD_SIZE, DV_CARD_GAP, DV_FOCUS_SCALE, DV_FOCUS_DIM, DV_CF_SCALE,
+    DV_CF_MAX_SIDE, DV_CF_LEAN, DV_TRANS_MS, DV_DIM_AFTER, DV_DIM_DEEP,
+    DV_DIM_LEVEL, DV_DIM_DEEP_LVL, DV_VOL_STEP, DV_TAP_TOL, DV_PP_GUARD,
+    /* THEME ART */
+    DV_GLYPH_CELL, DV_PROG_PARTS,
     DV_COUNT
 };
 
+/* Sub-page categories -- without these the page is one endless scroll. */
+enum { DVC_TYPE = 0, DVC_SHAPE, DVC_LAYOUT, DVC_BROWSER, DVC_ART, DVC_CAT_COUNT };
+static const char *const k_dv_cat[DVC_CAT_COUNT] = {
+    "TYPE", "SHAPE", "LAYOUT", "BROWSER", "ART",
+};
+static uint8_t s_dev_cat = DVC_TYPE;
+
+/* Widget kind for a row. CHOICE renders named option pills instead of a
+ * slider, which is what an enum knob (alignment, cap style) actually wants. */
+enum { DVK_SLIDER = 0, DVK_TOGGLE, DVK_CHOICE };
+
+static const char *const k_opt_align[] = { "CENTRE", "LEFT", "RIGHT" };
+static const char *const k_opt_long[]  = { "MARQUEE", "ELLIPSIS", "CLIP" };
+static const char *const k_opt_cap[]   = { "ROUND", "SQUARE" };
+
 typedef struct {
-    const char    *tune;      /* ui_tune.h macro name, printed by EXPORT      */
-    const char    *label;     /* on-screen row heading                        */
-    const int16_t *defaults;  /* compiled per-mode array                      */
-    int16_t        lo, hi;    /* inclusive slider range                       */
-    bool           toggle;    /* render as ON/OFF rather than a slider        */
+    const char        *tune;      /* ui_tune.h macro name, printed by EXPORT   */
+    const char        *label;     /* on-screen row heading                     */
+    const int32_t     *defaults;  /* compiled per-mode array                   */
+    int32_t            lo, hi;    /* inclusive range (sliders)                 */
+    uint8_t            cat;       /* which sub-page                            */
+    uint8_t            kind;      /* DVK_*                                     */
+    uint8_t            per_face;  /* 1 = dark/light stored separately          */
+    const char *const *names;     /* DVK_CHOICE option labels                  */
+    uint8_t            n_names;
 } dv_meta_t;
 
+#define DVR(id, tune, label, def, lo, hi, cat) \
+    [id] = { tune, label, def, lo, hi, cat, DVK_SLIDER, 0, NULL, 0 }
+#define DVT(id, tune, label, def, cat) \
+    [id] = { tune, label, def, 0, 1, cat, DVK_TOGGLE, 0, NULL, 0 }
+#define DVE(id, tune, label, def, cat, opts) \
+    [id] = { tune, label, def, 0, (int32_t)(sizeof(opts)/sizeof((opts)[0])) - 1, \
+             cat, DVK_CHOICE, 0, opts, (uint8_t)(sizeof(opts)/sizeof((opts)[0])) }
+
 static const dv_meta_t k_dv[DV_COUNT] = {
-    [DV_KEY_RADIUS]  = { "TUNE_KEY_RADIUS",      "BUTTON RADIUS",     k_tune_key_radius,  -1,  28, false },
-    [DV_ART_RADIUS]  = { "TUNE_ART_RADIUS",      "COVER RADIUS",      k_tune_art_radius,   0,  28, false },
-    [DV_PROG_H]      = { "TUNE_PROG_H",          "PROGRESS HEIGHT",   k_tune_prog_h,       2,  20, false },
-    [DV_SEL_W]       = { "TUNE_SEL_W",           "SELECTION WIDTH",   k_tune_sel_w,       40, 320, false },
-    [DV_SEL_H]       = { "TUNE_SEL_H",           "SELECTION HEIGHT",  k_tune_sel_h,        2,  16, false },
-    [DV_TITLE_LSP]   = { "TUNE_TITLE_LETTER_SP", "TITLE TRACKING",    k_tune_title_lsp,    0,   8, false },
-    [DV_TKEY_CIRCLE] = { "TUNE_TKEY_CIRCLE",     "ROUND TRANSPORT",   k_tune_tkey_circle,  0,   1, true  },
-    [DV_TITLE_UPPER] = { "TUNE_TITLE_UPPER",     "UPPERCASE TITLES",  k_tune_title_upper,  0,   1, true  },
+    /* ---- TYPE ---- */
+    DVR(DV_TITLE_LSP,   "TUNE_TITLE_LETTER_SP",  "TITLE TRACKING",    k_dvd_title_lsp,     0,     8, DVC_TYPE),
+    DVR(DV_ARTIST_LSP,  "TUNE_ARTIST_LSP",       "ARTIST TRACKING",   k_dvd_artist_lsp,    0,     8, DVC_TYPE),
+    DVR(DV_HEADER_LSP,  "TUNE_HEADER_LSP",       "HEADER TRACKING",   k_dvd_header_lsp,    0,     8, DVC_TYPE),
+    DVR(DV_LINE_SPACE,  "TUNE_LINE_SPACE",       "LINE SPACING",      k_dvd_line_space,   -4,    16, DVC_TYPE),
+    DVT(DV_TITLE_UPPER, "TUNE_TITLE_UPPER",      "UPPERCASE TITLE",   k_dvd_title_upper,      DVC_TYPE),
+    DVT(DV_ARTIST_UPPER,"TUNE_ARTIST_UPPER",     "UPPERCASE ARTIST",  k_dvd_artist_upper,     DVC_TYPE),
+    DVR(DV_MARQUEE_MS,  "TUNE_MARQUEE_MS",       "MARQUEE MS",        k_dvd_marquee_ms, 2000, 60000, DVC_TYPE),
+    DVT(DV_MARQUEE_FIT, "TUNE_MARQUEE_FIT_ONLY", "SCROLL IF LONG",    k_dvd_marquee_fit,      DVC_TYPE),
+    DVE(DV_TITLE_ALIGN, "TUNE_TITLE_ALIGN",      "TITLE ALIGN",       k_dvd_title_align,  DVC_TYPE, k_opt_align),
+    DVE(DV_TITLE_LONG,  "TUNE_TITLE_LONG",       "TITLE OVERFLOW",    k_dvd_title_long,   DVC_TYPE, k_opt_long),
+    /* ---- SHAPE ---- */
+    DVR(DV_KEY_RADIUS,  "TUNE_KEY_RADIUS",       "BUTTON RADIUS",     k_dvd_key_radius,   -1,    28, DVC_SHAPE),
+    DVR(DV_ART_RADIUS,  "TUNE_ART_RADIUS",       "COVER RADIUS",      k_dvd_art_radius,    0,    28, DVC_SHAPE),
+    DVR(DV_PROG_H,      "TUNE_PROG_H",           "PROGRESS HEIGHT",   k_dvd_prog_h,        2,    20, DVC_SHAPE),
+    DVE(DV_PROG_CAP,    "TUNE_PROG_CAP",         "PROGRESS CAPS",     k_dvd_prog_cap,     DVC_SHAPE, k_opt_cap),
+    DVR(DV_SEL_W,       "TUNE_SEL_W",            "SELECTION WIDTH",   k_dvd_sel_w,        40,   320, DVC_SHAPE),
+    DVR(DV_SEL_H,       "TUNE_SEL_H",            "SELECTION HEIGHT",  k_dvd_sel_h,         2,    16, DVC_SHAPE),
+    DVT(DV_TKEY_CIRCLE, "TUNE_TKEY_CIRCLE",      "ROUND TRANSPORT",   k_dvd_tkey_circle,      DVC_SHAPE),
+    DVR(DV_TKEY_SZ,     "TUNE_TKEY_SZ",          "TRANSPORT SIZE",    k_dvd_tkey_sz,      32,    88, DVC_SHAPE),
+    DVR(DV_TKEY_GAP,    "TUNE_TKEY_GAP",         "TRANSPORT GAP",     k_dvd_tkey_gap,      0,    72, DVC_SHAPE),
+    DVR(DV_CARD_BORDER, "TUNE_CARD_BORDER",      "CARD BORDER",       k_dvd_card_border,   0,     6, DVC_SHAPE),
+    DVR(DV_BTN_BORDER,  "TUNE_BTN_BORDER",       "BUTTON BORDER",     k_dvd_btn_border,    0,     6, DVC_SHAPE),
+    DVR(DV_CARD_SHADOW, "TUNE_CARD_SHADOW",      "CARD SHADOW",       k_dvd_card_shadow,   0,    40, DVC_SHAPE),
+    DVR(DV_PAD,         "TUNE_PAD",              "SCREEN PADDING",    k_dvd_pad,           0,    40, DVC_SHAPE),
+    /* ---- LAYOUT ---- */
+    DVR(DV_SCROLLER_Y,  "TUNE_SCROLLER_Y",       "STRIP Y",           k_dvd_scroller_y,    0,   160, DVC_LAYOUT),
+    DVR(DV_BR_TITLE_Y,  "TUNE_BR_TITLE_Y",       "BROWSER TITLE Y",   k_dvd_br_title_y,  200,   460, DVC_LAYOUT),
+    DVR(DV_BR_ARTIST_Y, "TUNE_BR_ARTIST_Y",      "BROWSER ARTIST Y",  k_dvd_br_artist_y, 200,   470, DVC_LAYOUT),
+    DVR(DV_SEL_DY,      "TUNE_SEL_LINE_DY",      "SELECTION GAP",     k_dvd_sel_dy,      -20,    60, DVC_LAYOUT),
+    DVR(DV_NP_TITLE_Y,  "TUNE_NP_TITLE_Y",       "NP TITLE Y",        k_dvd_np_title_y,  200,   460, DVC_LAYOUT),
+    DVR(DV_NP_ARTIST_Y, "TUNE_NP_ARTIST_Y",      "NP ARTIST Y",       k_dvd_np_artist_y, 200,   470, DVC_LAYOUT),
+    DVR(DV_PROG_Y,      "TUNE_PROG_Y",           "PROGRESS Y",        k_dvd_prog_y,      300,   470, DVC_LAYOUT),
+    DVR(DV_TS_W,        "TUNE_TS_W",             "TIMESTAMP WIDTH",   k_dvd_ts_w,         40,   160, DVC_LAYOUT),
+    DVR(DV_TKEY_Y,      "TUNE_TKEY_Y",           "TRANSPORT Y",       k_dvd_tkey_y,      300,   470, DVC_LAYOUT),
+    DVR(DV_FADER_X,     "TUNE_FADER_X",          "FADER X",           k_dvd_fader_x,       0,   260, DVC_LAYOUT),
+    DVR(DV_FADER_Y,     "TUNE_FADER_Y",          "FADER Y",           k_dvd_fader_y,       0,   300, DVC_LAYOUT),
+    DVR(DV_FADER_H,     "TUNE_FADER_H",          "FADER HEIGHT",      k_dvd_fader_h,      60,   360, DVC_LAYOUT),
+    DVR(DV_ART_W,       "TUNE_ART_W",            "COVER SIZE",        k_dvd_art_w,       120,   400, DVC_LAYOUT),
+    DVR(DV_ART_Y,       "TUNE_ART_Y",            "COVER Y",           k_dvd_art_y,         0,   200, DVC_LAYOUT),
+    DVR(DV_FPS_X,       "TUNE_FPS_X",            "FPS X",             k_dvd_fps_x,         0,   400, DVC_LAYOUT),
+    DVR(DV_FPS_Y,       "TUNE_FPS_Y",            "FPS Y",             k_dvd_fps_y,         0,   200, DVC_LAYOUT),
+    DVR(DV_WIFI_X,      "TUNE_WIFI_X0",          "WIFI X",            k_dvd_wifi_x,        0,   400, DVC_LAYOUT),
+    DVR(DV_WIFI_Y,      "TUNE_WIFI_BOT",         "WIFI BOTTOM",       k_dvd_wifi_y,        0,   200, DVC_LAYOUT),
+    DVR(DV_TOPBTN_Y,    "TUNE_TOPBTN_Y",         "TOP BUTTON Y",      k_dvd_topbtn_y,      0,   120, DVC_LAYOUT),
+    /* ---- BROWSER + MOTION ---- */
+    DVR(DV_CARD_SIZE,   "TUNE_CARD_SIZE",        "CARD SIZE",         k_dvd_card_size,   120,   400, DVC_BROWSER),
+    DVR(DV_CARD_GAP,    "TUNE_CARD_GAP",         "CARD GAP",          k_dvd_card_gap,    -80,   160, DVC_BROWSER),
+    DVR(DV_FOCUS_SCALE, "TUNE_FOCUS_SCALE",      "FOCUS FALLOFF",     k_dvd_focus_scale,   0,   200, DVC_BROWSER),
+    DVR(DV_FOCUS_DIM,   "TUNE_FOCUS_DIM",        "FOCUS DIM",         k_dvd_focus_dim,     0,   200, DVC_BROWSER),
+    DVR(DV_CF_SCALE,    "TUNE_CF_SCALE",         "COVERFLOW SCALE",   k_dvd_cf_scale,     80,   130, DVC_BROWSER),
+    DVR(DV_CF_MAX_SIDE, "TUNE_CF_MAX_SIDE",      "COVERFLOW DEPTH",   k_dvd_cf_max_side,   1,     3, DVC_BROWSER),
+    DVT(DV_CF_LEAN,     "TUNE_CF_LEAN_FLIP",     "COVERFLOW FLIP",    k_dvd_cf_lean,          DVC_BROWSER),
+    DVR(DV_TRANS_MS,    "TUNE_TRANS_MS",         "TRANSITION MS",     k_dvd_trans_ms,     80,  1200, DVC_BROWSER),
+    DVR(DV_DIM_AFTER,   "TUNE_DIM_AFTER_S",      "DIM AFTER S",       k_dvd_dim_after,    10,   900, DVC_BROWSER),
+    DVR(DV_DIM_DEEP,    "TUNE_DIM_DEEP_S",       "DEEP DIM AFTER S",  k_dvd_dim_deep,     30,  3600, DVC_BROWSER),
+    DVR(DV_DIM_LEVEL,   "TUNE_DIM_LEVEL",        "DIM LEVEL",         k_dvd_dim_level,     0,   100, DVC_BROWSER),
+    DVR(DV_DIM_DEEP_LVL,"TUNE_DIM_DEEP_LEVEL",   "DEEP DIM LEVEL",    k_dvd_dim_deep_lvl,  0,   100, DVC_BROWSER),
+    DVR(DV_VOL_STEP,    "TUNE_VOL_STEP",         "VOLUME STEP",       k_dvd_vol_step,      1,    25, DVC_BROWSER),
+    DVR(DV_TAP_TOL,     "TUNE_TAP_TOL",          "CENTRE TAP TOL",    k_dvd_tap_tol,      40,   400, DVC_BROWSER),
+    DVR(DV_PP_GUARD,    "TUNE_PP_GUARD_MS",      "PLAY GUARD MS",     k_dvd_pp_guard,      0,  6000, DVC_BROWSER),
+    /* ---- THEME ART ---- */
+    DVR(DV_GLYPH_CELL,  "TUNE_GLYPH_CELL",       "GLYPH DOT PITCH",   k_dvd_glyph_cell,    3,    16, DVC_ART),
+    DVR(DV_PROG_PARTS,  "TUNE_PROG_PARTS",       "GLYPH PARTICLES",   k_dvd_prog_parts,    0,    44, DVC_ART),
 };
 
-/* Override storage. A separate "is set" flag rather than an in-band sentinel:
- * 0 is a legitimate value for several of these knobs (COVER RADIUS 0, the two
- * toggles), so zero-initialised static storage MUST mean "no override" or a
- * cold boot would silently pin every knob to 0 and flatten every theme. With
- * the flag, the default state is correct by construction and there is no
- * init-order hazard -- dv() is safe to call before load_dev_tune() runs. */
-static int16_t s_dv[MODE_COUNT][DV_COUNT];
-/* uint8_t not bool: this is memcpy'd straight in and out of the NVS blob, so
- * the storage type must be unambiguously 1 byte on both sides. */
-static uint8_t s_dv_set[MODE_COUNT][DV_COUNT];
+#undef DVR
+#undef DVT
+#undef DVE
 
-/* On-flash form of the two arrays above (see NVS_KEY_DEV_TUNE). Kept as a
- * plain struct so one nvs_get_blob/nvs_set_blob covers the whole grid; `ver`
- * makes a layout change (a new knob, a reordered enum) self-invalidating. */
+/* Override storage. An explicit "is set" flag rather than an in-band sentinel:
+ * 0 is a legitimate value for many of these knobs, so zero-initialised static
+ * storage MUST mean "no override" or a cold boot would pin every knob to 0 and
+ * flatten every theme. It also removes any init-order hazard -- dv() is safe to
+ * call before load_settings() runs.
+ * Middle index is the FACE (0 = dark, 1 = light); rows with per_face == 0
+ * always use slot 0 so geometry does not change when the face is flipped. */
+#define DV_FACES 2
+static int32_t s_dv[MODE_COUNT][DV_FACES][DV_COUNT];
+/* uint8_t not bool: memcpy'd straight in and out of the NVS blob, so the
+ * storage type must be unambiguously one byte on both sides. */
+static uint8_t s_dv_set[MODE_COUNT][DV_FACES][DV_COUNT];
+
 typedef struct {
     uint32_t ver;
-    int16_t  val[MODE_COUNT][DV_COUNT];
-    uint8_t  set[MODE_COUNT][DV_COUNT];
+    int32_t  val[MODE_COUNT][DV_FACES][DV_COUNT];
+    uint8_t  set[MODE_COUNT][DV_FACES][DV_COUNT];
 } dev_tune_blob_t;
 
-/* Knob value for a given mode: override if the user set one, else the compiled
- * ui_tune.h default. Every consumer calls dv(), never the k_tune_* array. */
-static int16_t dv_of(uint8_t mode, int idx)
+static int dv_face_slot(int idx)
 {
-    return s_dv_set[mode][idx] ? s_dv[mode][idx] : k_dv[idx].defaults[mode];
+    return (k_dv[idx].per_face && !s_dark) ? 1 : 0;
 }
-static int16_t dv(int idx) { return dv_of(s_mode, idx); }
+static int32_t dv_of(uint8_t mode, int face, int idx)
+{
+    return s_dv_set[mode][face][idx] ? s_dv[mode][face][idx]
+                                     : k_dv[idx].defaults[mode];
+}
+static int32_t dv(int idx) { return dv_of(s_mode, dv_face_slot(idx), idx); }
 /* Radius knobs use -1 for "full pill"; translate to LVGL's sentinel. */
 static int32_t dv_radius(int idx)
 {
-    int16_t v = dv(idx);
+    int32_t v = dv(idx);
     return (v < 0) ? LV_RADIUS_CIRCLE : v;
 }
 
-/* Every album/track TITLE is set through here so the UPPERCASE TITLES knob can
- * transform it -- LVGL has no text-transform, so the string itself must be
- * folded. ASCII a-z only, deliberately: the compiled fonts carry Latin-1 and
- * Extended-A, whose accented letters are MULTI-BYTE UTF-8, and blindly
- * upcasing those bytes would corrupt the sequence into mojibake. Folding just
- * a-z leaves every accented character legible in its original case.
- * ARTISTS are NOT routed through here -- caps title over mixed-case artist is
- * the intended pairing, not an oversight. */
-static void set_title_text(lv_obj_t *label, const char *txt)
+/* ASCII-only uppercase fold shared by every role that can be capitalised.
+ * Deliberately a-z only: the compiled fonts carry Latin-1 and Extended-A,
+ * whose accented letters are MULTI-BYTE UTF-8, and blindly upcasing those
+ * bytes would corrupt the sequence into mojibake. Folding just a-z leaves
+ * every accented character legible in its original case. */
+static void dv_apply_case(lv_obj_t *label, const char *txt, int knob)
 {
     if (!label) return;
     if (!txt) { lv_label_set_text(label, ""); return; }
-    if (!dv(DV_TITLE_UPPER)) { lv_label_set_text(label, txt); return; }
+    if (!dv(knob)) { lv_label_set_text(label, txt); return; }
     char b[128];
     size_t i = 0;
     for (; txt[i] && i < sizeof b - 1; i++) {
@@ -561,6 +707,39 @@ static void set_title_text(lv_obj_t *label, const char *txt)
     }
     b[i] = '\0';
     lv_label_set_text(label, b);
+}
+/* Titles and artists have separate case knobs so a capped title can sit over a
+ * mixed-case artist -- that pairing is a deliberate typographic choice. */
+static void set_title_text(lv_obj_t *label, const char *txt)
+{
+    dv_apply_case(label, txt, DV_TITLE_UPPER);
+}
+static void set_artist_text(lv_obj_t *label, const char *txt)
+{
+    dv_apply_case(label, txt, DV_ARTIST_UPPER);
+}
+
+/* Title overflow + alignment + line spacing, applied together because they all
+ * belong to the same label and all three are live knobs. LV_LABEL_LONG_SCROLL
+ * only animates when the text is genuinely too wide, which is exactly the
+ * "SCROLL IF LONG" behaviour; CIRCULAR loops unconditionally. */
+static void apply_title_text_style(lv_obj_t *label)
+{
+    if (!label) return;
+    switch (dv(DV_TITLE_ALIGN)) {
+    case 1:  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);   break;
+    case 2:  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_RIGHT, 0);  break;
+    default: lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0); break;
+    }
+    lv_obj_set_style_text_line_space(label, dv(DV_LINE_SPACE), 0);
+    switch (dv(DV_TITLE_LONG)) {
+    case 1:  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);  break;
+    case 2:  lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP); break;
+    default: lv_label_set_long_mode(label, dv(DV_MARQUEE_FIT)
+                                        ? LV_LABEL_LONG_SCROLL
+                                        : LV_LABEL_LONG_SCROLL_CIRCULAR);
+             break;
+    }
 }
 
 /* Accent palette: a 4-hue x 3-variant grid (vivid/deep/soft rows). The hex
@@ -716,7 +895,7 @@ static lv_obj_t *s_br_index_lbl   = NULL;         /* browser "NN / NN" album cou
  * and kept. GLYPH_DOT_CELL is the one knob to tweak by eye -- smaller = finer,
  * more detail (more, smaller dots); larger = chunkier, fewer dots. */
 #define GLYPH_ART_RES   256                       /* == ART_W: 1:1 in the art box */
-#define GLYPH_DOT_CELL  5                         /* dot pitch in px */
+#define GLYPH_DOT_CELL  (dv(DV_GLYPH_CELL))       /* dot pitch in px, live knob */
 static uint16_t       *s_glyph_thumbs  = NULL;    /* PSRAM: dot-matrix ALBUM_THUMB-res copies (fallback) */
 static uint16_t       *s_glyph_art_buf = NULL;    /* PSRAM: GLYPH_ART_RES^2 dot-matrix now-playing art */
 static lv_image_dsc_t  s_glyph_art_dsc = {0};
@@ -925,7 +1104,7 @@ static lv_obj_t       *s_cf_img = NULL;
  * change bumps DEV_TUNE_VER and the stale blob is ignored (falls back to the
  * compiled defaults) instead of being read as garbage. */
 #define NVS_KEY_DEV_TUNE      "devtune"
-#define DEV_TUNE_VER          1u
+#define DEV_TUNE_VER          2u
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
@@ -1005,13 +1184,16 @@ static void on_cred_editor_save(lv_event_t *e);
 static void on_cred_editor_cancel(lv_event_t *e);
 static void on_cred_kb_event(lv_event_t *e);
 static void settings_build_setup_page(lv_obj_t *pg);
-/* DEVELOPER tab (live shape tuning) */
+/* DEVELOPER tab (live shape/type tuning) */
 static void settings_build_dev_page(lv_obj_t *pg);
 static void dev_row_refresh(int idx);
 static void on_dev_slider_changed(lv_event_t *e);
 static void on_dev_slider_released(lv_event_t *e);
 static void on_dev_toggle(lv_event_t *e);
+static void on_dev_choice(lv_event_t *e);
+static void on_dev_cat(lv_event_t *e);
 static void on_dev_reset(lv_event_t *e);
+static void on_dev_reset_all(lv_event_t *e);
 static void on_dev_export(lv_event_t *e);
 static void save_dev_tune(void);
 static void save_sound_set(int8_t v);
@@ -1128,8 +1310,8 @@ static lv_color_t card_color(size_t i)
  * side cover (~143px wide at full tilt), so every side cover overlaps its
  * neighbour (no gaps, even at the extremes) and they crowd in toward the centre
  * iPod-style. cf_render draws far->near so nearer covers paint on top. */
-static int cs(void) { return (s_browser_style == BROWSER_COVERFLOW) ? 165 : CARD_SIZE; }
-static int cg(void) { return (s_browser_style == BROWSER_COVERFLOW) ? -55 : CARD_GAP; }
+static int cs(void) { return (s_browser_style == BROWSER_COVERFLOW) ? 165 : dv(DV_CARD_SIZE); }
+static int cg(void) { return (s_browser_style == BROWSER_COVERFLOW) ? -55 : dv(DV_CARD_GAP); }
 
 static void style_label(lv_obj_t *label, const lv_font_t *font,
                         lv_color_t color, int16_t y)
@@ -1140,7 +1322,7 @@ static void style_label(lv_obj_t *label, const lv_font_t *font,
      * SCREEN_W (x=0..800) that box reaches the screen edges -- just past
      * PAPER's paper_frame ink border, which insets 4px with a 2px stroke.
      * The inset keeps scrolled text inside the frame in every theme. */
-    lv_obj_set_width(label, SCREEN_W - 12);
+    lv_obj_set_width(label, SCREEN_W - 2 * dv(DV_PAD));
     /* Pin to a single line's height so LONG_DOT ellipsises overflow instead of
      * wrapping to a second line (which would grow down over the label below). */
     lv_obj_set_height(label, lv_font_get_line_height(font));
@@ -1148,7 +1330,7 @@ static void style_label(lv_obj_t *label, const lv_font_t *font,
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(label, font, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 6, y);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, dv(DV_PAD), y);
 }
 
 /* Pressed-state feedback: flash the fill to the accent while the button is
@@ -1183,24 +1365,22 @@ static lv_color_t opt_sel_fg(void)
 }
 
 /* Shared flat-key styling for every boxy button (settings rows, tabs, back
- * keys, transport keys). Radius-3 charcoal keys normally; PAPER squares them
- * off and frames each in a thin ink border (ruled data-sheet cells); GLYPH
- * rounds them into full pills with a hairline outline (Nothing-style). */
+ * keys, transport keys). Both the corner radius and the border width are live
+ * knobs (TUNE_KEY_RADIUS / TUNE_BTN_BORDER, adjustable in Settings >
+ * DEVELOPER); their compiled defaults encode what each theme used to hardcode:
+ * BASIC/PIXEL radius 3 no border, GLYPH a full pill with a 1 px hairline,
+ * PAPER a hard square with a 2 px ink rule, BOLD radius 14 no border. */
 static void style_key_btn(lv_obj_t *btn)
 {
-    /* Radius comes from the live knob (TUNE_KEY_RADIUS / Settings > DEVELOPER),
-     * which encodes the old per-theme constants: BASIC/PIXEL 3, GLYPH -1 (full
-     * pill), PAPER 0, BOLD 14. The BORDERS below are theme identity, not a
-     * tunable, so they stay keyed off the theme predicates. */
     lv_obj_set_style_radius(btn, dv_radius(DV_KEY_RADIUS), 0);
     lv_obj_set_style_shadow_width(btn, 0, 0);
-    if (is_paper_theme()) {
-        lv_obj_set_style_border_width(btn, 2, 0);
-        lv_obj_set_style_border_color(btn, lv_color_hex(s_th->text), 0);
-        lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
-    } else if (is_glyph_theme()) {
-        lv_obj_set_style_border_width(btn, 1, 0);
-        lv_obj_set_style_border_color(btn, lv_color_hex(s_th->track), 0);
+    /* Border WIDTH is the knob; the COLOUR stays theme identity (PAPER rules
+     * in ink, GLYPH hairlines in the track grey). */
+    int32_t bw = dv(DV_BTN_BORDER);
+    lv_obj_set_style_border_width(btn, bw, 0);
+    if (bw > 0) {
+        lv_obj_set_style_border_color(btn,
+            lv_color_hex(is_paper_theme() ? s_th->text : s_th->track), 0);
         lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
     }
 }
@@ -1611,13 +1791,23 @@ static void browser_build_cards(void)
         lv_obj_t *card = lv_obj_create(s_browser_scroller);
         lv_obj_set_size(card, cs(), cs());
         lv_obj_set_style_radius(card, dv_radius(DV_ART_RADIUS), 0);
-        /* Frames (PAPER ink + playing accent) are baked into the card-pool
+        lv_obj_set_style_shadow_width(card, dv(DV_CARD_SHADOW), 0);
+        if (dv(DV_CARD_SHADOW) > 0) {
+            lv_obj_set_style_shadow_opa(card, LV_OPA_40, 0);
+            lv_obj_set_style_shadow_offset_y(card, dv(DV_CARD_SHADOW) / 3, 0);
+        }
+        /* Frames        lv_obj_set_style_shadow_width(card, dv(DV_CARD_SHADOW), 0);
+        if (dv(DV_CARD_SHADOW) > 0) {
+            lv_obj_set_style_shadow_opa(card, LV_OPA_40, 0);
+            lv_obj_set_style_shadow_offset_y(card, dv(DV_CARD_SHADOW) / 3, 0);
+        } (PAPER ink + playing accent) are baked into the card-pool
          * pixels above, so they scale with the art in Focus mode -- no object
          * border here when the pool is live. The container border is the
          * FALLBACK only (pool alloc failed); it stays full-size in Focus, but
          * that path is rare. */
         if (s_card_pool) {
-            lv_obj_set_style_border_width(card, 0, 0);
+            lv_obj_set_style_border_width(card, dv(DV_CARD_BORDER), 0);
+            lv_obj_set_style_border_color(card, lv_color_hex(s_th->text), 0);
         } else if ((int)i == s_playing_card_idx) {
             lv_obj_set_style_border_color(card, lv_color_hex(accent_color()), 0);
             lv_obj_set_style_border_width(card, 3, 0);
@@ -1732,22 +1922,23 @@ static void browser_build_title_labels(void)
      * animation and reads the style at that moment. NB: lv_anim_speed() caps the
      * duration at ~10.23 s (encoding limit), same as LVGL's default, so it can't
      * slow a long title down -- use a plain fixed duration (ms) per traversal. */
-    lv_obj_set_style_anim_duration(s_browser_title, TITLE_MARQUEE_MS, LV_PART_MAIN);
-    lv_label_set_long_mode(s_browser_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_anim_duration(s_browser_title, dv(DV_MARQUEE_MS), LV_PART_MAIN);
+    apply_title_text_style(s_browser_title);
 
     s_browser_artist = lv_label_create(s_screen_browser);
+    lv_obj_set_style_text_letter_space(s_browser_artist, dv(DV_ARTIST_LSP), 0);
     style_label(s_browser_artist, font_md(),
                 lv_color_hex(s_th->text2), cf ? CF_ARTIST_Y : BR_ARTIST_Y);
 
     if (s_card_count > 0) {
         const album_entry_t *a = album_catalog_get(0);
         set_title_text(s_browser_title, a->title);
-        lv_label_set_text(s_browser_artist, a->artist);
+        set_artist_text(s_browser_artist, a->artist);
         s_centered_card = 0;
     } else {
         /* No albums configured -- explain rather than show a blank carousel. */
         set_title_text(s_browser_title, "No albums configured");
-        lv_label_set_text(s_browser_artist,
+        set_artist_text(s_browser_artist,
                           "edit spotify-albums-list.txt + reflash");
     }
 }
@@ -1815,7 +2006,10 @@ static void browser_build_selection_line(void)
     lv_obj_set_size(s_sel_line, dv(DV_SEL_W), dv(DV_SEL_H));
     /* PAPER keeps its printed hard edge; elsewhere the line caps off into a
      * capsule, which needs to track the live thickness knob. */
-    lv_obj_set_style_radius(s_sel_line, is_paper_theme() ? 0 : dv(DV_SEL_H) / 2, 0);
+    /* PAPER keeps its printed hard edge; elsewhere the cap tracks the live
+     * thickness so the line stays a true capsule when made chunky. */
+    lv_obj_set_style_radius(s_sel_line,
+        (dv(DV_PROG_CAP) || is_paper_theme()) ? 0 : dv(DV_SEL_H) / 2, 0);
     lv_obj_set_style_border_width(s_sel_line, 0, 0);
     lv_obj_set_style_bg_color(s_sel_line, lv_color_hex(accent_color()), 0);
     lv_obj_set_style_bg_opa(s_sel_line, LV_OPA_COVER, 0);
@@ -1824,7 +2018,7 @@ static void browser_build_selection_line(void)
      * per-mode SCROLLER_Y), so the line sits below the strip: clear of the
      * art above and the title below (both also per-mode -- see ui_tune.h). */
     lv_obj_align(s_sel_line, LV_ALIGN_TOP_MID, 0,
-                 SCROLLER_Y + SCROLLER_H + k_tune_sel_dy[s_mode]);
+                 SCROLLER_Y + SCROLLER_H + dv(DV_SEL_DY));
     if (!s_show_sel_line) lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -1838,8 +2032,8 @@ static void browser_build_wifi_bars(void)
          * so its bars follow to share the same ~y25 vertical centre as the
          * buttons/FPS/counter, inset further from the left frame border.
          * BASIC/PIXEL are untouched (their header row never moved). */
-        int wifi_x0  = k_tune_wifi_x0[s_mode];
-        int wifi_bot = k_tune_wifi_bot[s_mode];
+        int wifi_x0  = dv(DV_WIFI_X);
+        int wifi_bot = dv(DV_WIFI_Y);
         for (int i = 0; i < 4; i++) {
             int h = 6 + i * 4;   /* 6, 10, 14, 18 px tall */
             lv_obj_t *bar = lv_obj_create(s_screen_browser);
@@ -1865,7 +2059,7 @@ static void browser_build_fps_label(void)
     lv_obj_set_style_text_color(s_fps_label, lv_color_hex(s_th->dim), 0);
     lv_obj_set_style_text_font(s_fps_label, font_sm(), 0);
     lv_obj_align(s_fps_label, LV_ALIGN_TOP_LEFT,
-                 k_tune_fps_x[s_mode], k_tune_fps_y[s_mode]);
+                 dv(DV_FPS_X), dv(DV_FPS_Y));
     lv_obj_remove_flag(s_fps_label, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     if (!s_fps_enabled) lv_obj_add_flag(s_fps_label, LV_OBJ_FLAG_HIDDEN);
 }
@@ -2018,7 +2212,7 @@ static void build_album_add_chip(lv_obj_t *parent)
 {
     lv_obj_t *add = make_hint_pill(parent, "ADD", on_open_album_add);
     lv_obj_set_size(add, 72, TOPBTN_H);
-    lv_obj_align(add, LV_ALIGN_TOP_RIGHT, -48, k_tune_topbtn_y[s_mode]);
+    lv_obj_align(add, LV_ALIGN_TOP_RIGHT, -48, dv(DV_TOPBTN_Y));
 }
 
 static void build_browser_screen(void)
@@ -2096,8 +2290,8 @@ static void np_build_art(void)
     lv_obj_add_event_cb(s_screen_np, on_np_tap, LV_EVENT_CLICKED, NULL);
 
     s_np_art = lv_image_create(s_screen_np);
-    lv_obj_set_size(s_np_art, ART_W, ART_H);
-    lv_obj_set_pos(s_np_art, ART_X, ART_Y);
+    lv_obj_set_size(s_np_art, dv(DV_ART_W), dv(DV_ART_W));
+    lv_obj_set_pos(s_np_art, (SCREEN_W - dv(DV_ART_W)) / 2, dv(DV_ART_Y));
     lv_obj_remove_flag(s_np_art, LV_OBJ_FLAG_CLICKABLE);
     /* Fit any cover (Spotify art decodes to ~320) into the box, centered and
      * aspect-preserved, no crop. CONTAIN re-applies on every src change. */
@@ -2126,11 +2320,12 @@ static void np_build_title_artist(void)
     /* Long track titles scroll horizontally instead of being clipped.
      * Style must precede set_long_mode (which creates the scroll anim). Plain
      * fixed duration (ms), not lv_anim_speed() -- that caps at ~10.23 s. */
-    lv_obj_set_style_anim_duration(s_np_title, TITLE_MARQUEE_MS, LV_PART_MAIN);
-    lv_label_set_long_mode(s_np_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_anim_duration(s_np_title, dv(DV_MARQUEE_MS), LV_PART_MAIN);
+    apply_title_text_style(s_np_title);
     set_title_text(s_np_title, "Nothing playing");
 
     s_np_artist = lv_label_create(s_screen_np);
+    lv_obj_set_style_text_letter_space(s_np_artist, dv(DV_ARTIST_LSP), 0);
     style_label(s_np_artist, font_md(),
                 lv_color_hex(s_th->text2), NP_ARTIST_Y);
 }
@@ -2167,8 +2362,12 @@ static void np_build_progress_bar(void)
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_np_progress, lv_color_hex(accent_color()), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(s_np_progress, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(s_np_progress, is_paper_theme() ? 0 : 3, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_np_progress, is_paper_theme() ? 0 : 3, LV_PART_INDICATOR);
+    {   /* PROGRESS CAPS: round caps track the live bar height so the capsule
+         * stays a true capsule when the bar is made chunky. */
+        int32_t pr = (dv(DV_PROG_CAP) || is_paper_theme()) ? 0 : dv(DV_PROG_H) / 2;
+        lv_obj_set_style_radius(s_np_progress, pr, LV_PART_MAIN);
+        lv_obj_set_style_radius(s_np_progress, pr, LV_PART_INDICATOR);
+    }
     lv_obj_remove_flag(s_np_progress, LV_OBJ_FLAG_CLICKABLE);
 }
 
@@ -2334,7 +2533,7 @@ static void np_build_volume_fader(void)
      * remaining-time label below, and the swipe chevron to its right). It
      * reflects the active device's level; the command fires on release (one per
      * drag, not per pixel) with the HUD giving live feedback during the drag. */
-    int fx = k_tune_fader_x[s_mode];
+    int fx = dv(DV_FADER_X);
     lv_obj_t *vol_ico = lv_label_create(s_screen_np);
     s_vol_hud = vol_ico;
     lv_obj_set_style_text_color(vol_ico, lv_color_hex(s_th->text2), 0);
@@ -2365,7 +2564,7 @@ static void np_build_volume_fader(void)
         lv_obj_set_height(lvl, lv_font_get_line_height(font_sm()));
         lv_label_set_long_mode(lvl, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_align(lvl, LV_TEXT_ALIGN_CENTER, 0);
-        int fader_cx = k_tune_fader_x[s_mode] + FADER_W / 2;
+        int fader_cx = dv(DV_FADER_X) + FADER_W / 2;
         int lx = fader_cx - label_w / 2;
         if (lx < 8) lx = 8;   /* fader now hugs the left edge: keep the label on-screen */
         lv_obj_set_pos(lvl, lx, TUNE_LEVEL_Y);
@@ -2379,8 +2578,8 @@ static void np_build_volume_fader(void)
      * overhangs the track ends by ~26px, so PAPER uses a shorter, lower-
      * started track to clear the LEVEL label above and the printed rule
      * below (see the TUNE_FADER_Y comment in ui_tune.h). */
-    lv_obj_set_size(s_np_volume, FADER_W, k_tune_fader_h[s_mode]);
-    lv_obj_set_pos(s_np_volume, k_tune_fader_x[s_mode], k_tune_fader_y[s_mode]);
+    lv_obj_set_size(s_np_volume, FADER_W, dv(DV_FADER_H));
+    lv_obj_set_pos(s_np_volume, dv(DV_FADER_X), dv(DV_FADER_Y));
     lv_slider_set_range(s_np_volume, 0, 100);
     lv_slider_set_value(s_np_volume, 50, LV_ANIM_OFF);
     {
@@ -2418,8 +2617,8 @@ static void np_build_volume_fader(void)
      * direction matches the fader travel. Geometry tracks the fader tune. */
     int bw = 52, bh = 52;
     int bx = fx + FADER_W + 12;
-    int fy = k_tune_fader_y[s_mode];
-    int fh = k_tune_fader_h[s_mode];
+    int fy = dv(DV_FADER_Y);
+    int fh = dv(DV_FADER_H);
     struct { const char *sym; lv_event_cb_t cb; int y; } vb[] = {
         { LV_SYMBOL_PLUS,  on_vol_plus,  fy },
         { LV_SYMBOL_MINUS, on_vol_minus, fy + fh - bh },
@@ -2846,8 +3045,13 @@ static void cf_prep_card(cf_card_t *c, int32_t card_cx, float dist_norm,
     float adist = dist_norm < 0.0f ? -dist_norm : dist_norm;
     float tilt  = adist > 1.0f ? 1.0f : adist;
 
-    int   base_w = (int)((float)ALBUM_THUMB_W * CF_CARD_SCALE);
-    int   base_h = (int)((float)ALBUM_THUMB_H * CF_CARD_SCALE);
+    /* Live COVERFLOW SCALE knob, stored x100. CF_COL_MAX bounds the column
+     * tables, so the drawn width is clamped to it -- a larger scale must not
+     * overrun the internal-SRAM scratch. */
+    float cf_scale = (float)dv(DV_CF_SCALE) / 100.0f;
+    int   base_w = (int)((float)ALBUM_THUMB_W * cf_scale);
+    int   base_h = (int)((float)ALBUM_THUMB_H * cf_scale);
+    if (base_w > CF_COL_MAX) base_w = CF_COL_MAX;
 
     int   w_disp = (int)((float)base_w * (1.0f - tilt * CF_WIDTH_SHRINK));
     if (w_disp < 4) w_disp = 4;
@@ -2862,9 +3066,7 @@ static void cf_prep_card(cf_card_t *c, int32_t card_cx, float dist_norm,
     /* left album: outer (near) edge on the LEFT (t=0); right album: outer edge on
      * the RIGHT (t=1). CF_LEAN_FLIP swaps if the panel mirrors the fan. */
     bool left = (dist_norm < 0.0f);
-#if CF_LEAN_FLIP
-    left = !left;
-#endif
+    if (dv(DV_CF_LEAN)) left = !left;
 
     c->src     = src;
     c->src_w   = src_w;
@@ -3150,7 +3352,7 @@ static void cf_render(void)
          * The fan keeps every cover on-screen (none cull off-screen), so without
          * this all 56 rasterise on every scroll event -> sluggish. Covers beyond
          * the cap are occluded by nearer ones anyway. */
-        if (ad > (float)CF_MAX_SIDE) continue;
+        if (ad > (float)dv(DV_CF_MAX_SIDE)) continue;
 
         /* Remap the linear logical position onto the converging fan (see
          * CF_FAN_*): ±1 sits ~170px out (mostly visible), outer covers bunch. */
@@ -3284,7 +3486,9 @@ static void prog_particles_start(lv_obj_t *screen)
 
     int y_lo = PROG_TANK_Y + 4;
     int y_span = PROG_TANK_H - 10;
-    for (int i = 0; i < PROG_PART_COUNT; i++) {
+    /* The knob only ever REDUCES the count -- s_prog_pts/s_prog_objs are sized
+     * at the compiled PROG_PART_COUNT, so going past it needs a rebuild. */
+    for (int i = 0; i < dv(DV_PROG_PARTS) && i < PROG_PART_COUNT; i++) {
         lv_obj_t *dot = lv_obj_create(screen);
         lv_obj_set_size(dot, 3, 3);
         lv_obj_set_style_radius(dot, 2, 0);    /* round gas molecule */
@@ -3396,7 +3600,8 @@ static int vol_quantize_pct(int pct)
 {
     if (pct <= 0)   return 0;
     if (pct >= 100) return 100;
-    return ((pct + VOL_STEP_PCT / 2) / VOL_STEP_PCT) * VOL_STEP_PCT;
+    int step = dv(DV_VOL_STEP);
+    return ((pct + step / 2) / step) * step;
 }
 
 static int vol_pos_to_pct(int pos)
@@ -3640,7 +3845,7 @@ static void on_vol_page_step(lv_event_t *e)
     int current_pct = 0;
     if (s_np_volume) current_pct = vol_pos_to_pct(lv_slider_get_value(s_np_volume));
     else if (s_track.volume_pct >= 0) current_pct = s_track.volume_pct;
-    int next_pct = current_pct + delta * VOL_STEP_PCT;
+    int next_pct = current_pct + delta * dv(DV_VOL_STEP);
     if (next_pct < 0) next_pct = 0;
     if (next_pct > 100) next_pct = 100;
     vol_page_set_pos(vol_pct_to_pos(next_pct), true);
@@ -3924,7 +4129,7 @@ static lv_obj_t *settings_header(lv_obj_t *parent, const char *txt, int x, int y
     lv_obj_set_style_text_color(l,
         lv_color_hex(is_paper_theme() ? accent_color() : s_th->text2), 0);
     lv_obj_set_style_text_font(l, font_md(), 0);
-    lv_obj_set_style_text_letter_space(l, 2, 0);
+    lv_obj_set_style_text_letter_space(l, dv(DV_HEADER_LSP), 0);
     lv_obj_align(l, LV_ALIGN_TOP_LEFT, x, y);
     return l;
 }
@@ -4576,8 +4781,9 @@ static void settings_build_setup_page(lv_obj_t *pg)
 }
 
 /* ============================ DEVELOPER tab ==============================
- * Live shape tuning on the real panel. One row per k_dv entry, so this page
- * grows automatically when a knob is added -- there is no per-knob code here.
+ * Live shape/type tuning on the real panel. One row per k_dv entry, grouped
+ * into sub-pages by category, so this page grows automatically when a knob is
+ * added -- there is no per-knob code here.
  *
  * Values apply on RELEASE, not on every drag step: a knob change re-skins via
  * apply_theme_cb(), which deletes and rebuilds every screen (~tens of ms), so
@@ -4591,29 +4797,42 @@ static void settings_build_setup_page(lv_obj_t *pg)
 static void dev_row_refresh(int idx)
 {
     if (idx < 0 || idx >= DV_COUNT || !s_dev_val[idx]) return;
-    int16_t v = dv(idx);
-    if (k_dv[idx].toggle) {
+    int32_t v = dv(idx);
+    const dv_meta_t *m = &k_dv[idx];
+    if (m->kind == DVK_TOGGLE) {
         lv_label_set_text(s_dev_val[idx], v ? "ON" : "OFF");
+    } else if (m->kind == DVK_CHOICE) {
+        int o = (v >= 0 && v < (int32_t)m->n_names) ? (int)v : 0;
+        lv_label_set_text(s_dev_val[idx], m->names[o]);
     } else if (idx == DV_KEY_RADIUS && v < 0) {
         lv_label_set_text(s_dev_val[idx], "PILL");   /* -1 = LV_RADIUS_CIRCLE */
     } else {
-        char b[16];
+        char b[24];
         snprintf(b, sizeof b, "%d", (int)v);
         lv_label_set_text(s_dev_val[idx], b);
     }
-    /* Mark rows that differ from the compiled default, so it is obvious at a
-     * glance which values are live overrides rather than what is in git. */
-    bool overridden = (s_dv_set[s_mode][idx] != 0);
+    /* Accent-coloured when the value is a live override rather than what is
+     * compiled in, so it is obvious which values have drifted from git. */
+    bool overridden = (s_dv_set[s_mode][dv_face_slot(idx)][idx] != 0);
     lv_obj_set_style_text_color(s_dev_val[idx],
         lv_color_hex(overridden ? accent_color() : s_th->text), 0);
 }
 
-static void dev_set(int idx, int16_t v)
+static void dev_set(int idx, int32_t v)
 {
     if (v < k_dv[idx].lo) v = k_dv[idx].lo;
     if (v > k_dv[idx].hi) v = k_dv[idx].hi;
-    s_dv[s_mode][idx]     = v;
-    s_dv_set[s_mode][idx] = 1;
+    int face = dv_face_slot(idx);
+    s_dv[s_mode][face][idx]     = v;
+    s_dv_set[s_mode][face][idx] = 1;
+}
+
+static void dev_commit(int idx, const char *shown)
+{
+    save_dev_tune();
+    ESP_LOGI(TAG, "dev %s[%s%s] -> %s", k_dv[idx].tune, k_mode_names[s_mode],
+             k_dv[idx].per_face ? (s_dark ? "/dark" : "/light") : "", shown);
+    lv_async_call(apply_theme_cb, NULL);   /* deferred: we are inside its child */
 }
 
 static void on_dev_slider_changed(lv_event_t *e)
@@ -4621,8 +4840,8 @@ static void on_dev_slider_changed(lv_event_t *e)
     int idx = (int)(uintptr_t)lv_event_get_user_data(e);
     lv_obj_t *sl = lv_event_get_target(e);
     if (idx < 0 || idx >= DV_COUNT || !s_dev_val[idx]) return;
-    /* Live readout only -- no re-skin until release (see the note above). */
-    char b[16];
+    /* Readout only -- the re-skin waits for release (see the note above). */
+    char b[24];
     int  v = (int)lv_slider_get_value(sl);
     if (idx == DV_KEY_RADIUS && v < 0) snprintf(b, sizeof b, "PILL");
     else                               snprintf(b, sizeof b, "%d", v);
@@ -4635,12 +4854,11 @@ static void on_dev_slider_released(lv_event_t *e)
     int idx = (int)(uintptr_t)lv_event_get_user_data(e);
     lv_obj_t *sl = lv_event_get_target(e);
     if (idx < 0 || idx >= DV_COUNT) return;
-    dev_set(idx, (int16_t)lv_slider_get_value(sl));
-    save_dev_tune();
-    ESP_LOGI(TAG, "dev %s[%s] -> %d", k_dv[idx].tune, k_mode_names[s_mode],
-             (int)dv(idx));
+    dev_set(idx, (int32_t)lv_slider_get_value(sl));
+    char b[24];
+    snprintf(b, sizeof b, "%d", (int)dv(idx));
     audio_play(AUDIO_SFX_TICK);
-    lv_async_call(apply_theme_cb, NULL);   /* deferred: we are inside its child */
+    dev_commit(idx, b);
 }
 
 static void on_dev_toggle(lv_event_t *e)
@@ -4648,23 +4866,59 @@ static void on_dev_toggle(lv_event_t *e)
     int idx = (int)(uintptr_t)lv_event_get_user_data(e);
     if (idx < 0 || idx >= DV_COUNT) return;
     dev_set(idx, dv(idx) ? 0 : 1);
-    save_dev_tune();
-    ESP_LOGI(TAG, "dev %s[%s] -> %s", k_dv[idx].tune, k_mode_names[s_mode],
-             dv(idx) ? "ON" : "OFF");
     audio_play(AUDIO_SFX_SELECT);
+    dev_commit(idx, dv(idx) ? "ON" : "OFF");
+}
+
+/* CHOICE rows pack the knob index and the option index into one user_data:
+ * idx * DEV_OPT_STRIDE + option. The stride is comfortably above any n_names
+ * here, so the encode/decode stays a divide rather than a lookup table. */
+#define DEV_OPT_STRIDE 16
+static void on_dev_choice(lv_event_t *e)
+{
+    uintptr_t packed = (uintptr_t)lv_event_get_user_data(e);
+    int idx = (int)(packed / DEV_OPT_STRIDE);
+    int opt = (int)(packed % DEV_OPT_STRIDE);
+    if (idx < 0 || idx >= DV_COUNT || opt >= (int)k_dv[idx].n_names) return;
+    dev_set(idx, opt);
+    audio_play(AUDIO_SFX_SELECT);
+    dev_commit(idx, k_dv[idx].names[opt]);
+}
+
+static void on_dev_cat(lv_event_t *e)
+{
+    uint8_t c = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (c >= DVC_CAT_COUNT || c == s_dev_cat) return;
+    s_dev_cat = c;
+    audio_play(AUDIO_SFX_BACK);
+    /* s_dev_cat and s_set_tab are both statics, so the rebuild lands back on
+     * this tab and the newly selected category. */
     lv_async_call(apply_theme_cb, NULL);
 }
 
 static void on_dev_reset(lv_event_t *e)
 {
     (void)e;
-    /* Drop this mode's overrides only -- the other themes keep theirs. */
-    for (int i = 0; i < DV_COUNT; i++) {
-        s_dv[s_mode][i]     = 0;
-        s_dv_set[s_mode][i] = 0;
-    }
+    /* This mode only -- other themes keep their overrides. Clears BOTH faces so
+     * a reset is a full return to the compiled look. */
+    for (int f = 0; f < DV_FACES; f++)
+        for (int i = 0; i < DV_COUNT; i++) {
+            s_dv[s_mode][f][i]     = 0;
+            s_dv_set[s_mode][f][i] = 0;
+        }
     save_dev_tune();
     ESP_LOGI(TAG, "dev overrides cleared for %s", k_mode_names[s_mode]);
+    audio_play(AUDIO_SFX_BACK);
+    lv_async_call(apply_theme_cb, NULL);
+}
+
+static void on_dev_reset_all(lv_event_t *e)
+{
+    (void)e;
+    memset(s_dv, 0, sizeof s_dv);
+    memset(s_dv_set, 0, sizeof s_dv_set);
+    save_dev_tune();
+    ESP_LOGI(TAG, "dev overrides cleared for ALL modes");
     audio_play(AUDIO_SFX_BACK);
     lv_async_call(apply_theme_cb, NULL);
 }
@@ -4672,16 +4926,18 @@ static void on_dev_reset(lv_event_t *e)
 static void on_dev_export(lv_event_t *e)
 {
     (void)e;
-    /* Print the whole grid as ui_tune.h lines so it can be pasted back into
-     * the repo -- including modes with no overrides, which print their
-     * compiled defaults, so the emitted block is always complete and valid. */
+    /* Print the whole grid as ui_tune.h lines so it can be pasted back into the
+     * repo -- including modes with no overrides, which print their compiled
+     * defaults, so the emitted block is always complete and valid. Per-face
+     * knobs print the ACTIVE face; the other face keeps its own stored value. */
     ESP_LOGI(TAG, "---- paste into components/p4_shared/include/ui_tune.h ----");
     for (int i = 0; i < DV_COUNT; i++) {
-        char line[128];
+        char line[192];
         int  n = snprintf(line, sizeof line, "#define %-22s {", k_dv[i].tune);
         for (int m = 0; m < MODE_COUNT && n > 0 && n < (int)sizeof line; m++) {
-            n += snprintf(line + n, sizeof line - n, "%4d%s",
-                          (int)dv_of((uint8_t)m, i),
+            int face = (k_dv[i].per_face && !s_dark) ? 1 : 0;
+            n += snprintf(line + n, sizeof line - n, "%6d%s",
+                          (int)dv_of((uint8_t)m, face, i),
                           (m == MODE_COUNT - 1) ? " }" : ",");
         }
         ESP_LOGI(TAG, "%s", line);
@@ -4694,27 +4950,51 @@ static void settings_build_dev_page(lv_obj_t *pg)
 {
     memset(s_dev_val, 0, sizeof s_dev_val);
 
+    /* Category chips: with ~60 knobs a single list is unusable, so each row
+     * belongs to a sub-page and only the active category is built. */
+    for (int c = 0; c < DVC_CAT_COUNT; c++) {
+        lv_obj_t *chip = lv_button_create(pg);
+        lv_obj_set_size(chip, 148, 40);
+        lv_obj_align(chip, LV_ALIGN_TOP_MID,
+                     (int)((c - (DVC_CAT_COUNT - 1) / 2.0f) * 154.0f), 0);
+        style_key_btn(chip);
+        style_button_press(chip);
+        bool sel = (c == (int)s_dev_cat);
+        lv_obj_set_style_bg_color(chip,
+            sel ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
+        lv_obj_add_event_cb(chip, on_dev_cat, LV_EVENT_CLICKED, (void *)(uintptr_t)c);
+        lv_obj_t *cl = lv_label_create(chip);
+        lv_label_set_text(cl, k_dv_cat[c]);
+        lv_obj_set_style_text_font(cl, font_sm(), 0);
+        lv_obj_set_style_text_color(cl,
+            sel ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
+        lv_obj_center(cl);
+    }
+
     lv_obj_t *hdr = lv_label_create(pg);
-    {   /* snprintf + set_text, matching the idiom used everywhere else here */
-        char hb[64];
-        snprintf(hb, sizeof hb, "SHAPE OVERRIDES FOR %s %s",
-                 k_mode_names[s_mode], s_dark ? "DARK" : "LIGHT");
+    {
+        char hb[80];
+        snprintf(hb, sizeof hb, "%s  %s  -  %s", k_mode_names[s_mode],
+                 s_dark ? "DARK" : "LIGHT", k_dv_cat[s_dev_cat]);
         lv_label_set_text(hdr, hb);
     }
     lv_obj_set_style_text_color(hdr, lv_color_hex(accent_color()), 0);
     lv_obj_set_style_text_font(hdr, font_sm(), 0);
     lv_obj_set_style_text_letter_space(hdr, 2, 0);
-    lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, 24, 6);
+    lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, 24, 52);
 
-    int y = 44;
-    for (int i = 0; i < DV_COUNT; i++, y += 92) {
-        settings_header(pg, k_dv[i].label, 24, y);
+    int y = 88;
+    for (int i = 0; i < DV_COUNT; i++) {
+        const dv_meta_t *m = &k_dv[i];
+        if (m->cat != s_dev_cat) continue;
+
+        settings_header(pg, m->label, 24, y);
 
         s_dev_val[i] = lv_label_create(pg);
         lv_obj_set_style_text_font(s_dev_val[i], font_md(), 0);
         lv_obj_align(s_dev_val[i], LV_ALIGN_TOP_RIGHT, -140, y);
 
-        if (k_dv[i].toggle) {
+        if (m->kind == DVK_TOGGLE) {
             lv_obj_t *btn = lv_button_create(pg);
             lv_obj_set_size(btn, 520, 48);
             lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, y + 30);
@@ -4726,11 +5006,35 @@ static void settings_build_dev_page(lv_obj_t *pg)
             lv_label_set_text(l, dv(i) ? "ON" : "OFF");
             lv_obj_set_style_text_font(l, font_sm(), 0);
             lv_obj_center(l);
+            y += 92;
+        } else if (m->kind == DVK_CHOICE) {
+            int n = (int)m->n_names;
+            int w = (n > 0) ? (520 - (n - 1) * 8) / n : 520;
+            for (int o = 0; o < n; o++) {
+                lv_obj_t *btn = lv_button_create(pg);
+                lv_obj_set_size(btn, w, 48);
+                lv_obj_align(btn, LV_ALIGN_TOP_MID,
+                             (int)((o - (n - 1) / 2.0f) * (w + 8)), y + 30);
+                style_key_btn(btn);
+                style_button_press(btn);
+                bool sel = (dv(i) == o);
+                lv_obj_set_style_bg_color(btn,
+                    sel ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
+                lv_obj_add_event_cb(btn, on_dev_choice, LV_EVENT_CLICKED,
+                    (void *)(uintptr_t)(i * DEV_OPT_STRIDE + o));
+                lv_obj_t *l = lv_label_create(btn);
+                lv_label_set_text(l, m->names[o]);
+                lv_obj_set_style_text_font(l, font_sm(), 0);
+                lv_obj_set_style_text_color(l,
+                    sel ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
+                lv_obj_center(l);
+            }
+            y += 92;
         } else {
             lv_obj_t *sl = lv_slider_create(pg);
             lv_obj_set_size(sl, 520, 16);
             lv_obj_align(sl, LV_ALIGN_TOP_MID, 0, y + 40);
-            lv_slider_set_range(sl, k_dv[i].lo, k_dv[i].hi);
+            lv_slider_set_range(sl, m->lo, m->hi);
             lv_slider_set_value(sl, dv(i), LV_ANIM_OFF);
             lv_obj_set_style_bg_color(sl, lv_color_hex(s_th->track), LV_PART_MAIN);
             lv_obj_set_style_bg_color(sl, lv_color_hex(accent_color()), LV_PART_INDICATOR);
@@ -4742,39 +5046,35 @@ static void settings_build_dev_page(lv_obj_t *pg)
                                 (void *)(uintptr_t)i);
             lv_obj_add_event_cb(sl, on_dev_slider_released, LV_EVENT_RELEASED,
                                 (void *)(uintptr_t)i);
+            y += 86;
         }
         dev_row_refresh(i);
     }
 
-    lv_obj_t *rb = lv_button_create(pg);
-    lv_obj_set_size(rb, 254, 48);
-    lv_obj_align(rb, LV_ALIGN_TOP_MID, -133, y);
-    style_key_btn(rb);
-    style_button_press(rb);
-    lv_obj_add_event_cb(rb, on_dev_reset, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *rl = lv_label_create(rb);
-    lv_label_set_text(rl, "RESET MODE");
-    lv_obj_set_style_text_font(rl, font_sm(), 0);
-    lv_obj_center(rl);
-
-    lv_obj_t *xb = lv_button_create(pg);
-    lv_obj_set_size(xb, 254, 48);
-    lv_obj_align(xb, LV_ALIGN_TOP_MID, 133, y);
-    style_key_btn(xb);
-    style_button_press(xb);
-    lv_obj_add_event_cb(xb, on_dev_export, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *xl = lv_label_create(xb);
-    lv_label_set_text(xl, "EXPORT TO SERIAL");
-    lv_obj_set_style_text_font(xl, font_sm(), 0);
-    lv_obj_center(xl);
+    static const struct { const char *txt; lv_event_cb_t cb; int dx; } k_acts[3] = {
+        { "RESET MODE", on_dev_reset,     -178 },
+        { "RESET ALL",  on_dev_reset_all,    0 },
+        { "EXPORT",     on_dev_export,     178 },
+    };
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *b = lv_button_create(pg);
+        lv_obj_set_size(b, 168, 48);
+        lv_obj_align(b, LV_ALIGN_TOP_MID, k_acts[i].dx, y);
+        style_key_btn(b);
+        style_button_press(b);
+        lv_obj_add_event_cb(b, k_acts[i].cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, k_acts[i].txt);
+        lv_obj_set_style_text_font(l, font_sm(), 0);
+        lv_obj_center(l);
+    }
 
     lv_obj_t *note = lv_label_create(pg);
     lv_label_set_text(note,
-        "Overrides apply to the selected THEME only and are saved on\n"
-        "release. Accent-coloured values differ from the compiled\n"
-        "default. EXPORT prints ui_tune.h lines to the serial monitor\n"
-        "so a look you keep can be committed; RESET MODE reverts to\n"
-        "whatever is in the firmware.");
+        "Overrides apply to the selected THEME and are saved on release.\n"
+        "Accent-coloured values differ from the compiled default. EXPORT\n"
+        "prints ui_tune.h lines to the serial monitor so a look you keep\n"
+        "can be committed; RESET reverts to what is in the firmware.");
     lv_obj_set_style_text_color(note, lv_color_hex(s_th->text2), 0);
     lv_obj_set_style_text_font(note, font_sm(), 0);
     lv_obj_align(note, LV_ALIGN_TOP_MID, 0, y + 64);
@@ -5828,7 +6128,7 @@ static void apply_theme_cb(void *unused)
         const album_entry_t *a = album_catalog_get((size_t)saved_card);
         if (a && s_browser_title && s_browser_artist) {
             set_title_text(s_browser_title,  a->title);
-            lv_label_set_text(s_browser_artist, a->artist);
+            set_artist_text(s_browser_artist, a->artist);
         }
         if (s_br_index_lbl) {
             char ib[20];
@@ -5840,7 +6140,7 @@ static void apply_theme_cb(void *unused)
 
     /* Restore now-playing labels from cached track state. */
     if (s_track.title[0]  && s_np_title)  set_title_text(s_np_title,  s_track.title);
-    if (s_track.artist[0] && s_np_artist) lv_label_set_text(s_np_artist, s_track.artist);
+    if (s_track.artist[0] && s_np_artist) set_artist_text(s_np_artist, s_track.artist);
     if (s_np_device) lv_label_set_text(s_np_device, s_track.device_name[0] ? s_track.device_name : "");
     if (s_track.volume_pct >= 0 && s_np_volume) {
         lv_slider_set_value(s_np_volume, vol_pct_to_pos(s_track.volume_pct), LV_ANIM_OFF);
@@ -6170,7 +6470,7 @@ void ui_set_track_info(const spotify_track_t *info)
         if (keep_play_state) s_track.is_playing = s_playpause_expected_playing;
         s_last_progress_tick = lv_tick_get();
         if (s_np_title)  set_title_text(s_np_title, info->title);
-        if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
+        if (s_np_artist) set_artist_text(s_np_artist, info->artist);
         if (s_np_device) lv_label_set_text(s_np_device, info->device_name[0] ? info->device_name : "");
 
         /* 3C: auto-scroll the browser carousel to the playing album and accent
@@ -6921,22 +7221,22 @@ static void load_screen(lv_obj_t *target, bool forward)
     if (s_transition != UI_TRANSITION_NONE) {
         uint32_t now = lv_tick_get();
         if (now < s_anim_block_until) return;   /* a transition is still animating */
-        s_anim_block_until = now + 250 + 80;    /* anim duration + margin; self-heals */
+        s_anim_block_until = now + (uint32_t)dv(DV_TRANS_MS) + 80;  /* anim + margin */
     }
 
     switch (s_transition) {
     case UI_TRANSITION_OVER:
         lv_screen_load_anim(target,
             forward ? LV_SCR_LOAD_ANIM_OVER_TOP : LV_SCR_LOAD_ANIM_OVER_BOTTOM,
-            250, 0, false);
+            dv(DV_TRANS_MS), 0, false);
         break;
     case UI_TRANSITION_MOVE:
         lv_screen_load_anim(target,
             forward ? LV_SCR_LOAD_ANIM_MOVE_TOP : LV_SCR_LOAD_ANIM_MOVE_BOTTOM,
-            250, 0, false);
+            dv(DV_TRANS_MS), 0, false);
         break;
     case UI_TRANSITION_FADE:
-        lv_screen_load_anim(target, LV_SCR_LOAD_ANIM_FADE_IN, 250, 0, false);
+        lv_screen_load_anim(target, LV_SCR_LOAD_ANIM_FADE_IN, dv(DV_TRANS_MS), 0, false);
         break;
     case UI_TRANSITION_NONE:
     default:
@@ -6959,7 +7259,7 @@ static void request_toggle_play_optimistic(void)
 {
     s_track.is_playing = !s_track.is_playing;
     s_playpause_expected_playing = s_track.is_playing;
-    s_playpause_guard_until = lv_tick_get() + PLAYPAUSE_GUARD_MS;
+    s_playpause_guard_until = lv_tick_get() + (uint32_t)dv(DV_PP_GUARD);
     refresh_play_icon();
     ui_request_toggle_play();
 }
@@ -7144,14 +7444,14 @@ static void vol_nudge(int delta)
 static void on_vol_plus(lv_event_t *e)
 {
     lv_event_stop_bubbling(e);
-    vol_nudge(VOL_STEP_PCT);
+    vol_nudge(dv(DV_VOL_STEP));
     audio_play(AUDIO_SFX_TICK);
 }
 
 static void on_vol_minus(lv_event_t *e)
 {
     lv_event_stop_bubbling(e);
-    vol_nudge(-VOL_STEP_PCT);
+    vol_nudge(-dv(DV_VOL_STEP));
     audio_play(AUDIO_SFX_TICK);
 }
 
@@ -7218,7 +7518,7 @@ static void on_card_clicked(lv_event_t *e)
         lv_indev_get_point(indev, &p);
         int dx = (int)p.x - SCREEN_W / 2;
         if (dx < 0) dx = -dx;
-        play = (dx <= CENTRE_TAP_TOL);
+        play = (dx <= dv(DV_TAP_TOL));
     }
 
     if (!play) {
@@ -7284,7 +7584,7 @@ static void on_browser_scroll(lv_event_t *e)
     const album_entry_t *a = album_catalog_get((size_t)idx);
     if (!a) return;
     if (s_browser_title)  set_title_text(s_browser_title, a->title);
-    if (s_browser_artist) lv_label_set_text(s_browser_artist, a->artist);
+    if (s_browser_artist) set_artist_text(s_browser_artist, a->artist);
 }
 
 static void update_progress_bar(void)
@@ -7382,9 +7682,9 @@ static void apply_card_transforms(void)
          * card is an untransformed 1:1 blit), or the 220px / 64px fallback
          * sources when the pool is absent. Neighbours scale down from there. */
         uint32_t base = (uint32_t)cs() * LV_SCALE_NONE / s_card_dscs[i].header.w;
-        int32_t scale = LV_SCALE_NONE - dist * 76 / step;
+        int32_t scale = LV_SCALE_NONE - dist * dv(DV_FOCUS_SCALE) / step;
         if (scale < 150) scale = 150;
-        int32_t dim = dist * 95 / step;
+        int32_t dim = dist * dv(DV_FOCUS_DIM) / step;
         if (dim > 110) dim = 110;
 
         /* Skip the LVGL writes (each one invalidates the card's region) when
@@ -7825,7 +8125,7 @@ static void rebuild_browser_cb(void *unused)
         const album_entry_t *a = album_catalog_get((size_t)saved_card);
         if (a && s_browser_title && s_browser_artist) {
             set_title_text(s_browser_title,  a->title);
-            lv_label_set_text(s_browser_artist, a->artist);
+            set_artist_text(s_browser_artist, a->artist);
         }
     }
     apply_card_transforms();
@@ -8019,15 +8319,15 @@ static void idle_timer_cb(lv_timer_t *t)
      * inactive < AUTO_DIM_AFTER_MS and we restore s_brightness. */
     uint32_t inactive = lv_display_get_inactive_time(NULL);
     uint8_t want = 0;
-    if      (inactive >= AUTO_DIM_DEEP_AFTER_MS) want = 2;
-    else if (inactive >= AUTO_DIM_AFTER_MS)      want = 1;
+    if      (inactive >= (uint32_t)dv(DV_DIM_DEEP)  * 1000u) want = 2;
+    else if (inactive >= (uint32_t)dv(DV_DIM_AFTER) * 1000u) want = 1;
 
     if (want == s_dim_state) return;   /* no transition, skip the LEDC write */
     s_dim_state = want;
 
     int level = s_brightness;
-    if      (want == 1) level = (s_brightness * 30) / 100;
-    else if (want == 2) level = (s_brightness * 10) / 100;
+    if      (want == 1) level = (s_brightness * dv(DV_DIM_LEVEL))    / 100;
+    else if (want == 2) level = (s_brightness * dv(DV_DIM_DEEP_LVL)) / 100;
     if (level < 2) level = 2;   /* keep a faint glow so the device doesn't look dead */
     bsp_display_brightness_set(level);
 }

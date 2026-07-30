@@ -384,12 +384,25 @@ What's in `ui.c` as committed:
   rule Y, devices-selector icon, progress-bar Y, timestamp width, transport-key
   Y, and volume-fader X/Y/H. `ui.c` reads these into `k_tune_*` arrays indexed by
   `s_mode`; edit a number, rebuild, look — no `ui.c` changes needed.
-- **Settings > DEVELOPER tab + the shape-knob layer (2026-07-30) — NOT YET
-  HARDWARE-VERIFIED.** A 4th settings tab (`SET_TAB_COUNT=4`) for tuning shape
-  on the real panel instead of rebuilding. Eight knobs — `TUNE_KEY_RADIUS`,
-  `TUNE_ART_RADIUS`, `TUNE_PROG_H`, `TUNE_SEL_W`, `TUNE_SEL_H`,
-  `TUNE_TITLE_LETTER_SP`, `TUNE_TKEY_CIRCLE`, `TUNE_TITLE_UPPER` — each with a
-  compiled per-MODE default in `ui_tune.h` and a live **per-mode** NVS override.
+- **Settings > DEVELOPER tab + the live-knob layer (2026-07-30) — NOT YET
+  HARDWARE-VERIFIED.** A 4th settings tab (`SET_TAB_COUNT=4`) for tuning the
+  look on the real panel instead of rebuilding. **59 knobs**, each with a
+  compiled per-MODE default in `ui_tune.h` and a live **per-mode** NVS override,
+  grouped into five sub-pages (`DVC_TYPE / DVC_SHAPE / DVC_LAYOUT / DVC_BROWSER
+  / DVC_ART`) because one flat list of 59 rows is unusable:
+  - **TYPE** — per-role tracking (title/artist/header), line spacing, uppercase
+    title + artist (independent, so caps-title over mixed-artist stays possible),
+    marquee speed, scroll-only-if-long, title alignment, title overflow mode.
+  - **SHAPE** — button + cover radius, progress height and end caps, selection
+    width/height, round transport keys, transport size + gap, card and button
+    border, card shadow, screen padding.
+  - **LAYOUT** — every positional value that was already per-MODE in
+    `ui_tune.h` (strip Y, title/artist Y, progress Y, timestamp width, transport
+    Y, fader X/Y/H, FPS, WiFi, top-button Y) plus now-playing cover size + Y.
+  - **BROWSER** — card size/gap, Focus falloff + dim, Cover Flow scale/depth/
+    lean-flip, transition duration, auto-dim timings and both dim levels,
+    volume step, centre-tap tolerance, play/pause guard.
+  - **ART** — GLYPH dot pitch and gas-tank particle count.
   - **Table-driven:** the `k_dv[DV_COUNT]` metadata table drives the settings
     page, the NVS blob and the EXPORT dump as plain loops, so adding a knob is
     one enum entry + one `k_dv` row + one call site — no new UI or persistence
@@ -401,10 +414,25 @@ What's in `ui.c` as committed:
     toggles), so zero-initialised statics MUST mean "compiled default" or a cold
     boot would pin every knob to 0 and flatten every theme. This also removes
     any init-order hazard: `dv()` is safe to call before `load_settings()`.
-  - **Persistence:** one versioned blob (`NVS_KEY_DEV_TUNE` / `DEV_TUNE_VER`) in
-    the existing `settings` namespace. A short read, a size change or a version
-    mismatch leaves the arrays zeroed = compiled defaults, so a stale blob can
-    never brick the look. Bump `DEV_TUNE_VER` when the enum changes.
+  - **Persistence:** one versioned blob (`NVS_KEY_DEV_TUNE` / `DEV_TUNE_VER`,
+    now **v2**, ~2.9 KB) in the existing `settings` namespace. A short read, a
+    size change or a version mismatch leaves the arrays zeroed = compiled
+    defaults, so a stale blob can never brick the look. **Bump `DEV_TUNE_VER`
+    whenever the enum or the value type changes** — v1 was int16 and had no
+    face dimension, so it is deliberately rejected rather than misread.
+  - **Value type is `int32_t`,** not int16: the set spans px (3), ms (30000)
+    and seconds (3600) in one table.
+  - **Per-face storage** (`s_dv[mode][face][knob]`) with a `per_face` flag per
+    row: colour-ish knobs would store dark and light independently, while
+    geometry shares face slot 0 — otherwise changing a radius in dark mode and
+    flipping to light would silently show the old value. No row sets the flag
+    yet (the colour knobs are the pending batch); the storage is in place.
+  - **Compile-time bounds:** `TUNE_PROG_PARTS`, `TUNE_CF_MAX_SIDE` and
+    `TUNE_CF_SCALE` are capped by arrays sized at build time
+    (`PROG_PART_COUNT`, `CF_CARDS_MAX`, `CF_COL_MAX`). Their sliders only ever
+    REDUCE work; raising them past the compiled bound needs a rebuild because
+    the scratch lives in internal SRAM. Do not widen the slider ranges without
+    also growing those arrays.
   - **Values apply on RELEASE, not per drag step**, because a change re-skins via
     `apply_theme_cb()` (deletes + rebuilds every screen). Dragging only updates
     the numeric readout. Readouts render in the accent colour when the value is
@@ -418,10 +446,23 @@ What's in `ui.c` as committed:
     lines (every mode, overridden or not, so the block is always complete and
     valid). That is the round trip: tune on device -> EXPORT -> paste ->
     `RESET MODE` -> commit. Overrides otherwise live only in one board's flash.
-  - Verified here only as far as a standalone `-Wall -Wextra -Werror` compile of
-    the extracted logic (accessors, clamping, per-mode isolation, blob
-    round-trip, UTF-8-safe fold, EXPORT formatting). The full LVGL build and an
-    on-device pass are still outstanding.
+  - **Verification done here (no ESP-IDF toolchain in that session):** the REAL
+    `k_dv` table and accessors are extracted from `ui.c` and compiled standalone
+    under `-Wall -Wextra -Werror`, asserting that every row is populated, every
+    compiled default sits inside its own slider range, zero-init means
+    "compiled default", per-mode and per-face isolation hold, clamping works,
+    large values survive int32, the NVS blob round-trips, the EXPORT never
+    truncates, and the CHOICE index packing has no collisions. A separate check
+    proves the EXPORT output is **byte-identical** to the `ui_tune.h` lines, so
+    paste-back is a clean diff. A brace-depth scanner (string/comment aware)
+    confirms structural balance. **The full LVGL build and an on-device pass are
+    still outstanding** — call-site typos would surface at compile time.
+  - **Not yet wired (deliberately left out rather than shipped dead):** button
+    label tracking/uppercase, artist-line style variants, and selection-
+    indicator style variants all need call-site work that this pass did not do.
+    Colour (ground/ink/per-slot/per-mode accent), audio SFX parameters, the
+    knob-haptic block and the TOOLS items (IMPORT, presets, hold-to-preview,
+    on-screen overlay, HTTP export) are the pending batches.
 - **`tools/theme-bench.html` — browser design bench (no build step).** Renders
   the 800x480 UI from the firmware's own numbers (coordinates from `ui_tune.h`,
   palettes from `theme_t`, the real Jost Bold face subset in `tools/fonts/`)
