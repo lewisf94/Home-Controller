@@ -305,8 +305,9 @@ What's in `ui.c` as committed:
   on this board: two draw units conflict with the BSP's PPA acceleration
   (`ppa_fill` overruns the pending-transaction queue → `ESP_ERROR_CHECK` abort).
   See the comment in `sdkconfig.defaults`.
-- Settings screen organised into **three tabs — DISPLAY, SOUND and SETUP**
-  (`SET_TAB_COUNT`, `settings_page()`/`settings_header()` helpers). DISPLAY:
+- Settings screen organised into **four tabs — DISPLAY, SOUND, SETUP and
+  DEVELOPER** (`SET_TAB_COUNT`, `settings_page()`/`settings_header()` helpers;
+  chips are 184 px wide since four 220 px chips overflowed 800 px). DISPLAY:
   APPEARANCE (dark/light) / THEME / THEME ALBUM ART / COLOUR / BROWSER STYLE /
   FONT / SELECTION LINE / BRIGHTNESS / FPS / MENU TRANSITION. SOUND: SOUND
   on-off / VOLUME / SOUND SET. All NVS-persisted.
@@ -346,19 +347,23 @@ What's in `ui.c` as committed:
   (`font_lg`, headings) and `lv_font_jost_24` (`font_md`, labels/buttons) by
   `scripts/gen_lvgl_font.py`, ASCII range 0x20–0x7E falling back to
   `lv_font_hc_28/24` (so accents/symbols still render). `is_bold_theme()`
-  gates the font swap and a bolder `style_key_btn` radius (14, vs BASIC's 3
-  / GLYPH's full pill / PAPER's square). Palette (`THEME_BOLD` /
-  `THEME_BOLD_LIGHT`) pushes past BASIC's soft off-black/off-white to true
-  black/true white for higher poster-like contrast; `TUNE_TITLE_LETTER_SP`
-  adds +1 letter-spacing on BOLD titles. Deliberately reuses BASIC's layout
-  geometry (every other `ui_tune.h` per-mode value) and does no art
-  restyling (no dither/duotone/dot-matrix pass — falls through the same
-  `is_pixel_theme()`/`is_glyph_theme()`/`is_paper_theme()` branches as BASIC,
-  i.e. none fire) — the redesign is font + palette + button radius only. The
-  FONT (SANS/SLAB) setting is hidden for BOLD, same as GLYPH/PAPER, since its
-  Jost pairing is fixed. Added as a 5th MODE (not a BASIC in-place edit) so
-  the original BASIC theme stays selectable for an instant on-device A/B
-  compare / rollback — no code needs reverting to go back to it.
+  gates ONLY the font swap (`font_lg`/`font_md`); BOLD's shape identity lives
+  in the `ui_tune.h` shape knobs — button radius 14, cover radius 7, progress
+  bar 12 px, selection line 120x8, `TUNE_TKEY_CIRCLE` (circular transport
+  keys), `TUNE_TITLE_UPPER` and +3 `TUNE_TITLE_LETTER_SP` — all live-adjustable
+  from Settings > DEVELOPER. Palette (`THEME_BOLD` / `THEME_BOLD_LIGHT`) pushes
+  past BASIC's soft off-black/off-white to true black/true white for
+  poster-like contrast. Reuses BASIC's layout geometry (every positional
+  `ui_tune.h` value) and does no art restyling (no dither/duotone/dot-matrix
+  pass — falls through the same `is_pixel_theme()`/`is_glyph_theme()`/
+  `is_paper_theme()` branches as BASIC, i.e. none fire). The FONT (SANS/SLAB)
+  setting is hidden for BOLD, same as GLYPH/PAPER, since its Jost pairing is
+  fixed. Added as a 5th MODE (not a BASIC in-place edit) so the original BASIC
+  theme stays selectable for an instant on-device A/B compare / rollback — no
+  code needs reverting to go back to it. **Design intent (2026-07-30 revision):
+  the caps + tracking + light-ground + circular-keys combination is what makes
+  it read as a geometric poster rather than "BASIC with a different font" —
+  the first pass was mixed-case on black and read as generic dark-mode.**
 - **THEME ALBUM ART toggle** (`s_theme_art`, NVS `ui_themeart`, shown directly
   under the THEME picker) — turns the per-theme art restyle (PIXEL dither, PAPER
   1-bit duotone, GLYPH colour dot-matrix) on/off while keeping the rest of the
@@ -379,6 +384,54 @@ What's in `ui.c` as committed:
   rule Y, devices-selector icon, progress-bar Y, timestamp width, transport-key
   Y, and volume-fader X/Y/H. `ui.c` reads these into `k_tune_*` arrays indexed by
   `s_mode`; edit a number, rebuild, look — no `ui.c` changes needed.
+- **Settings > DEVELOPER tab + the shape-knob layer (2026-07-30) — NOT YET
+  HARDWARE-VERIFIED.** A 4th settings tab (`SET_TAB_COUNT=4`) for tuning shape
+  on the real panel instead of rebuilding. Eight knobs — `TUNE_KEY_RADIUS`,
+  `TUNE_ART_RADIUS`, `TUNE_PROG_H`, `TUNE_SEL_W`, `TUNE_SEL_H`,
+  `TUNE_TITLE_LETTER_SP`, `TUNE_TKEY_CIRCLE`, `TUNE_TITLE_UPPER` — each with a
+  compiled per-MODE default in `ui_tune.h` and a live **per-mode** NVS override.
+  - **Table-driven:** the `k_dv[DV_COUNT]` metadata table drives the settings
+    page, the NVS blob and the EXPORT dump as plain loops, so adding a knob is
+    one enum entry + one `k_dv` row + one call site — no new UI or persistence
+    code. Read a knob with `dv(DV_xxx)` (or `dv_radius()`, which maps the `-1`
+    "full pill" convention to `LV_RADIUS_CIRCLE`); never read `k_tune_*`
+    directly for these eight.
+  - **Override storage uses an explicit `s_dv_set[][]` flag, not an in-band
+    sentinel** — `0` is legitimate for several knobs (COVER RADIUS 0, both
+    toggles), so zero-initialised statics MUST mean "compiled default" or a cold
+    boot would pin every knob to 0 and flatten every theme. This also removes
+    any init-order hazard: `dv()` is safe to call before `load_settings()`.
+  - **Persistence:** one versioned blob (`NVS_KEY_DEV_TUNE` / `DEV_TUNE_VER`) in
+    the existing `settings` namespace. A short read, a size change or a version
+    mismatch leaves the arrays zeroed = compiled defaults, so a stale blob can
+    never brick the look. Bump `DEV_TUNE_VER` when the enum changes.
+  - **Values apply on RELEASE, not per drag step**, because a change re-skins via
+    `apply_theme_cb()` (deletes + rebuilds every screen). Dragging only updates
+    the numeric readout. Readouts render in the accent colour when the value is
+    an override rather than the compiled default.
+  - **`TUNE_TITLE_UPPER` folds ASCII a-z only** (`set_title_text()`, the single
+    funnel every title label now goes through). LVGL has no text-transform, and
+    blindly upcasing bytes would corrupt the multi-byte UTF-8 accents the
+    `lv_font_hc_*` fonts exist to render. Artists deliberately stay mixed-case —
+    caps-title over mixed-artist is the intended pairing.
+  - **EXPORT TO SERIAL** prints the whole grid as pasteable `ui_tune.h` `#define`
+    lines (every mode, overridden or not, so the block is always complete and
+    valid). That is the round trip: tune on device -> EXPORT -> paste ->
+    `RESET MODE` -> commit. Overrides otherwise live only in one board's flash.
+  - Verified here only as far as a standalone `-Wall -Wextra -Werror` compile of
+    the extracted logic (accessors, clamping, per-mode isolation, blob
+    round-trip, UTF-8-safe fold, EXPORT formatting). The full LVGL build and an
+    on-device pass are still outstanding.
+- **`tools/theme-bench.html` — browser design bench (no build step).** Renders
+  the 800x480 UI from the firmware's own numbers (coordinates from `ui_tune.h`,
+  palettes from `theme_t`, the real Jost Bold face subset in `tools/fonts/`)
+  with a live control panel whose knobs mirror the DEVELOPER tab one-for-one.
+  Its export panel emits `ui_tune.h` lines in **byte-identical format to the
+  device's EXPORT**, so bench, panel and repo all speak the same values. Use it
+  for the fast rough pass, the device for the truth. `tools/README.md` lists what
+  it deliberately does NOT model (real album art and the per-theme art
+  treatments, Cover Flow, true icon fonts, bitmap-font metrics, GLYPH/PIXEL/PAPER
+  chrome).
 - **PIXEL retro theme** — 1bpp Press Start 2P bitmap font (16 px body / 24 px
   heading), Bayer 4×4 ordered dither + RGB444 quantize on all album art and browser
   thumbnails, dark-CRT palette. PSRAM thumb pool (~0.5 MB) allocated on PIXEL entry,
@@ -1095,6 +1148,8 @@ git log --oneline -10          # recent history
 ## Where to look first
 
 - **New to the codebase (plain-language tour):** `docs/CODE-TOUR.md`
+- **Tweaking the look:** `tools/theme-bench.html` (browser bench, open it
+  directly) then Settings > DEVELOPER on the device — see `tools/README.md`
 - **Plans for next phases:** `docs/ROADMAP.md`
 - **HA end-to-end setup guide (Music Assistant, tokens, flash):** `docs/HA-SETUP.md`
 - **What still needs to be tested on hardware:** `docs/TESTING.md`

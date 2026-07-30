@@ -164,7 +164,11 @@ bool album_catalog_add(const char *title, const char *artist, const char *uri,
 #define ART_Y          44
 
 #define PROG_W        520
-#define PROG_H          6
+/* Live-tunable (Settings > DEVELOPER, default per mode in ui_tune.h). This is
+ * a macro so the derived geometry below (SEEK_OV_Y, PROG_TANK_*) keeps working
+ * unchanged; it expands to a function call, so every use site must be inside a
+ * function -- all of them are, and none needs a constant expression. */
+#define PROG_H        (dv(DV_PROG_H))
 #define PROG_X         ((SCREEN_W - PROG_W) / 2)
 /* Per-mode (ticks, timestamps, seek overlay and the GLYPH gas-tank all derive
  * from PROG_Y automatically). Values live in ui_tune.h. */
@@ -400,13 +404,16 @@ static const theme_t THEME_PAPER  = { 0xE8E0CC, 0xDED4BC, 0x26211A, 0x4A4438, 0x
 /* PAPER dark: the cream sheet photo-negative -- dark sepia "blueprint" ground,
  * parchment ink. The light face keeps the canonical cream. */
 static const theme_t THEME_PAPER_DARK = { 0x211D14, 0x2B2719, 0xE4DCC4, 0xB0A88E, 0x6E6754, 0x4A4434 };
-/* BOLD: Futura-inspired geometric-sans redesign of BASIC -- pushed to the
- * extremes of the neutral scale (true black / true white, not BASIC's
- * softer off-black / warm off-white) so Jost Bold headings read as a poster,
- * not a tint of BASIC. No art restyling (falls through the same is_pixel/
- * is_glyph/is_paper branches as BASIC, i.e. none of them fire), no bespoke
- * chrome -- the redesign is entirely font + palette + button radius (see
- * font_lg/font_md and style_key_btn's is_bold_theme() branches). */
+/* BOLD: Futura-inspired geometric-sans redesign of BASIC. The neutrals sit at
+ * the extremes of the scale (true black / true white, not BASIC's softer
+ * off-black / warm off-white) so Jost Bold headings read as a poster rather
+ * than a tint of BASIC. No art restyling -- BOLD falls through the same
+ * is_pixel/is_glyph/is_paper branches as BASIC, i.e. none of them fire.
+ * Its shape identity (button + cover radius, chunky progress bar, circular
+ * transport keys, uppercase tracked titles) is NOT hardcoded here: it lives in
+ * the ui_tune.h shape knobs, read via dv()/dv_radius(), so it is adjustable
+ * from Settings > DEVELOPER. Only the FONT swap still tests is_bold_theme()
+ * directly (font_lg/font_md). */
 static const theme_t THEME_BOLD       = { 0x000000, 0x1C1C1C, 0xFFFFFF, 0xB0B0B0, 0x707070, 0x2C2C2C };
 static const theme_t THEME_BOLD_LIGHT = { 0xFFFFFF, 0xF0F0F0, 0x000000, 0x555555, 0x999999, 0xE0E0E0 };
 static const theme_t *s_th = &THEME_BLACK;
@@ -450,6 +457,111 @@ static const int16_t k_tune_tkey_y[MODE_COUNT]      = TUNE_TKEY_Y;
 static const int16_t k_tune_fader_x[MODE_COUNT]     = TUNE_FADER_X;
 static const int16_t k_tune_fader_y[MODE_COUNT]     = TUNE_FADER_Y;
 static const int16_t k_tune_fader_h[MODE_COUNT]     = TUNE_FADER_H;
+
+/* ---- DEVELOPER shape knobs: compiled defaults + live NVS overrides -------
+ *
+ * The values below are the ones worth judging by eye on the real panel, so
+ * Settings > DEVELOPER exposes each as a slider (or ON/OFF) and stores the
+ * result as a per-mode override. Everything is table-driven off k_dv: the
+ * DEVELOPER page, the NVS blob and the EXPORT dump are all plain loops over
+ * it, so adding a knob is one enum entry, one k_dv row, and one call site --
+ * no new UI or persistence code. Read a knob with dv(DV_xxx); it returns the
+ * override for the ACTIVE mode when one is set, else the ui_tune.h default. */
+static const int16_t k_tune_key_radius[MODE_COUNT]  = TUNE_KEY_RADIUS;
+static const int16_t k_tune_art_radius[MODE_COUNT]  = TUNE_ART_RADIUS;
+static const int16_t k_tune_prog_h[MODE_COUNT]      = TUNE_PROG_H;
+static const int16_t k_tune_sel_w[MODE_COUNT]       = TUNE_SEL_W;
+static const int16_t k_tune_sel_h[MODE_COUNT]       = TUNE_SEL_H;
+static const int16_t k_tune_tkey_circle[MODE_COUNT] = TUNE_TKEY_CIRCLE;
+static const int16_t k_tune_title_upper[MODE_COUNT] = TUNE_TITLE_UPPER;
+
+enum {
+    DV_KEY_RADIUS = 0,
+    DV_ART_RADIUS,
+    DV_PROG_H,
+    DV_SEL_W,
+    DV_SEL_H,
+    DV_TITLE_LSP,
+    DV_TKEY_CIRCLE,
+    DV_TITLE_UPPER,
+    DV_COUNT
+};
+
+typedef struct {
+    const char    *tune;      /* ui_tune.h macro name, printed by EXPORT      */
+    const char    *label;     /* on-screen row heading                        */
+    const int16_t *defaults;  /* compiled per-mode array                      */
+    int16_t        lo, hi;    /* inclusive slider range                       */
+    bool           toggle;    /* render as ON/OFF rather than a slider        */
+} dv_meta_t;
+
+static const dv_meta_t k_dv[DV_COUNT] = {
+    [DV_KEY_RADIUS]  = { "TUNE_KEY_RADIUS",      "BUTTON RADIUS",     k_tune_key_radius,  -1,  28, false },
+    [DV_ART_RADIUS]  = { "TUNE_ART_RADIUS",      "COVER RADIUS",      k_tune_art_radius,   0,  28, false },
+    [DV_PROG_H]      = { "TUNE_PROG_H",          "PROGRESS HEIGHT",   k_tune_prog_h,       2,  20, false },
+    [DV_SEL_W]       = { "TUNE_SEL_W",           "SELECTION WIDTH",   k_tune_sel_w,       40, 320, false },
+    [DV_SEL_H]       = { "TUNE_SEL_H",           "SELECTION HEIGHT",  k_tune_sel_h,        2,  16, false },
+    [DV_TITLE_LSP]   = { "TUNE_TITLE_LETTER_SP", "TITLE TRACKING",    k_tune_title_lsp,    0,   8, false },
+    [DV_TKEY_CIRCLE] = { "TUNE_TKEY_CIRCLE",     "ROUND TRANSPORT",   k_tune_tkey_circle,  0,   1, true  },
+    [DV_TITLE_UPPER] = { "TUNE_TITLE_UPPER",     "UPPERCASE TITLES",  k_tune_title_upper,  0,   1, true  },
+};
+
+/* Override storage. A separate "is set" flag rather than an in-band sentinel:
+ * 0 is a legitimate value for several of these knobs (COVER RADIUS 0, the two
+ * toggles), so zero-initialised static storage MUST mean "no override" or a
+ * cold boot would silently pin every knob to 0 and flatten every theme. With
+ * the flag, the default state is correct by construction and there is no
+ * init-order hazard -- dv() is safe to call before load_dev_tune() runs. */
+static int16_t s_dv[MODE_COUNT][DV_COUNT];
+/* uint8_t not bool: this is memcpy'd straight in and out of the NVS blob, so
+ * the storage type must be unambiguously 1 byte on both sides. */
+static uint8_t s_dv_set[MODE_COUNT][DV_COUNT];
+
+/* On-flash form of the two arrays above (see NVS_KEY_DEV_TUNE). Kept as a
+ * plain struct so one nvs_get_blob/nvs_set_blob covers the whole grid; `ver`
+ * makes a layout change (a new knob, a reordered enum) self-invalidating. */
+typedef struct {
+    uint32_t ver;
+    int16_t  val[MODE_COUNT][DV_COUNT];
+    uint8_t  set[MODE_COUNT][DV_COUNT];
+} dev_tune_blob_t;
+
+/* Knob value for a given mode: override if the user set one, else the compiled
+ * ui_tune.h default. Every consumer calls dv(), never the k_tune_* array. */
+static int16_t dv_of(uint8_t mode, int idx)
+{
+    return s_dv_set[mode][idx] ? s_dv[mode][idx] : k_dv[idx].defaults[mode];
+}
+static int16_t dv(int idx) { return dv_of(s_mode, idx); }
+/* Radius knobs use -1 for "full pill"; translate to LVGL's sentinel. */
+static int32_t dv_radius(int idx)
+{
+    int16_t v = dv(idx);
+    return (v < 0) ? LV_RADIUS_CIRCLE : v;
+}
+
+/* Every album/track TITLE is set through here so the UPPERCASE TITLES knob can
+ * transform it -- LVGL has no text-transform, so the string itself must be
+ * folded. ASCII a-z only, deliberately: the compiled fonts carry Latin-1 and
+ * Extended-A, whose accented letters are MULTI-BYTE UTF-8, and blindly
+ * upcasing those bytes would corrupt the sequence into mojibake. Folding just
+ * a-z leaves every accented character legible in its original case.
+ * ARTISTS are NOT routed through here -- caps title over mixed-case artist is
+ * the intended pairing, not an oversight. */
+static void set_title_text(lv_obj_t *label, const char *txt)
+{
+    if (!label) return;
+    if (!txt) { lv_label_set_text(label, ""); return; }
+    if (!dv(DV_TITLE_UPPER)) { lv_label_set_text(label, txt); return; }
+    char b[128];
+    size_t i = 0;
+    for (; txt[i] && i < sizeof b - 1; i++) {
+        unsigned char c = (unsigned char)txt[i];
+        b[i] = (c >= 'a' && c <= 'z') ? (char)(c - ('a' - 'A')) : (char)c;
+    }
+    b[i] = '\0';
+    lv_label_set_text(label, b);
+}
 
 /* Accent palette: a 4-hue x 3-variant grid (vivid/deep/soft rows). The hex
  * values are user-tweakable in ui_tune.h (TUNE_ACCENTS). */
@@ -708,10 +820,13 @@ static lv_obj_t *s_volume_val        = NULL;   /* "NN%" label beside it */
 /* Settings is split into category pages reached by a chip row at the top
  * (Display / Sound / Setup). One page is visible at a time; the rest are
  * hidden. s_set_tab survives a theme rebuild so the active page is preserved. */
-#define SET_TAB_COUNT  3
+#define SET_TAB_COUNT  4
 static lv_obj_t *s_set_tabs[SET_TAB_COUNT]     = {0};   /* category chip buttons */
 static lv_obj_t *s_set_tab_lbls[SET_TAB_COUNT] = {0};
 static lv_obj_t *s_set_pages[SET_TAB_COUNT]    = {0};   /* page containers */
+/* DEVELOPER tab: per-knob value readout. Cleared and rebuilt with the page, so
+ * dev_row_refresh() must null-check (a rebuild can outrun a pending refresh). */
+static lv_obj_t *s_dev_val[DV_COUNT]           = {0};
 static uint8_t   s_set_tab = 0;                         /* active category page */
 
 /* SETUP tab: runtime credential overrides (creds.h). One row per field; the
@@ -805,6 +920,12 @@ static lv_obj_t       *s_cf_img = NULL;
 #define NVS_KEY_SOUND         "ui_sound"
 #define NVS_KEY_VOLUME        "ui_vol"
 #define NVS_KEY_SOUND_SET     "ui_sndset"
+/* DEVELOPER shape overrides -- one blob holding the whole [mode][knob] grid
+ * plus its set-flags, so adding a knob needs no new key. Versioned: a layout
+ * change bumps DEV_TUNE_VER and the stale blob is ignored (falls back to the
+ * compiled defaults) instead of being read as garbage. */
+#define NVS_KEY_DEV_TUNE      "devtune"
+#define DEV_TUNE_VER          1u
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
@@ -884,6 +1005,15 @@ static void on_cred_editor_save(lv_event_t *e);
 static void on_cred_editor_cancel(lv_event_t *e);
 static void on_cred_kb_event(lv_event_t *e);
 static void settings_build_setup_page(lv_obj_t *pg);
+/* DEVELOPER tab (live shape tuning) */
+static void settings_build_dev_page(lv_obj_t *pg);
+static void dev_row_refresh(int idx);
+static void on_dev_slider_changed(lv_event_t *e);
+static void on_dev_slider_released(lv_event_t *e);
+static void on_dev_toggle(lv_event_t *e);
+static void on_dev_reset(lv_event_t *e);
+static void on_dev_export(lv_event_t *e);
+static void save_dev_tune(void);
 static void save_sound_set(int8_t v);
 static void fps_render_ready_cb(lv_event_t *e);
 static void fps_timer_cb(lv_timer_t *t);
@@ -1058,11 +1188,11 @@ static lv_color_t opt_sel_fg(void)
  * rounds them into full pills with a hairline outline (Nothing-style). */
 static void style_key_btn(lv_obj_t *btn)
 {
-    lv_obj_set_style_radius(btn,
-        is_paper_theme() ? 0
-        : is_glyph_theme() ? LV_RADIUS_CIRCLE
-        : is_bold_theme() ? 14
-        : 3, 0);
+    /* Radius comes from the live knob (TUNE_KEY_RADIUS / Settings > DEVELOPER),
+     * which encodes the old per-theme constants: BASIC/PIXEL 3, GLYPH -1 (full
+     * pill), PAPER 0, BOLD 14. The BORDERS below are theme identity, not a
+     * tunable, so they stay keyed off the theme predicates. */
+    lv_obj_set_style_radius(btn, dv_radius(DV_KEY_RADIUS), 0);
     lv_obj_set_style_shadow_width(btn, 0, 0);
     if (is_paper_theme()) {
         lv_obj_set_style_border_width(btn, 2, 0);
@@ -1480,7 +1610,7 @@ static void browser_build_cards(void)
 
         lv_obj_t *card = lv_obj_create(s_browser_scroller);
         lv_obj_set_size(card, cs(), cs());
-        lv_obj_set_style_radius(card, 0, 0);
+        lv_obj_set_style_radius(card, dv_radius(DV_ART_RADIUS), 0);
         /* Frames (PAPER ink + playing accent) are baked into the card-pool
          * pixels above, so they scale with the art in Focus mode -- no object
          * border here when the pool is live. The container border is the
@@ -1595,7 +1725,7 @@ static void browser_build_title_labels(void)
     s_browser_title = lv_label_create(s_screen_browser);
     style_label(s_browser_title, font_lg(),
                 lv_color_hex(s_th->text), cf ? CF_TITLE_Y : BR_TITLE_Y);
-    lv_obj_set_style_text_letter_space(s_browser_title, k_tune_title_lsp[s_mode], 0);
+    lv_obj_set_style_text_letter_space(s_browser_title, dv(DV_TITLE_LSP), 0);
     /* Titles that fit stay centred; ones too wide for the screen scroll
      * horizontally (radio-style marquee) instead of being clipped/ellipsised.
      * Speed must be set BEFORE set_long_mode -- that call creates the scroll
@@ -1611,12 +1741,12 @@ static void browser_build_title_labels(void)
 
     if (s_card_count > 0) {
         const album_entry_t *a = album_catalog_get(0);
-        lv_label_set_text(s_browser_title, a->title);
+        set_title_text(s_browser_title, a->title);
         lv_label_set_text(s_browser_artist, a->artist);
         s_centered_card = 0;
     } else {
         /* No albums configured -- explain rather than show a blank carousel. */
-        lv_label_set_text(s_browser_title, "No albums configured");
+        set_title_text(s_browser_title, "No albums configured");
         lv_label_set_text(s_browser_artist,
                           "edit spotify-albums-list.txt + reflash");
     }
@@ -1682,8 +1812,10 @@ static void browser_build_selection_line(void)
      * slot (cards always centre-snap to the screen middle), so the active album
      * is unambiguous even in flat Carousel mode. Toggleable in Settings. */
     s_sel_line = lv_obj_create(s_screen_browser);
-    lv_obj_set_size(s_sel_line, 88, 3);
-    lv_obj_set_style_radius(s_sel_line, is_paper_theme() ? 0 : 2, 0);
+    lv_obj_set_size(s_sel_line, dv(DV_SEL_W), dv(DV_SEL_H));
+    /* PAPER keeps its printed hard edge; elsewhere the line caps off into a
+     * capsule, which needs to track the live thickness knob. */
+    lv_obj_set_style_radius(s_sel_line, is_paper_theme() ? 0 : dv(DV_SEL_H) / 2, 0);
     lv_obj_set_style_border_width(s_sel_line, 0, 0);
     lv_obj_set_style_bg_color(s_sel_line, lv_color_hex(accent_color()), 0);
     lv_obj_set_style_bg_opa(s_sel_line, LV_OPA_COVER, 0);
@@ -1970,7 +2102,7 @@ static void np_build_art(void)
     /* Fit any cover (Spotify art decodes to ~320) into the box, centered and
      * aspect-preserved, no crop. CONTAIN re-applies on every src change. */
     lv_image_set_inner_align(s_np_art, LV_IMAGE_ALIGN_CONTAIN);
-    lv_obj_set_style_radius(s_np_art, 0, 0);
+    lv_obj_set_style_radius(s_np_art, dv_radius(DV_ART_RADIUS), 0);
     /* PAPER: the cover prints inside an ink plate frame (PAPER art is dithered
      * at exactly ART_W so the frame sits flush on the image). */
     if (is_paper_theme()) {
@@ -1988,7 +2120,7 @@ static void np_build_art(void)
 static void np_build_title_artist(void)
 {
     s_np_title = lv_label_create(s_screen_np);
-    lv_obj_set_style_text_letter_space(s_np_title, k_tune_title_lsp[s_mode], 0);
+    lv_obj_set_style_text_letter_space(s_np_title, dv(DV_TITLE_LSP), 0);
     style_label(s_np_title, font_lg(),
                 lv_color_hex(s_th->text), NP_TITLE_Y);
     /* Long track titles scroll horizontally instead of being clipped.
@@ -1996,7 +2128,7 @@ static void np_build_title_artist(void)
      * fixed duration (ms), not lv_anim_speed() -- that caps at ~10.23 s. */
     lv_obj_set_style_anim_duration(s_np_title, TITLE_MARQUEE_MS, LV_PART_MAIN);
     lv_label_set_long_mode(s_np_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_text(s_np_title, "Nothing playing");
+    set_title_text(s_np_title, "Nothing playing");
 
     s_np_artist = lv_label_create(s_screen_np);
     style_label(s_np_artist, font_md(),
@@ -2153,6 +2285,9 @@ static void np_build_transport_keys(void)
         lv_obj_set_size(key, TKEY_SZ, TKEY_SZ);
         lv_obj_set_pos(key, x0 + i * (TKEY_SZ + TKEY_GAP), TKEY_Y);
         style_key_btn(key);
+        /* ROUND TRANSPORT knob: these keys are square, so a full pill radius
+         * makes them true circles -- overrides the shared button radius. */
+        if (dv(DV_TKEY_CIRCLE)) lv_obj_set_style_radius(key, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(key, lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_bg_opa(key, LV_OPA_COVER, 0);
         style_button_press(key);
@@ -3687,8 +3822,8 @@ static void dissolve_done_cb(lv_anim_t *a)
         }
     }
     if (s_np_title) {
-        if (s_offline) lv_label_set_text(s_np_title, "OFFLINE");
-        else           lv_label_set_text(s_np_title, s_track.title[0] ? s_track.title : "Nothing playing");
+        if (s_offline) set_title_text(s_np_title, "OFFLINE");
+        else           set_title_text(s_np_title, s_track.title[0] ? s_track.title : "Nothing playing");
         lv_obj_remove_flag(s_np_title, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -3879,14 +4014,17 @@ static void settings_build_back_and_title(void)
 static void settings_build_tabs(void)
 {
     /* Category tabs: one chip per page; tapping one swaps the visible page.
-     * Chips centre as a row whatever SET_TAB_COUNT is (3 x 220 + gaps = 684,
-     * still inside the 800 px panel). */
-    static const char *const k_tab_names[SET_TAB_COUNT] = { "DISPLAY", "SOUND", "SETUP" };
+     * Chips centre as a row whatever SET_TAB_COUNT is. Sized for 4 tabs
+     * (4 x 184 + 3 x 8 gaps = 760, inside the 800 px panel); the old 220-wide
+     * chip only fitted three. */
+    static const char *const k_tab_names[SET_TAB_COUNT] = {
+        "DISPLAY", "SOUND", "SETUP", "DEVELOPER",
+    };
     for (int i = 0; i < SET_TAB_COUNT; i++) {
         lv_obj_t *chip = lv_button_create(s_screen_settings);
-        lv_obj_set_size(chip, 220, 44);
+        lv_obj_set_size(chip, 184, 44);
         lv_obj_align(chip, LV_ALIGN_TOP_MID,
-                     (int)((i - (SET_TAB_COUNT - 1) / 2.0f) * 232.0f), 60);
+                     (int)((i - (SET_TAB_COUNT - 1) / 2.0f) * 192.0f), 60);
         style_key_btn(chip);
         style_button_press(chip);
         lv_obj_add_event_cb(chip, on_settings_tab, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
@@ -4437,6 +4575,211 @@ static void settings_build_setup_page(lv_obj_t *pg)
     refresh_setup_fields();
 }
 
+/* ============================ DEVELOPER tab ==============================
+ * Live shape tuning on the real panel. One row per k_dv entry, so this page
+ * grows automatically when a knob is added -- there is no per-knob code here.
+ *
+ * Values apply on RELEASE, not on every drag step: a knob change re-skins via
+ * apply_theme_cb(), which deletes and rebuilds every screen (~tens of ms), so
+ * doing that per slider step would stutter badly and fight the drag. Dragging
+ * updates only the numeric readout; letting go commits, persists and re-skins.
+ *
+ * Overrides are PER MODE -- editing BOLD's radius leaves PAPER's alone -- and
+ * EXPORT dumps every mode's current values to the serial log as pasteable
+ * ui_tune.h lines, so a look you land on here can be moved into git. */
+
+static void dev_row_refresh(int idx)
+{
+    if (idx < 0 || idx >= DV_COUNT || !s_dev_val[idx]) return;
+    int16_t v = dv(idx);
+    if (k_dv[idx].toggle) {
+        lv_label_set_text(s_dev_val[idx], v ? "ON" : "OFF");
+    } else if (idx == DV_KEY_RADIUS && v < 0) {
+        lv_label_set_text(s_dev_val[idx], "PILL");   /* -1 = LV_RADIUS_CIRCLE */
+    } else {
+        char b[16];
+        snprintf(b, sizeof b, "%d", (int)v);
+        lv_label_set_text(s_dev_val[idx], b);
+    }
+    /* Mark rows that differ from the compiled default, so it is obvious at a
+     * glance which values are live overrides rather than what is in git. */
+    bool overridden = (s_dv_set[s_mode][idx] != 0);
+    lv_obj_set_style_text_color(s_dev_val[idx],
+        lv_color_hex(overridden ? accent_color() : s_th->text), 0);
+}
+
+static void dev_set(int idx, int16_t v)
+{
+    if (v < k_dv[idx].lo) v = k_dv[idx].lo;
+    if (v > k_dv[idx].hi) v = k_dv[idx].hi;
+    s_dv[s_mode][idx]     = v;
+    s_dv_set[s_mode][idx] = 1;
+}
+
+static void on_dev_slider_changed(lv_event_t *e)
+{
+    int idx = (int)(uintptr_t)lv_event_get_user_data(e);
+    lv_obj_t *sl = lv_event_get_target(e);
+    if (idx < 0 || idx >= DV_COUNT || !s_dev_val[idx]) return;
+    /* Live readout only -- no re-skin until release (see the note above). */
+    char b[16];
+    int  v = (int)lv_slider_get_value(sl);
+    if (idx == DV_KEY_RADIUS && v < 0) snprintf(b, sizeof b, "PILL");
+    else                               snprintf(b, sizeof b, "%d", v);
+    lv_label_set_text(s_dev_val[idx], b);
+    lv_obj_set_style_text_color(s_dev_val[idx], lv_color_hex(accent_color()), 0);
+}
+
+static void on_dev_slider_released(lv_event_t *e)
+{
+    int idx = (int)(uintptr_t)lv_event_get_user_data(e);
+    lv_obj_t *sl = lv_event_get_target(e);
+    if (idx < 0 || idx >= DV_COUNT) return;
+    dev_set(idx, (int16_t)lv_slider_get_value(sl));
+    save_dev_tune();
+    ESP_LOGI(TAG, "dev %s[%s] -> %d", k_dv[idx].tune, k_mode_names[s_mode],
+             (int)dv(idx));
+    audio_play(AUDIO_SFX_TICK);
+    lv_async_call(apply_theme_cb, NULL);   /* deferred: we are inside its child */
+}
+
+static void on_dev_toggle(lv_event_t *e)
+{
+    int idx = (int)(uintptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= DV_COUNT) return;
+    dev_set(idx, dv(idx) ? 0 : 1);
+    save_dev_tune();
+    ESP_LOGI(TAG, "dev %s[%s] -> %s", k_dv[idx].tune, k_mode_names[s_mode],
+             dv(idx) ? "ON" : "OFF");
+    audio_play(AUDIO_SFX_SELECT);
+    lv_async_call(apply_theme_cb, NULL);
+}
+
+static void on_dev_reset(lv_event_t *e)
+{
+    (void)e;
+    /* Drop this mode's overrides only -- the other themes keep theirs. */
+    for (int i = 0; i < DV_COUNT; i++) {
+        s_dv[s_mode][i]     = 0;
+        s_dv_set[s_mode][i] = 0;
+    }
+    save_dev_tune();
+    ESP_LOGI(TAG, "dev overrides cleared for %s", k_mode_names[s_mode]);
+    audio_play(AUDIO_SFX_BACK);
+    lv_async_call(apply_theme_cb, NULL);
+}
+
+static void on_dev_export(lv_event_t *e)
+{
+    (void)e;
+    /* Print the whole grid as ui_tune.h lines so it can be pasted back into
+     * the repo -- including modes with no overrides, which print their
+     * compiled defaults, so the emitted block is always complete and valid. */
+    ESP_LOGI(TAG, "---- paste into components/p4_shared/include/ui_tune.h ----");
+    for (int i = 0; i < DV_COUNT; i++) {
+        char line[128];
+        int  n = snprintf(line, sizeof line, "#define %-22s {", k_dv[i].tune);
+        for (int m = 0; m < MODE_COUNT && n > 0 && n < (int)sizeof line; m++) {
+            n += snprintf(line + n, sizeof line - n, "%4d%s",
+                          (int)dv_of((uint8_t)m, i),
+                          (m == MODE_COUNT - 1) ? " }" : ",");
+        }
+        ESP_LOGI(TAG, "%s", line);
+    }
+    ESP_LOGI(TAG, "---- mode order: BASIC, GLYPH, PIXEL, PAPER, BOLD --------");
+    audio_play(AUDIO_SFX_CONNECT);
+}
+
+static void settings_build_dev_page(lv_obj_t *pg)
+{
+    memset(s_dev_val, 0, sizeof s_dev_val);
+
+    lv_obj_t *hdr = lv_label_create(pg);
+    {   /* snprintf + set_text, matching the idiom used everywhere else here */
+        char hb[64];
+        snprintf(hb, sizeof hb, "SHAPE OVERRIDES FOR %s %s",
+                 k_mode_names[s_mode], s_dark ? "DARK" : "LIGHT");
+        lv_label_set_text(hdr, hb);
+    }
+    lv_obj_set_style_text_color(hdr, lv_color_hex(accent_color()), 0);
+    lv_obj_set_style_text_font(hdr, font_sm(), 0);
+    lv_obj_set_style_text_letter_space(hdr, 2, 0);
+    lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, 24, 6);
+
+    int y = 44;
+    for (int i = 0; i < DV_COUNT; i++, y += 92) {
+        settings_header(pg, k_dv[i].label, 24, y);
+
+        s_dev_val[i] = lv_label_create(pg);
+        lv_obj_set_style_text_font(s_dev_val[i], font_md(), 0);
+        lv_obj_align(s_dev_val[i], LV_ALIGN_TOP_RIGHT, -140, y);
+
+        if (k_dv[i].toggle) {
+            lv_obj_t *btn = lv_button_create(pg);
+            lv_obj_set_size(btn, 520, 48);
+            lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, y + 30);
+            style_key_btn(btn);
+            style_button_press(btn);
+            lv_obj_add_event_cb(btn, on_dev_toggle, LV_EVENT_CLICKED,
+                                (void *)(uintptr_t)i);
+            lv_obj_t *l = lv_label_create(btn);
+            lv_label_set_text(l, dv(i) ? "ON" : "OFF");
+            lv_obj_set_style_text_font(l, font_sm(), 0);
+            lv_obj_center(l);
+        } else {
+            lv_obj_t *sl = lv_slider_create(pg);
+            lv_obj_set_size(sl, 520, 16);
+            lv_obj_align(sl, LV_ALIGN_TOP_MID, 0, y + 40);
+            lv_slider_set_range(sl, k_dv[i].lo, k_dv[i].hi);
+            lv_slider_set_value(sl, dv(i), LV_ANIM_OFF);
+            lv_obj_set_style_bg_color(sl, lv_color_hex(s_th->track), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(sl, lv_color_hex(accent_color()), LV_PART_INDICATOR);
+            lv_obj_set_style_bg_color(sl, lv_color_hex(accent_color()), LV_PART_KNOB);
+            lv_obj_set_style_radius(sl, is_paper_theme() ? 0 : 4, LV_PART_MAIN);
+            lv_obj_set_style_radius(sl, is_paper_theme() ? 0 : 4, LV_PART_INDICATOR);
+            if (is_paper_theme()) lv_obj_set_style_radius(sl, 0, LV_PART_KNOB);
+            lv_obj_add_event_cb(sl, on_dev_slider_changed,  LV_EVENT_VALUE_CHANGED,
+                                (void *)(uintptr_t)i);
+            lv_obj_add_event_cb(sl, on_dev_slider_released, LV_EVENT_RELEASED,
+                                (void *)(uintptr_t)i);
+        }
+        dev_row_refresh(i);
+    }
+
+    lv_obj_t *rb = lv_button_create(pg);
+    lv_obj_set_size(rb, 254, 48);
+    lv_obj_align(rb, LV_ALIGN_TOP_MID, -133, y);
+    style_key_btn(rb);
+    style_button_press(rb);
+    lv_obj_add_event_cb(rb, on_dev_reset, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *rl = lv_label_create(rb);
+    lv_label_set_text(rl, "RESET MODE");
+    lv_obj_set_style_text_font(rl, font_sm(), 0);
+    lv_obj_center(rl);
+
+    lv_obj_t *xb = lv_button_create(pg);
+    lv_obj_set_size(xb, 254, 48);
+    lv_obj_align(xb, LV_ALIGN_TOP_MID, 133, y);
+    style_key_btn(xb);
+    style_button_press(xb);
+    lv_obj_add_event_cb(xb, on_dev_export, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *xl = lv_label_create(xb);
+    lv_label_set_text(xl, "EXPORT TO SERIAL");
+    lv_obj_set_style_text_font(xl, font_sm(), 0);
+    lv_obj_center(xl);
+
+    lv_obj_t *note = lv_label_create(pg);
+    lv_label_set_text(note,
+        "Overrides apply to the selected THEME only and are saved on\n"
+        "release. Accent-coloured values differ from the compiled\n"
+        "default. EXPORT prints ui_tune.h lines to the serial monitor\n"
+        "so a look you keep can be committed; RESET MODE reverts to\n"
+        "whatever is in the firmware.");
+    lv_obj_set_style_text_color(note, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(note, font_sm(), 0);
+    lv_obj_align(note, LV_ALIGN_TOP_MID, 0, y + 64);
+}
+
 static void settings_build_paper_chrome(void)
 {
     /* PAPER form furniture goes on LAST so page content scrolling past the
@@ -4478,6 +4821,11 @@ static void build_settings_screen(void)
     lv_obj_t *pg_setup = settings_page();
     s_set_pages[2] = pg_setup;
     settings_build_setup_page(pg_setup);
+
+    /* ============================= DEVELOPER ============================ */
+    lv_obj_t *pg_dev = settings_page();
+    s_set_pages[3] = pg_dev;
+    settings_build_dev_page(pg_dev);
 
     settings_build_paper_chrome();
 
@@ -5479,7 +5827,7 @@ static void apply_theme_cb(void *unused)
         s_target_card   = saved_card;
         const album_entry_t *a = album_catalog_get((size_t)saved_card);
         if (a && s_browser_title && s_browser_artist) {
-            lv_label_set_text(s_browser_title,  a->title);
+            set_title_text(s_browser_title,  a->title);
             lv_label_set_text(s_browser_artist, a->artist);
         }
         if (s_br_index_lbl) {
@@ -5491,7 +5839,7 @@ static void apply_theme_cb(void *unused)
     }
 
     /* Restore now-playing labels from cached track state. */
-    if (s_track.title[0]  && s_np_title)  lv_label_set_text(s_np_title,  s_track.title);
+    if (s_track.title[0]  && s_np_title)  set_title_text(s_np_title,  s_track.title);
     if (s_track.artist[0] && s_np_artist) lv_label_set_text(s_np_artist, s_track.artist);
     if (s_np_device) lv_label_set_text(s_np_device, s_track.device_name[0] ? s_track.device_name : "");
     if (s_track.volume_pct >= 0 && s_np_volume) {
@@ -5648,8 +5996,34 @@ static void load_settings(void)
     uint8_t ss = 0;        /* 0 = AUTO, else named-set index + 1 */
     if (nvs_get_u8(h, NVS_KEY_SOUND_SET, &ss) == ESP_OK)
         audio_set_set(ss == 0 ? -1 : (int)ss - 1);
+    /* DEVELOPER overrides. A short read, a version mismatch or a size change
+     * all leave s_dv/s_dv_set zeroed, which means "compiled defaults" -- the
+     * safe state, so a stale or corrupt blob can never brick the look. */
+    {
+        dev_tune_blob_t blob;
+        size_t len = sizeof blob;
+        if (nvs_get_blob(h, NVS_KEY_DEV_TUNE, &blob, &len) == ESP_OK &&
+            len == sizeof blob && blob.ver == DEV_TUNE_VER) {
+            memcpy(s_dv,     blob.val, sizeof s_dv);
+            memcpy(s_dv_set, blob.set, sizeof s_dv_set);
+        }
+    }
     nvs_close(h);
     apply_audio_theme();   /* AUTO target follows the restored MODE */
+}
+
+/* The DEVELOPER grid persists as one versioned blob rather than a key per
+ * knob, so new knobs need no NVS migration. */
+static void save_dev_tune(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    dev_tune_blob_t blob = { .ver = DEV_TUNE_VER };
+    memcpy(blob.val, s_dv,     sizeof blob.val);
+    memcpy(blob.set, s_dv_set, sizeof blob.set);
+    nvs_set_blob(h, NVS_KEY_DEV_TUNE, &blob, sizeof blob);
+    nvs_commit(h);
+    nvs_close(h);
 }
 
 /* Every visual/sound setting persists as a single u8 under NVS_SETTINGS_NS, so
@@ -5795,7 +6169,7 @@ void ui_set_track_info(const spotify_track_t *info)
         s_track.progress_ms = keep_progress;
         if (keep_play_state) s_track.is_playing = s_playpause_expected_playing;
         s_last_progress_tick = lv_tick_get();
-        if (s_np_title)  lv_label_set_text(s_np_title, info->title);
+        if (s_np_title)  set_title_text(s_np_title, info->title);
         if (s_np_artist) lv_label_set_text(s_np_artist, info->artist);
         if (s_np_device) lv_label_set_text(s_np_device, info->device_name[0] ? info->device_name : "");
 
@@ -6909,7 +7283,7 @@ static void on_browser_scroll(lv_event_t *e)
     }
     const album_entry_t *a = album_catalog_get((size_t)idx);
     if (!a) return;
-    if (s_browser_title)  lv_label_set_text(s_browser_title, a->title);
+    if (s_browser_title)  set_title_text(s_browser_title, a->title);
     if (s_browser_artist) lv_label_set_text(s_browser_artist, a->artist);
 }
 
@@ -7450,7 +7824,7 @@ static void rebuild_browser_cb(void *unused)
         s_target_card   = saved_card;
         const album_entry_t *a = album_catalog_get((size_t)saved_card);
         if (a && s_browser_title && s_browser_artist) {
-            lv_label_set_text(s_browser_title,  a->title);
+            set_title_text(s_browser_title,  a->title);
             lv_label_set_text(s_browser_artist, a->artist);
         }
     }
@@ -7499,8 +7873,8 @@ static void wifi_timer_cb(lv_timer_t *t)
                 if (s_offline) title_dissolve();
                 else           title_reform();
             } else {
-                if (s_offline) lv_label_set_text(s_np_title, "OFFLINE");
-                else           lv_label_set_text(s_np_title, s_track.title);
+                if (s_offline) set_title_text(s_np_title, "OFFLINE");
+                else           set_title_text(s_np_title, s_track.title);
             }
         }
     }

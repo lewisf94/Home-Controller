@@ -38,6 +38,41 @@
 #define TUNE_ACCENT_COLS  8
 
 /* =========================================================================
+ * SHAPE KNOBS -- also live-adjustable on the device.
+ *
+ * Everything in this block is exposed as a slider/toggle in
+ * Settings > DEVELOPER, so you can tune it on the panel and see it instantly
+ * instead of rebuilding. Those on-device edits are stored as NVS overrides
+ * (namespace "uiset", key "devtune") and only override the mode you edited.
+ *
+ * ROUND TRIP: tune on device -> tap EXPORT -> the serial monitor prints these
+ * exact #define lines with your values -> paste them back here -> RESET on the
+ * device so the compiled defaults are live again -> commit. That way a value
+ * you liked ends up in git rather than living only in one board's flash.
+ * ========================================================================= */
+/* Corner radius (px) of every boxy button/key. -1 means a full pill
+ * (LV_RADIUS_CIRCLE). GLYPH's pill and PAPER's hard square are part of those
+ * themes' identities -- BOLD's 14 is its rounded-geometric signature. */
+#define TUNE_KEY_RADIUS        {   3,  -1,   3,   0,  14 }
+/* Corner radius (px) of album cards + the now-playing cover. 0 = hard square
+ * (every theme's original look); BOLD softens them to match its buttons. */
+#define TUNE_ART_RADIUS        {   0,   0,   0,   0,   7 }
+/* Progress-bar thickness (px). BOLD's chunky bar is a deliberate flat block
+ * rather than the hairline the other themes use. */
+#define TUNE_PROG_H            {   6,   6,   6,   6,  12 }
+/* Selection underline under the centred album: width then thickness (px). */
+#define TUNE_SEL_W             {  88,  88,  88,  88, 120 }
+#define TUNE_SEL_H             {   3,   3,   3,   3,   8 }
+/* 1 = transport keys (prev/play/next) are drawn as true circles regardless of
+ * TUNE_KEY_RADIUS. Futura's defining shape is the perfect circle, so BOLD
+ * takes it; the others keep their square-ish keys. */
+#define TUNE_TKEY_CIRCLE       {   0,   0,   0,   0,   1 }
+/* 1 = force album/track TITLES to uppercase (artist stays as supplied -- the
+ * caps/mixed pairing is the point). LVGL has no text-transform, so ui.c
+ * upcases the string itself; ASCII a-z only, so accented metadata survives. */
+#define TUNE_TITLE_UPPER       {   0,   0,   0,   0,   1 }
+
+/* =========================================================================
  * BROWSER (album list) -- text + furniture          { BASIC, GLYPH, PIXEL, PAPER }
  * ========================================================================= */
 /* Cover-strip top Y and transport-key size. BASIC and PAPER start the strip at
@@ -55,9 +90,9 @@
 #define TUNE_BR_TITLE_Y        { 362, 342, 342, 362, 362 }
 #define TUNE_BR_ARTIST_Y       { 404, 384, 384, 404, 404 }
 /* Extra letter spacing (px) on the browser + now-playing title text. BOLD
- * gets a touch of tracking on its Jost Bold headings -- the geometric-poster
+ * gets real tracking on its Jost Bold headings -- the geometric-poster
  * feel Futura/Bauhaus titling leans on. */
-#define TUNE_TITLE_LETTER_SP   {   0,   0,   0,   0,   1 }
+#define TUNE_TITLE_LETTER_SP   {   0,   0,   0,   0,   3 }
 /* Selection underline: px below the strip bottom (TUNE_SCROLLER_Y + 292). */
 #define TUNE_SEL_LINE_DY       {   4,   4,   4,   4,   4 }
 /* FPS readout position (top-left). GLYPH starts further right so it clears

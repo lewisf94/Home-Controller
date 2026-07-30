@@ -1,0 +1,710 @@
+<!doctype html>
+<title>BOLD Theme Mockup — Waveshare P4</title>
+<style>
+@font-face {
+  font-family: 'JostBoldMock';
+  src: url('fonts/Jost-Bold-subset.woff2') format('woff2');
+  font-weight: 700; font-display: block;
+}
+@font-face {
+  font-family: 'MontserratMedMock';
+  src: url('fonts/Montserrat-Medium-subset.woff2') format('woff2');
+  font-weight: 500; font-display: block;
+}
+
+/* ---------- page chrome (the tool around the device) ---------- */
+:root {
+  --pg-bg: #F1F3F4;
+  --pg-panel: #FFFFFF;
+  --pg-ink: #14181B;
+  --pg-ink2: #5B6570;
+  --pg-line: #DCE1E4;
+  --pg-accent: #2E6E93;
+  --pg-accent-ink: #FFFFFF;
+  --pg-code-bg: #F5F7F8;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pg-bg: #14171A; --pg-panel: #1C2023; --pg-ink: #EFF2F4; --pg-ink2: #939CA5;
+    --pg-line: #2A3033; --pg-accent: #5B9BC7; --pg-accent-ink: #0A1216; --pg-code-bg: #15191C;
+  }
+}
+:root[data-theme="dark"] {
+  --pg-bg: #14171A; --pg-panel: #1C2023; --pg-ink: #EFF2F4; --pg-ink2: #939CA5;
+  --pg-line: #2A3033; --pg-accent: #5B9BC7; --pg-accent-ink: #0A1216; --pg-code-bg: #15191C;
+}
+:root[data-theme="light"] {
+  --pg-bg: #F1F3F4; --pg-panel: #FFFFFF; --pg-ink: #14181B; --pg-ink2: #5B6570;
+  --pg-line: #DCE1E4; --pg-accent: #2E6E93; --pg-accent-ink: #FFFFFF; --pg-code-bg: #F5F7F8;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; overflow-x: hidden; }
+body {
+  background: var(--pg-bg); color: var(--pg-ink); font-family: var(--ui);
+  font-size: 14px; line-height: 1.5;
+}
+.wrap {
+  max-width: 1080px; margin: 0 auto; padding: 26px 18px 60px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+
+.intro { display: flex; flex-direction: column; gap: 6px; }
+.eyebrow {
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--pg-accent); font-weight: 700;
+}
+h1 { font-size: 21px; margin: 0; font-weight: 600; letter-spacing: -.01em; text-wrap: balance; }
+.intro p { margin: 0; color: var(--pg-ink2); font-size: 13.5px; max-width: 66ch; }
+code { font-family: var(--mono); font-size: .92em; }
+
+/* ---------- control panel ---------- */
+.panel {
+  background: var(--pg-panel); border: 1px solid var(--pg-line);
+  border-radius: 10px; padding: 14px 16px;
+  display: flex; flex-wrap: wrap; gap: 16px 22px; align-items: flex-end;
+}
+.grp { display: flex; flex-direction: column; gap: 6px; }
+.grp > .lbl {
+  font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--pg-ink2); font-weight: 700;
+}
+.seg { display: inline-flex; border: 1px solid var(--pg-line); border-radius: 7px; overflow: hidden; }
+.seg button {
+  appearance: none; border: 0; border-right: 1px solid var(--pg-line);
+  background: transparent; color: var(--pg-ink); font: inherit; font-size: 12.5px;
+  font-weight: 600; padding: 7px 12px; cursor: pointer;
+}
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--pg-accent); color: var(--pg-accent-ink); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--pg-accent); outline-offset: 2px; }
+
+.swatches { display: inline-flex; gap: 6px; }
+.swatch {
+  width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent;
+  padding: 0; cursor: pointer; position: relative;
+}
+.swatch[aria-pressed="true"] { border-color: var(--pg-ink); }
+.swatch[aria-pressed="true"]::after {
+  content: ""; position: absolute; inset: 4px; border-radius: 50%;
+  border: 2px solid var(--pg-panel);
+}
+
+.slider { display: flex; align-items: center; gap: 9px; }
+.slider input[type="range"] { width: 116px; accent-color: var(--pg-accent); }
+.slider output {
+  font-family: var(--mono); font-size: 12px; color: var(--pg-ink2);
+  min-width: 38px; font-variant-numeric: tabular-nums;
+}
+.picker { display: flex; align-items: center; gap: 8px; }
+.picker input[type="color"] {
+  width: 34px; height: 26px; padding: 0; border: 1px solid var(--pg-line);
+  border-radius: 5px; background: none; cursor: pointer;
+}
+.picker span { font-family: var(--mono); font-size: 11.5px; color: var(--pg-ink2); }
+
+/* ---------- device ---------- */
+.stage { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.bezel {
+  width: min(100%, 880px); background: #0A0B0C; border-radius: 22px; padding: 15px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 18px 44px -20px rgba(0,0,0,.5);
+}
+.device {
+  container-type: inline-size; position: relative; width: 100%;
+  aspect-ratio: 800 / 480; border-radius: 5px; overflow: hidden;
+  background: var(--d-bg); color: var(--d-text);
+  font-family: 'MontserratMedMock', var(--ui);
+  /* defaults are set from JS on load */
+}
+.cap { font-size: 11.5px; color: var(--pg-ink2); text-align: center; }
+.cap b { color: var(--pg-ink); font-weight: 600; }
+
+.screen { position: absolute; inset: 0; display: none; }
+.screen[data-on="true"] { display: block; }
+
+/* wifi bars */
+.wifi { position: absolute; left: .75cqw; top: .5cqw; width: 3.4cqw; height: 2.75cqw; }
+.wifi i { position: absolute; bottom: 0; width: .7cqw; background: var(--d-text); border-radius: 1px; }
+.wifi i:nth-child(1) { left: 0;       height: 35%; background: var(--d-text2); }
+.wifi i:nth-child(2) { left: .95cqw;  height: 55%; }
+.wifi i:nth-child(3) { left: 1.9cqw;  height: 75%; }
+.wifi i:nth-child(4) { left: 2.85cqw; height: 100%; }
+
+/* top-right icon buttons */
+.tic {
+  position: absolute; top: 0; width: 4.25cqw; height: 4.25cqw;
+  display: flex; align-items: center; justify-content: center; color: var(--d-text2);
+}
+.tic svg { width: 2.15cqw; height: 2.15cqw; }
+.tic.gear { right: .75cqw; }
+.tic.dev  { right: 7cqw; }
+.tic.add  { right: 13.25cqw; color: var(--d-accent); }
+
+/* titles */
+.ttl, .art-l {
+  position: absolute; left: .75cqw; right: .75cqw; text-align: center;
+  font-family: 'JostBoldMock', var(--ui); font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.device[data-face-font="mont"] .ttl,
+.device[data-face-font="mont"] .art-l { font-family: 'MontserratMedMock', var(--ui); font-weight: 500; }
+.ttl   { font-size: 3.5cqw; letter-spacing: var(--d-track); color: var(--d-text); text-transform: var(--d-case); }
+.art-l { font-size: 3cqw; color: var(--d-text2); }
+
+/* now playing */
+.np .ttl   { top: 38.5cqw; }
+.np .art-l { top: 43.5cqw; }
+.artbox {
+  position: absolute; left: 34cqw; top: 5.5cqw; width: 32cqw; height: 32cqw;
+  border-radius: var(--d-art-radius); overflow: hidden;
+}
+.devname {
+  position: absolute; left: 71.5cqw; top: 10.5cqw; width: 20.75cqw; font-size: 2.5cqw;
+  color: var(--d-text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-transform: var(--d-case); letter-spacing: var(--d-track-sm);
+}
+.fader { position: absolute; left: 10cqw; top: 8.25cqw; width: 5.5cqw; height: 29.5cqw;
+         display: flex; flex-direction: column; align-items: center; }
+.f-track { position: relative; width: 100%; flex: 1; background: var(--d-track-c);
+           border-radius: var(--d-radius); overflow: hidden; }
+.f-fill { position: absolute; left: 0; right: 0; bottom: 0; height: 64%; background: var(--d-accent); }
+.f-pct { margin-top: .9cqw; font-size: 2.1cqw; color: var(--d-text2); font-variant-numeric: tabular-nums; }
+
+.prog { position: absolute; left: 8.5cqw; top: 47.6cqw; width: 83cqw; height: 3cqw; }
+.p-bar {
+  position: absolute; left: 9cqw; right: 9cqw; top: 50%; transform: translateY(-50%);
+  height: var(--d-bar-h); background: var(--d-track-c);
+  border-radius: var(--d-bar-radius); overflow: hidden;
+}
+.p-fill { position: absolute; inset: 0 55% 0 0; background: var(--d-accent); }
+.ts { position: absolute; top: 50%; transform: translateY(-50%); font-size: 2.4cqw;
+      color: var(--d-text2); font-variant-numeric: tabular-nums; }
+.ts.a { left: 0; width: 8cqw; }
+.ts.b { right: 0; width: 8cqw; text-align: right; }
+
+.keys { position: absolute; left: 36cqw; top: 51.75cqw; width: 28cqw; display: flex; gap: 3.5cqw; }
+.key {
+  width: 7cqw; height: 7cqw; border-radius: var(--d-key-radius); background: var(--d-surface);
+  display: flex; align-items: center; justify-content: center; color: var(--d-text);
+}
+.key svg { width: 2.6cqw; height: 2.6cqw; }
+
+/* browser */
+.strip { position: absolute; left: 0; top: 6.75cqw; width: 100%; height: 36.5cqw;
+         display: flex; align-items: center; justify-content: center; gap: 3.5cqw; }
+.card {
+  position: relative; flex: none; width: 27.5cqw; height: 27.5cqw;
+  border-radius: var(--d-art-radius); overflow: hidden; opacity: .5; filter: saturate(.65);
+  background-color: #222;
+}
+.card.mid {
+  width: 32.5cqw; height: 32.5cqw; opacity: 1; filter: none;
+  box-shadow: 0 .6cqw 1.4cqw rgba(0,0,0,.3);
+}
+.selline {
+  position: absolute; left: 50%; transform: translateX(-50%); top: 43.9cqw;
+  width: var(--d-sel-w); height: var(--d-sel-h); background: var(--d-accent);
+  border-radius: var(--d-bar-radius);
+}
+.br .ttl   { top: 45.6cqw; }
+.br .art-l { top: 50.6cqw; }
+
+/* placeholder cover art (abstract -- not real albums) */
+.c1 { background: radial-gradient(120% 140% at 20% 15%, #E8A33D 0%, transparent 55%),
+                  linear-gradient(155deg, #1B1D22 0%, #2C3038 55%, #E8A33D 200%); }
+.c2 { background: repeating-linear-gradient(115deg, #17384A 0 1.6cqw, #1F5570 1.6cqw 3.2cqw); }
+.c2::after { content: ""; position: absolute; inset: 0;
+             background: radial-gradient(60% 60% at 70% 70%, rgba(232,163,61,.5), transparent 70%); }
+.c3 { background: conic-gradient(from 200deg at 30% 30%, #3A5A40, #1B2E22 90deg, #6B8F71 180deg, #1B2E22 270deg, #3A5A40); }
+.c4 { background: linear-gradient(200deg, #241931 0%, #4A2F5C 60%, #8A4B6B 120%); }
+.c5 { background: repeating-linear-gradient(90deg, #7A1F2B 0 .6cqw, #A5333F .6cqw 1.2cqw); }
+
+/* ---------- export ---------- */
+.export { background: var(--pg-panel); border: 1px solid var(--pg-line); border-radius: 10px; overflow: hidden; }
+.export header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 11px 14px; border-bottom: 1px solid var(--pg-line);
+}
+.export h2 { font-size: 12px; margin: 0; letter-spacing: .09em; text-transform: uppercase; color: var(--pg-ink2); }
+.copy {
+  appearance: none; border: 1px solid var(--pg-line); background: transparent; color: var(--pg-ink);
+  font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+}
+.copy:hover { background: var(--pg-accent); color: var(--pg-accent-ink); border-color: var(--pg-accent); }
+.export pre {
+  margin: 0; padding: 14px; overflow-x: auto; background: var(--pg-code-bg);
+  font-family: var(--mono); font-size: 12px; line-height: 1.6; color: var(--pg-ink);
+}
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <div class="eyebrow">Waveshare ESP32-P4 &middot; tools/theme-bench.html</div>
+    <h1>Theme design bench</h1>
+    <p>Browser-side preview of the P4 UI, built from the firmware's own numbers: coordinates from
+       <code>ui_tune.h</code>, palette hex from <code>theme_t</code>, and the real Jost Bold face.
+       Every control maps to one knob that also exists on the device under
+       <b>Settings &rsaquo; DEVELOPER</b>, and the panel at the bottom emits <code>ui_tune.h</code>
+       lines in the exact format the device's <b>EXPORT TO SERIAL</b> prints — so the bench, the
+       panel and the repo all speak the same values.</p>
+    <p><b>Workflow:</b> rough the look out here (instant, no flash), paste the emitted block into
+       <code>ui_tune.h</code>, build once, then fine-tune on the real panel via the DEVELOPER tab
+       and EXPORT the result back into the repo. <b>v2</b> is the current committed BOLD;
+       <b>v1</b> is the first pass, kept for comparison; <b>BASIC</b> is the baseline theme.
+       Cover art here is abstract placeholder, not real album art.</p>
+  </div>
+
+  <div class="panel">
+    <div class="grp">
+      <span class="lbl">Theme</span>
+      <div class="seg" id="s-mode">
+        <button data-v="v2" aria-pressed="true">BOLD v2</button>
+        <button data-v="v1" aria-pressed="false">BOLD v1</button>
+        <button data-v="basic" aria-pressed="false">BASIC</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Face</span>
+      <div class="seg" id="s-face">
+        <button data-v="light" aria-pressed="true">LIGHT</button>
+        <button data-v="dark" aria-pressed="false">DARK</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Screen</span>
+      <div class="seg" id="s-screen">
+        <button data-v="np" aria-pressed="true">NOW PLAYING</button>
+        <button data-v="br" aria-pressed="false">BROWSER</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Case</span>
+      <div class="seg" id="s-case">
+        <button data-v="upper" aria-pressed="true">UPPER</button>
+        <button data-v="none" aria-pressed="false">Title</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Keys</span>
+      <div class="seg" id="s-keys">
+        <button data-v="circle" aria-pressed="true">CIRCLE</button>
+        <button data-v="round" aria-pressed="false">ROUNDED</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Icons</span>
+      <div class="seg" id="s-icons">
+        <button data-v="thin" aria-pressed="true">THIN</button>
+        <button data-v="solid" aria-pressed="false">SOLID</button>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Tracking</span>
+      <div class="slider">
+        <input type="range" id="r-track" min="0" max="6" step="1" value="3" aria-label="Title letter spacing in px">
+        <output id="o-track">3px</output>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Radius</span>
+      <div class="slider">
+        <input type="range" id="r-radius" min="0" max="28" step="1" value="14" aria-label="Button corner radius in px">
+        <output id="o-radius">14px</output>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Cover radius</span>
+      <div class="slider">
+        <input type="range" id="r-art" min="0" max="28" step="1" value="7" aria-label="Album cover corner radius in px">
+        <output id="o-art">7px</output>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Bar</span>
+      <div class="slider">
+        <input type="range" id="r-bar" min="2" max="20" step="1" value="12" aria-label="Progress bar height in px">
+        <output id="o-bar">12px</output>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Sel width</span>
+      <div class="slider">
+        <input type="range" id="r-selw" min="40" max="320" step="4" value="120" aria-label="Selection line width in px">
+        <output id="o-selw">120px</output>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Sel height</span>
+      <div class="slider">
+        <input type="range" id="r-selh" min="2" max="16" step="1" value="8" aria-label="Selection line thickness in px">
+        <output id="o-selh">8px</output>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Ground</span>
+      <div class="picker">
+        <input type="color" id="p-ground" value="#f5f5f3" aria-label="Background colour">
+        <span id="o-ground">#F5F5F3</span>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Ink</span>
+      <div class="picker">
+        <input type="color" id="p-ink" value="#0a0a0a" aria-label="Text colour">
+        <span id="o-ink">#0A0A0A</span>
+      </div>
+    </div>
+    <div class="grp">
+      <span class="lbl">Accent</span>
+      <div class="swatches" id="s-accent">
+        <button class="swatch" style="background:#C23B00" data-c="#C23B00" aria-pressed="true" aria-label="Deep orange"></button>
+        <button class="swatch" style="background:#B27700" data-c="#B27700" aria-pressed="false" aria-label="Deep amber"></button>
+        <button class="swatch" style="background:#00753A" data-c="#00753A" aria-pressed="false" aria-label="Deep green"></button>
+        <button class="swatch" style="background:#008F83" data-c="#008F83" aria-pressed="false" aria-label="Deep teal"></button>
+        <button class="swatch" style="background:#0F58BD" data-c="#0F58BD" aria-pressed="false" aria-label="Deep blue"></button>
+        <button class="swatch" style="background:#5B3FA8" data-c="#5B3FA8" aria-pressed="false" aria-label="Deep purple"></button>
+        <button class="swatch" style="background:#C11579" data-c="#C11579" aria-pressed="false" aria-label="Deep magenta"></button>
+        <button class="swatch" style="background:#A61E14" data-c="#A61E14" aria-pressed="false" aria-label="Deep red"></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="bezel">
+      <div class="device" id="dev">
+
+        <section class="screen np" id="sc-np" data-on="true">
+          <div class="wifi"><i></i><i></i><i></i><i></i></div>
+          <div class="tic dev" title="Output"><svg class="i-spk" viewBox="0 0 24 24"></svg></div>
+          <div class="tic gear" title="Settings"><svg class="i-gear" viewBox="0 0 24 24"></svg></div>
+
+          <div class="artbox"><div class="card c1 mid" style="width:100%;height:100%;opacity:1;filter:none;box-shadow:none"></div></div>
+
+          <div class="ttl">Selected Ambient Works</div>
+          <div class="art-l">Aphex Twin</div>
+          <div class="devname">Living Room</div>
+
+          <div class="fader">
+            <div class="f-track"><div class="f-fill"></div></div>
+            <div class="f-pct">64%</div>
+          </div>
+
+          <div class="prog">
+            <div class="ts a">1:52</div>
+            <div class="p-bar"><div class="p-fill"></div></div>
+            <div class="ts b">-2:16</div>
+          </div>
+
+          <div class="keys">
+            <div class="key"><svg class="i-prev" viewBox="0 0 24 24"></svg></div>
+            <div class="key"><svg class="i-pause" viewBox="0 0 24 24"></svg></div>
+            <div class="key"><svg class="i-next" viewBox="0 0 24 24"></svg></div>
+          </div>
+        </section>
+
+        <section class="screen br" id="sc-br" data-on="false">
+          <div class="wifi"><i></i><i></i><i></i><i></i></div>
+          <div class="tic add" title="Add albums"><svg class="i-plus" viewBox="0 0 24 24"></svg></div>
+          <div class="tic dev" title="Output"><svg class="i-spk" viewBox="0 0 24 24"></svg></div>
+          <div class="tic gear" title="Settings"><svg class="i-gear" viewBox="0 0 24 24"></svg></div>
+
+          <div class="strip">
+            <div class="card c3"></div>
+            <div class="card c2"></div>
+            <div class="card c1 mid"></div>
+            <div class="card c4"></div>
+            <div class="card c5"></div>
+          </div>
+          <div class="selline"></div>
+          <div class="ttl">Selected Ambient Works</div>
+          <div class="art-l">Aphex Twin</div>
+        </section>
+
+      </div>
+    </div>
+    <div class="cap"><b>800 &times; 480</b> landscape &middot; ST7701 MIPI-DSI &middot; scaled to fit, proportions exact</div>
+  </div>
+
+  <div class="export">
+    <header>
+      <h2>Generated firmware values</h2>
+      <button class="copy" id="btn-copy">Copy</button>
+    </header>
+    <pre id="out"><code></code></pre>
+  </div>
+</div>
+
+<script>
+/* ---- icon paths: two sets, swapped by the ICONS control ---------------- */
+var ICONS = {
+  thin: {
+    'i-gear': '<g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13a7.9 7.9 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a8 8 0 0 0-1.7-1L15 3h-4l-.3 2.9a8 8 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a8 8 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a8 8 0 0 0 1.7 1L11 21h4l.3-2.9a8 8 0 0 0 1.7-1l2.5 1 2-3.5z"/></g>',
+    'i-spk':  '<g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></g>',
+    'i-plus': '<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/>',
+    'i-prev': '<g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6v12l-9-6z"/><path d="M6 6v12"/></g>',
+    'i-pause':'<g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M8.5 5.5v13M15.5 5.5v13"/></g>',
+    'i-next': '<g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6v12l9-6z"/><path d="M18 6v12"/></g>'
+  },
+  solid: {
+    'i-gear': '<g fill="currentColor"><path d="M19.4 13a7.9 7.9 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a8 8 0 0 0-1.7-1L15 3h-4l-.3 2.9a8 8 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a8 8 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a8 8 0 0 0 1.7 1L11 21h4l.3-2.9a8 8 0 0 0 1.7-1l2.5 1 2-3.5z"/></g><circle cx="12" cy="12" r="3.2" fill="var(--d-surface)"/>',
+    'i-spk':  '<g fill="currentColor"><path d="M11 5 6 9H2v6h4l5 4z"/></g><g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></g>',
+    'i-plus': '<path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" d="M12 5v14M5 12h14"/>',
+    'i-prev': '<g fill="currentColor"><path d="M6 6h2.2v12H6z"/><path d="M19 6v12l-9-6z"/></g>',
+    'i-pause':'<g fill="currentColor"><rect x="6.6" y="5" width="3.8" height="14" rx="0"/><rect x="13.6" y="5" width="3.8" height="14" rx="0"/></g>',
+    'i-next': '<g fill="currentColor"><path d="M15.8 6H18v12h-2.2z"/><path d="M5 6l9 6-9 6z"/></g>'
+  }
+};
+
+/* ---- per-theme defaults: exactly what each variant IS ------------------ */
+/* Per-variant defaults. The v2/basic rows mirror the committed ui_tune.h
+   values for MODE_BOLD / MODE_BASIC, so switching here shows the real thing;
+   v1 is kept as the pre-revision BOLD for comparison. */
+var MODES = {
+  v2:    { face: 'light', kase: 'upper', keys: 'circle', icons: 'thin',
+           track: 3, radius: 14, art:  7, bar: 12, selw: 120, selh: 8,
+           font: 'jost', accent: '#C23B00', mode: 'BOLD',
+           light: { ground: '#F5F5F3', ink: '#0A0A0A' },
+           dark:  { ground: '#0A0A0A', ink: '#F5F5F3' } },
+  v1:    { face: 'dark',  kase: 'none',  keys: 'round',  icons: 'thin',
+           track: 1, radius: 14, art:  0, bar:  6, selw:  88, selh: 3,
+           font: 'jost', accent: '#C23B00', mode: 'BOLD',
+           light: { ground: '#FFFFFF', ink: '#000000' },
+           dark:  { ground: '#000000', ink: '#FFFFFF' } },
+  basic: { face: 'dark',  kase: 'none',  keys: 'round',  icons: 'thin',
+           track: 0, radius:  3, art:  0, bar:  6, selw:  88, selh: 3,
+           font: 'mont', accent: '#C23B00', mode: 'BASIC',
+           light: { ground: '#ECEAE6', ink: '#1A1A1A' },
+           dark:  { ground: '#000000', ink: '#FAFAFA' } }
+};
+
+var st = null, mode = 'v2', screen = 'np';
+var dev = document.getElementById('dev');
+
+/* ---- colour maths: derive the 6-slot theme_t from ground + ink -------- */
+function hex2rgb(h) {
+  h = h.replace('#', '');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+function rgb2hex(r) {
+  return '#' + r.map(function (v) {
+    return Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  }).join('');
+}
+function mix(a, b, t) {
+  var x = hex2rgb(a), y = hex2rgb(b);
+  return rgb2hex([x[0]+(y[0]-x[0])*t, x[1]+(y[1]-x[1])*t, x[2]+(y[2]-x[2])*t]);
+}
+/* Same ratios the hand-picked palettes were built on, so the derived
+   values reproduce them: surface/track lean off the ground, text2/dim off the ink. */
+function palette(ground, ink) {
+  return {
+    bg:      ground,
+    surface: mix(ground, ink, 0.110),
+    text:    ink,
+    text2:   mix(ink, ground, 0.305),
+    dim:     mix(ink, ground, 0.560),
+    track:   mix(ground, ink, 0.172)
+  };
+}
+
+function px(n) { return (n * 0.125) + 'cqw'; }   /* firmware px -> device-relative */
+
+function paint() {
+  var pal = palette(st.ground, st.ink);
+  var s = dev.style;
+  s.setProperty('--d-bg', pal.bg);
+  s.setProperty('--d-surface', pal.surface);
+  s.setProperty('--d-text', pal.text);
+  s.setProperty('--d-text2', pal.text2);
+  s.setProperty('--d-track-c', pal.track);
+  s.setProperty('--d-accent', st.accent);
+  s.setProperty('--d-case', st.kase === 'upper' ? 'uppercase' : 'none');
+  s.setProperty('--d-track', px(st.track));
+  s.setProperty('--d-track-sm', px(Math.min(st.track, 2)));
+  s.setProperty('--d-radius', px(st.radius));
+  s.setProperty('--d-key-radius', st.keys === 'circle' ? '50%' : px(st.radius));
+  s.setProperty('--d-art-radius', px(st.art));
+  s.setProperty('--d-bar-h', px(st.bar));
+  s.setProperty('--d-bar-radius', px(st.bar / 2));
+  s.setProperty('--d-sel-w', px(st.selw));
+  s.setProperty('--d-sel-h', px(st.selh));
+  dev.setAttribute('data-face-font', st.font);
+
+  Object.keys(ICONS[st.icons]).forEach(function (cls) {
+    Array.prototype.forEach.call(document.querySelectorAll('svg.' + cls), function (el) {
+      el.innerHTML = ICONS[st.icons][cls];
+    });
+  });
+
+  document.getElementById('o-track').textContent  = st.track + 'px';
+  document.getElementById('o-radius').textContent = st.radius + 'px';
+  document.getElementById('o-art').textContent    = st.art + 'px';
+  document.getElementById('o-bar').textContent    = st.bar + 'px';
+  document.getElementById('o-selw').textContent   = st.selw + 'px';
+  document.getElementById('o-selh').textContent   = st.selh + 'px';
+  document.getElementById('o-ground').textContent = st.ground.toUpperCase();
+  document.getElementById('o-ink').textContent    = st.ink.toUpperCase();
+  document.getElementById('p-ground').value = st.ground;
+  document.getElementById('p-ink').value    = st.ink;
+  document.getElementById('r-track').value  = st.track;
+  document.getElementById('r-radius').value = st.radius;
+  document.getElementById('r-art').value    = st.art;
+  document.getElementById('r-bar').value    = st.bar;
+  document.getElementById('r-selw').value   = st.selw;
+  document.getElementById('r-selh').value   = st.selh;
+
+  emit();
+}
+
+function C(h) { return '0x' + h.replace('#', '').toUpperCase(); }
+
+function emit() {
+  /* The colour pickers write straight back into MODES[mode][face], so both
+     stored pairs are always current -- read them, don't re-derive. */
+  var m  = MODES[mode];
+  var dk = palette(m.dark.ground,  m.dark.ink);
+  var lt = palette(m.light.ground, m.light.ink);
+  var order = ['bg','surface','text','text2','dim','track'];
+  function row(p) { return order.map(function (k) { return C(p[k]); }).join(', '); }
+
+  /* Per-mode ui_tune.h rows. Only the slot for the mode being previewed is
+     replaced; the other four keep the values committed in ui_tune.h, so the
+     emitted #define is a complete, valid line you can paste over the old one.
+     Format matches the device's EXPORT TO SERIAL output byte for byte. */
+  var slot = { BASIC: 0, GLYPH: 1, PIXEL: 2, PAPER: 3, BOLD: 4 }[m.mode];
+  var COMMITTED = {
+    TUNE_KEY_RADIUS:      [  3, -1,  3,  0, 14],
+    TUNE_ART_RADIUS:      [  0,  0,  0,  0,  7],
+    TUNE_PROG_H:          [  6,  6,  6,  6, 12],
+    TUNE_SEL_W:           [ 88, 88, 88, 88,120],
+    TUNE_SEL_H:           [  3,  3,  3,  3,  8],
+    TUNE_TITLE_LETTER_SP: [  0,  0,  0,  0,  3],
+    TUNE_TKEY_CIRCLE:     [  0,  0,  0,  0,  1],
+    TUNE_TITLE_UPPER:     [  0,  0,  0,  0,  1]
+  };
+  var live = {
+    TUNE_KEY_RADIUS:      st.radius,
+    TUNE_ART_RADIUS:      st.art,
+    TUNE_PROG_H:          st.bar,
+    TUNE_SEL_W:           st.selw,
+    TUNE_SEL_H:           st.selh,
+    TUNE_TITLE_LETTER_SP: st.track,
+    TUNE_TKEY_CIRCLE:     st.keys === 'circle' ? 1 : 0,
+    TUNE_TITLE_UPPER:     st.kase === 'upper'  ? 1 : 0
+  };
+
+  var lines = [];
+  lines.push('/* ---- ui.c -- palette. The face you did not edit keeps its own pair. ---- */');
+  lines.push('static const theme_t THEME_BOLD       = { ' + row(dk) + ' };');
+  lines.push('static const theme_t THEME_BOLD_LIGHT = { ' + row(lt) + ' };');
+  lines.push('');
+  lines.push('/* ---- ui_tune.h -- { BASIC, GLYPH, PIXEL, PAPER, BOLD } ---- */');
+  Object.keys(COMMITTED).forEach(function (k) {
+    var vals = COMMITTED[k].slice();
+    vals[slot] = live[k];
+    lines.push('#define ' + k.padEnd(22) + ' {' +
+               vals.map(function (v) { return String(v).padStart(4); }).join(',') + ' }');
+  });
+  lines.push('');
+  lines.push('/* Default accent: ' + st.accent.toUpperCase() +
+             ' = TUNE_ACCENTS index ' + accentIndex(st.accent) +
+             ' (s_accent in ui.c) */');
+  lines.push('/* Icons are still fixed to LVGL\'s baked FontAwesome subset -- the');
+  lines.push('   THIN/SOLID switch above is a preview only. Swapping them for real');
+  lines.push('   needs a custom icon font via scripts/gen_lvgl_font.py --codepoints. */');
+  document.querySelector('#out code').textContent = lines.join('\n');
+}
+
+function accentIndex(hex) {
+  var deep = ['#C23B00','#B27700','#00753A','#008F83','#0F58BD','#5B3FA8','#C11579','#A61E14'];
+  var i = deep.indexOf(hex.toUpperCase());
+  return i < 0 ? '?' : (8 + i);
+}
+
+function loadMode(name) {
+  mode = name;
+  var m = MODES[name];
+  st = {
+    face: m.face, kase: m.kase, keys: m.keys, icons: m.icons,
+    track: m.track, radius: m.radius, art: m.art, bar: m.bar,
+    selw: m.selw, selh: m.selh, font: m.font, accent: m.accent,
+    ground: m[m.face].ground, ink: m[m.face].ink
+  };
+  press('s-face', st.face); press('s-case', st.kase);
+  press('s-keys', st.keys); press('s-icons', st.icons);
+  press('s-accent', st.accent, 'c');
+  paint();
+}
+
+function press(id, val, attr) {
+  var el = document.getElementById(id);
+  Array.prototype.forEach.call(el.children, function (b) {
+    var v = attr === 'c' ? b.dataset.c.toUpperCase() : b.dataset.v;
+    var t = attr === 'c' ? String(val).toUpperCase() : val;
+    b.setAttribute('aria-pressed', String(v === t));
+  });
+}
+
+function onSeg(id, fn) {
+  var el = document.getElementById(id);
+  el.addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    press(id, b.dataset.v);
+    fn(b.dataset.v);
+  });
+}
+
+onSeg('s-mode', function (v) { press('s-mode', v); loadMode(v); });
+onSeg('s-face', function (v) {
+  st.face = v;
+  st.ground = MODES[mode][v].ground;
+  st.ink    = MODES[mode][v].ink;
+  paint();
+});
+onSeg('s-screen', function (v) {
+  screen = v;
+  document.getElementById('sc-np').setAttribute('data-on', String(v === 'np'));
+  document.getElementById('sc-br').setAttribute('data-on', String(v === 'br'));
+});
+onSeg('s-case',  function (v) { st.kase = v;  paint(); });
+onSeg('s-keys',  function (v) { st.keys = v;  paint(); });
+onSeg('s-icons', function (v) { st.icons = v; paint(); });
+
+document.getElementById('s-accent').addEventListener('click', function (e) {
+  var b = e.target.closest('button');
+  if (!b) return;
+  st.accent = b.dataset.c;
+  press('s-accent', st.accent, 'c');
+  paint();
+});
+
+[['r-track','track'], ['r-radius','radius'], ['r-art','art'],
+ ['r-bar','bar'], ['r-selw','selw'], ['r-selh','selh']].forEach(function (p) {
+  document.getElementById(p[0]).addEventListener('input', function (e) {
+    st[p[1]] = parseInt(e.target.value, 10);
+    paint();
+  });
+});
+[['p-ground','ground'], ['p-ink','ink']].forEach(function (p) {
+  document.getElementById(p[0]).addEventListener('input', function (e) {
+    st[p[1]] = e.target.value;
+    MODES[mode][st.face][p[1]] = e.target.value;
+    paint();
+  });
+});
+
+document.getElementById('btn-copy').addEventListener('click', function () {
+  var btn = this, txt = document.querySelector('#out code').textContent;
+  navigator.clipboard.writeText(txt).then(function () {
+    btn.textContent = 'Copied';
+    setTimeout(function () { btn.textContent = 'Copy'; }, 1400);
+  }).catch(function () { btn.textContent = 'Select + copy'; });
+});
+
+loadMode('v2');
+</script>
