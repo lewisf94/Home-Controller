@@ -27,6 +27,13 @@ Targets:
 
 ## Steps (per target)
 
+Inside the same ESP-IDF-activated child PowerShell used for the build, run the
+source/configuration gate from the private repository root first. It must pass:
+
+```powershell
+python scripts/check_p4_reliability.py both
+```
+
 One PowerShell call, e.g. for the HA build:
 
 ```powershell
@@ -37,6 +44,17 @@ One PowerShell call, e.g. for the HA build:
 
 Then report per target: exit code, binary size, and the "x% free" partition
 headroom from the build output. Both must end EXITCODE:0.
+
+After the requested target(s) build, run the matching post-build gate (replace
+`both` with `esp-idf` or `esp-idf-ha` for a single target):
+
+```powershell
+python scripts/check_p4_reliability.py both --post-build
+```
+
+Do not report a build as verified if this gate fails, even when `idf.py build`
+itself succeeds. See `docs/P4-RELIABILITY.md` for the runtime budgets and soak
+criteria that compilation cannot prove.
 
 ## Flashing (Lewis usually does this himself)
 
