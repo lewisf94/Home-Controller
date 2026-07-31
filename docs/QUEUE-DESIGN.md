@@ -1,22 +1,25 @@
 # Queue Page Design
 
-Replace the standalone Volume page in the main stack with `QUEUE`. Volume
-remains on Now Playing, where the live fader and 5% `-` / `+` controls already
-make it a one-gesture action.
+The QUEUE page replaces the standalone Volume page in the main stack. Volume
+control stays on the Now Playing page. The live fader and the 5% `-` and `+`
+controls give one-gesture volume control there.
 
-The Queue page shows the current item followed by a compact upcoming list.
-The first implementation provides `ADD ALBUM`, `SEARCH SONGS`, and `CLEAR`.
-Play-now, play-next, remove, and drag-reorder are follow-on row actions once
-the basic Music Assistant queue service path has been hardware-verified.
+The Queue page shows the current item, then a compact list of upcoming items.
+The first version of this page gives three functions: `ADD ALBUM`,
+`SEARCH SONGS`, and `CLEAR`. Later versions can add row actions: play now,
+play next, remove, and drag to reorder. These row actions need a
+hardware-verified Music Assistant queue service first.
 
-`ADD ALBUM` opens the saved/runtime album selection in an explicit add-to-queue
-state. `SEARCH SONGS` opens the existing debounced keyboard directly and returns
-Spotify track results, so the user can queue any Spotify song.
+The `ADD ALBUM` function opens the saved and runtime album list, in an
+explicit add-to-queue mode. The `SEARCH SONGS` function opens the existing
+keyboard directly and returns Spotify track results. The user can add any
+Spotify song to the queue through this function.
 
-Browsing keeps its safe default: tapping an album plays it. The Queue page's
-`ADD ALBUM` entry is the deliberate mode switch that makes a selected album
-append to the queue instead.
+The browser keeps its default action: a tap on an album plays the album. The
+`ADD ALBUM` function on the Queue page is a separate mode. This mode changes
+the tap action: a tap on an album adds the album to the queue.
 
-Music Assistant is the primary queue backend. Spotify Connect account targets
-may support playback transfer but not queue mutation, so the UI must explain
-that distinction rather than silently dropping an add request.
+Music Assistant is the primary queue backend. A Spotify Connect account
+target may support playback transfer, but may not support a queue change.
+The interface must state this limit to the user. The interface must not
+drop an add request with no explanation.

@@ -1,5 +1,13 @@
 # Implementation Plan: Lights Fix + Four-Menu Stack + RP2040 Haptics (2026-07-05)
 
+## Status
+
+This document is a historical planning record from 2026-07-05. The project
+completed Parts 0, 1, 3, 4, and 5 as described. Part 2 described a separate Volume screen
+in the swipe stack. `docs/QUEUE-DESIGN.md` later replaced that Volume screen
+with volume control on the Now Playing page, plus a new Queue page. Read
+`docs/QUEUE-DESIGN.md` for the current navigation design.
+
 ## Overview
 
 Three coordinated work streams to complete the home-controller project:
@@ -40,7 +48,7 @@ Three coordinated work streams to complete the home-controller project:
    - Log: `ESP_LOGI(TAG, "call_service %s.%s -> %s%s", domain, service, entity_id, (service_data ? " (+data)" : ""));`
 
 2. In `handle_message()` "result" branch (~line 490), before the id-match chain:
-   - Parse success and log failures: `const char *succ = json_obj_get(msg, "success");` then check if it's "true".
+   - Parse success and log failures: `const char *succ = json_obj_get(msg, "success");` then check if the value is "true".
    - If failed, extract and log the error message from the result.
 
 **File: `waveshare/components/p4_shared/ui.c`**
@@ -65,7 +73,7 @@ Three coordinated work streams to complete the home-controller project:
    vTaskDelay(pdMS_TO_TICKS(400));  /* Matter round-trip */
    ha_request_lights();
    ```
-   (Superseded by Part 1's live subscription; drop the delay when that lands.)
+   (Part 1 replaces this with a live subscription. Remove the delay when Part 1 is in place.)
 
 2. **Commit**: `fix(waveshare-ha): add lights toggle diagnostics and command feedback`
 
@@ -135,7 +143,7 @@ Contents top→bottom:
 1. Light name + big ON/OFF toggle.
 2. BRIGHTNESS header + slider 1..100 (shown when `caps & DIM`).
 3. COLOUR header + HUE (0..359) + SAT (0..100) sliders (shown when `caps & COLOR`).
-   - Live recolour hue slider's INDICATOR+KNOB as `lv_color_hsv_to_rgb(hue, 100, 100)`.
+   - Live recolour the INDICATOR and KNOB of the hue slider as `lv_color_hsv_to_rgb(hue, 100, 100)`.
    - Show 40×40 preview swatch: `lv_color_hsv_to_rgb(hue, sat, 100)`.
 4. WARMTH header + colour-temp slider `min_ct_k..max_ct_k` (shown when `caps & CT`).
    - Recolour knob warm→cool (orange→white→pale blue).
@@ -188,7 +196,7 @@ Swipe semantics: UP (`LV_DIR_TOP`) = down stack (+1); DOWN (`LV_DIR_BOTTOM`) = u
 Today GLYPH-only. Make unconditional:
 - Remove `if (is_glyph_theme())` gates in `ui_init` and `apply_theme_cb`.
 - GLYPH keeps existing dot grid exactly.
-- Other themes: title "VOLUME" + huge % label (centred, font_lg) + vertical slider (56×280) + MUTE button.
+- Other themes: title "VOLUME" + large % label (centred, font_lg) + vertical slider (56×280) + MUTE button.
 - Slider events: `LV_EVENT_VALUE_CHANGED` updates label locally; `LV_EVENT_RELEASED` → `ui_request_volume()`.
 - Set/clear `s_vol_dragging` on PRESSED/RELEASED|PRESS_LOST (guard gestures).
 
@@ -248,7 +256,7 @@ python -m nanopb.generator.nanopb_generator proto/home_controller.proto
 ```
 Copy `home_controller.pb.c/.h` to: `proto/`, `rp2040/src/proto_gen/`, `waveshare/components/p4_shared/include/`.
 
-Verify: RP2040's `static_assert(KnobState_size + 4 <= 68)` still holds; `ToKnob_size` < 256 (if over, raise `COBS_BUF_SIZE` to 320 in both `interface_task.cpp` and `knob.c`).
+Verify: the RP2040 `static_assert(KnobState_size + 4 <= 68)` still holds; `ToKnob_size` < 256 (if over, raise `COBS_BUF_SIZE` to 320 in both `interface_task.cpp` and `knob.c`).
 
 ### RP2040 `motor_task.cpp` — haptic modes + idle lock
 
@@ -332,7 +340,7 @@ No structural change. After proto regen, add compile-time guard: `ToKnob_size + 
 **Corrections to blog:**
 1. MAX17048 address is 0x36, not 0x32 (code already correct).
 2. HX711 RATE pin must be HIGH (80 SPS) on PCB; default 10 SPS misses fast taps.
-3. MT6701 is absolute-per-revolution (14-bit), not endless; unwrap accumulator gives multi-rev continuity.
+3. MT6701 is absolute-per-revolution (14-bit), not continuous; unwrap accumulator gives multi-rev continuity.
 4. Volume steps: 1% standard, 0.5% precision (blog inconsistent).
 5. Free RP2040 GPIOs: 7, 19, 22, 28, 29 (breakout choice affects 23/24/25).
 6. Power: TMC6300 runs on 3.7V LiPo directly (SmartKnob-proven); 5V LED rail + shifter already chosen.

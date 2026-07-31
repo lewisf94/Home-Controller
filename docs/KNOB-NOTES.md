@@ -1,28 +1,32 @@
-# KNOB-NOTES — RP2040 haptic knob co-MCU reference
+# Knob Notes: RP2040 Haptic Knob Co-MCU Reference
 
-Hardware and protocol notes for the custom RP2040 daughterboard that acts as
-the SmartKnob-style haptic input device for the Waveshare ESP32-P4 build.
-Captures every finding from the implementation and the 2026-06-18 deep-research
-verification pass so the same ground doesn't need to be re-covered.
+This document records the hardware and protocol facts for the custom RP2040
+daughterboard. This board acts as the SmartKnob-style haptic input device for
+the Waveshare ESP32-P4 build. This document captures every finding from the
+implementation and from the 2026-06-18 verification pass. Read this document
+before you repeat this research.
 
 ---
 
 ## Hardware overview
 
-The RP2040 daughterboard carries:
-- **TMC6300** — 3-phase half-bridge gate driver (6 active-high PWM inputs)
-- **Gimbal motor** — driven via SimpleFOC FOC torque control
-- **MT6701QT** — 14-bit magnetic angle encoder (SSI over SPI)
-- **BF350 full Wheatstone bridge + HX711** — knob-press strain gauge
-- **4× MX hot-swap buttons** — active-low, internal pull-up
-- **SK6812 RGBW** — 12-LED ring + 4 button LEDs
-- **VEML7700** — ambient light sensor (I2C)
-- **MAX17048** — battery fuel gauge (I2C)
+The RP2040 daughterboard carries these parts:
 
-The RP2040 talks to the ESP32-P4 via a single **UART link at 921600 baud**.
-All FOC, strain-gauge, and LED logic runs entirely on the RP2040.
-The P4 sends haptic config packets; the RP2040 sends back position/button
-events.
+- TMC6300: a three-phase half-bridge gate driver, with six active-high PWM
+  inputs.
+- A gimbal motor, driven through SimpleFOC field-oriented torque control.
+- MT6701QT: a 14-bit magnetic angle encoder, read over an SSI link on SPI.
+- A BF350 full Wheatstone bridge, read through an HX711 amplifier, for the
+  knob-press strain gauge.
+- Four MX hot-swap buttons: active-low, with an internal pull-up resistor.
+- An SK6812 RGBW LED set: a 12-LED ring, plus four button LEDs.
+- VEML7700: an ambient-light sensor, on I2C.
+- MAX17048: a battery fuel gauge, on I2C.
+
+The RP2040 talks to the ESP32-P4 over one UART link, at 921600 baud. All
+motor-control, strain-gauge, and LED logic runs entirely on the RP2040. The
+P4 sends haptic configuration packets. The RP2040 sends back position and
+button events.
 
 ---
 
@@ -30,42 +34,50 @@ events.
 
 | Function | Pins | Notes |
 |---|---|---|
-| Motor U-phase PWM | GPIO0 (UH), GPIO1 (UL) | PWM slice 0 — required same-slice pairing |
+| Motor U-phase PWM | GPIO0 (UH), GPIO1 (UL) | PWM slice 0. This pair must share one slice. |
 | Motor V-phase PWM | GPIO2 (VH), GPIO3 (VL) | PWM slice 1 |
 | Motor W-phase PWM | GPIO4 (WH), GPIO5 (WL) | PWM slice 2 |
-| Motor enable | GPIO6 | Active-high digital out |
-| MT6701 SPI0 | MISO=16, SCK=18, CS=17 | SPI0 default pins; only device on this bus |
-| **UART1 to P4** | **TX=8, RX=9** | **UART1 (Serial2) — see critical note below** |
-| HX711 strain gauge | DOUT=10, CLK=11 | Bit-bang digital I/O |
-| MX buttons SW1–SW4 | GPIO12, 13, 14, 15 | INPUT_PULLUP, active-low |
+| Motor enable | GPIO6 | Active-high digital output |
+| MT6701 SPI0 | MISO=16, SCK=18, CS=17 | SPI0 default pins. This is the only device on this bus. |
+| UART1 to P4 | TX=8, RX=9 | UART1 (Serial2). See the critical note below. |
+| HX711 strain gauge | DOUT=10, CLK=11 | Bit-banged digital I/O |
+| MX buttons SW1-SW4 | GPIO12, 13, 14, 15 | INPUT_PULLUP, active-low |
 | SK6812 ring | GPIO20 | 12 LEDs, NEO_GRBW |
 | SK6812 buttons | GPIO21 | 4 LEDs, NEO_GRBW |
-| I2C1 (VEML7700 + MAX17048) | SDA=26, SCL=27 | Wire1 / I2C1 |
+| I2C1 (VEML7700 and MAX17048) | SDA=26, SCL=27 | Wire1 / I2C1 |
 
-### CRITICAL: why UART1 (GPIO8/9), not UART0 (GPIO0/1)
+### Critical: why UART1 (GPIO8/9), not UART0 (GPIO0/1)
 
-GPIO0/1 are the RP2040's UART0 default pins AND the motor U-phase PWM
-(slice 0, channels A/B). A GPIO cannot simultaneously be PWM output and UART
-TX/RX — assigning both would lose either motor phase U or the UART link.
+GPIO0 and GPIO1 are the default UART0 pins on the RP2040. These same two pins
+are also the motor U-phase PWM pins, on slice 0, channels A and B. A GPIO pin
+cannot act as a PWM output and a UART TX or RX pin at the same time. An
+assignment of both roles to these pins would remove either the U motor phase
+or the UART link.
 
-Motor pins are constrained by the **PWM slice-pairing requirement**: SimpleFOC's
-BLDCDriver6PWM needs each phase's high/low pair on the same RP2040 PWM slice
-(they share a counter, minimising dead-time skew). Valid pairs are GPIO_n and
-GPIO_n+1 where n is even: 0/1=slice0, 2/3=slice1, 4/5=slice2. Moving the motor
-would break this pairing, so the UART moves instead.
+A PWM slice-pairing rule constrains the motor pins. The SimpleFOC
+`BLDCDriver6PWM` class needs the high and low pins of each phase on the same
+RP2040 PWM slice. This pairing keeps the high and low pins on one shared
+counter. This sharing reduces the switching-timing skew between them. A
+valid pair is GPIO_n and GPIO_n+1, where n is an even number: 0/1 is slice 0,
+2/3 is slice 1, and 4/5 is slice 2. A change to the motor pins would remove
+this pairing, so the design moves the UART pins instead.
 
-UART1 in arduino-pico maps TX to {4, 8, 20, 24} and RX to {5, 9, 21, 25}.
-GPIO8/9 is the only free UART1 pair (4/5 = motor, 20/21 = LEDs).
-In arduino-pico, UART1 = `Serial2`; configure with `Serial2.setTX(8)` /
-`Serial2.setRX(9)` before `Serial2.begin(921600)`.
+The `arduino-pico` core maps UART1 TX to GPIO 4, 8, 20, or 24, and UART1 RX
+to GPIO 5, 9, 21, or 25. GPIO8 and GPIO9 form the only free UART1 pair, since
+GPIO4/5 serve the motor and GPIO20/21 serve the LEDs. In `arduino-pico`,
+UART1 is `Serial2`. Configure this UART with `Serial2.setTX(8)` and
+`Serial2.setRX(9)`, before the call to `Serial2.begin(921600)`.
 
-### RP2040 UART baud rate accuracy at 921600
+### RP2040 UART baud-rate accuracy at 921600 baud
 
-The RP2040 UART uses a 16× oversampled fractional divider.
-At 125 MHz system clock: divider = 125 000 000 / (16 × 921 600) ≈ 8.43.
-Integer part = 8, fractional = round(0.43 × 64) = 28 (6-bit).
-This gives ~920 635 baud (≈ 0.1% error) — well within the ±2% tolerance.
-921 600 baud is reliable on RP2040. Confirmed working in community reports.
+The RP2040 UART uses a fractional divider, oversampled at a rate of 16. At a
+125 MHz system clock, the divider value is 125 000 000 divided by
+(16 x 921 600), which equals about 8.43. The integer part of this value is 8.
+The fractional part, on a 6-bit scale, is the rounded value of 0.43 x 64,
+which equals 28. This division gives an actual baud rate near 920 635, an
+error of about 0.1%, well inside the plus-or-minus 2% tolerance for this
+protocol. A rate of 921 600 baud is reliable on the RP2040. Community reports
+confirm this reliability.
 
 ---
 
@@ -73,142 +85,203 @@ This gives ~920 635 baud (≈ 0.1% error) — well within the ±2% tolerance.
 
 | Function | GPIO | J3 header position | Notes |
 |---|---|---|---|
-| UART1 TX → knob | 32 | Pin 31 (right side) | Confirmed on schematic |
-| UART1 RX ← knob | 46 | Bottom-right cluster | Confirmed; 33 is NOT on J3 |
+| UART1 TX to knob | 32 | Pin 31 (right side) | Confirmed on the schematic |
+| UART1 RX from knob | 46 | Bottom-right cluster | Confirmed; GPIO33 is not present on J3 |
 
-### ESP32-P4 GPIO capabilities (no input-only pins)
+### ESP32-P4 GPIO capabilities: no input-only pins
 
-Unlike the classic ESP32 (where GPIO34–39 were input-only), **all ESP32-P4 GPIOs
-are full bidirectional**. The ESP32-P4 has no hardware input-only restrictions.
-GPIO34–38 are strapping pins (sampled only at boot; normal GPIO afterwards).
+The classic ESP32 reserves GPIO34 through GPIO39 as input-only pins. The
+ESP32-P4 has no such restriction: every ESP32-P4 GPIO pin supports both
+input and output. GPIO34 through GPIO38 are strapping pins. The chip samples
+each strapping pin only at boot time, and each pin acts as a normal GPIO pin
+afterward.
 
-UART1 TX/RX can be routed to any normal GPIO via the GPIO matrix using
+The UART1 TX and RX signals can route to any normal GPIO pin, through the
+GPIO matrix, with a call to
 `uart_set_pin(UART_NUM_1, tx_gpio, rx_gpio, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)`.
-GPIO32 and GPIO46 are both clear of:
-- SDIO (C6 link): GPIO14–19
-- Strapping: GPIO34–38
-- USB-JTAG: GPIO24–25
-- BSP (I2C 7/8, I2S 9–13, amp 53, LCD 26/27, touch-rst 23, SD 39–44)
+GPIO32 and GPIO46 avoid every one of these reserved ranges:
 
-**Beep-test GPIO46 before soldering** — it sits at the edge of the readable
-schematic region (bottom-right of J3). GPIO47 or 48 are equivalent drop-ins if
-46 is not accessible.
+- SDIO, for the C6 WiFi link: GPIO14 through GPIO19.
+- Strapping pins: GPIO34 through GPIO38.
+- USB-JTAG: GPIO24 and GPIO25.
+- Board-support pins: I2C on GPIO7 and GPIO8. I2S on GPIO9 through GPIO13.
+  The amplifier on GPIO53. The LCD on GPIO26 and GPIO27. The touch-reset pin
+  on GPIO23. The SD card on GPIO39 through GPIO44.
+
+Test GPIO46 with a continuity check before soldering. This pin sits at the
+edge of a hard-to-read region of the schematic, in the bottom-right area of
+the J3 header. GPIO47 and GPIO48 are equivalent alternatives, if GPIO46 is
+not reachable.
 
 ---
 
-## SimpleFOC on RP2040 — verified behaviour
+## SimpleFOC on the RP2040: verified behaviour
 
-- **`BLDCDriver6PWM` is the correct class** for the TMC6300. There is no
-  `TMC6300Driver6PWM` class in SimpleFOC (confirmed: zero occurrences in
-  SimpleFOC source). The TMC6300 is a standalone gate driver driven by 6
-  independent active-high logic inputs; SimpleFOC's generic `BLDCDriver6PWM`
-  handles it correctly.
-- **Constructor argument order:** `BLDCDriver6PWM(Ah, Al, Bh, Bl, Ch, Cl, enable)` —
-  per-phase interleaved, which is what the code uses.
-- **PWM polarity:** The TMC6300's INxH / INxL inputs are both active-high.
-  SimpleFOC's default (no `SIMPLEFOC_PWM_HIGHSIDE_ACTIVE_HIGH` / `_LOWSIDE_ACTIVE_HIGH`
-  build flags) assumes active-high for both sides — this matches the TMC6300.
-  No polarity flags are needed.
-- **FOC loop frequency:** 5 kHz is achievable on RP2040 core 1 with a magnetic
-  encoder. This is the target for `motor_task_loop()`.
-- **`__not_in_flash_func`**: Correct pico-sdk macro to run code from RAM. Marked
-  on `_compute_torque` and `motor_task_loop` to avoid XIP cache-miss jitter when
-  core 0 does SPI / I2C / Serial operations. Any flash write from core 0 (e.g.
-  EEPROM/LittleFS) pauses core 1 XIP entirely — treat as guaranteed motor freeze.
-- **Known RP2040 SimpleFOC quirks** (does not affect this design):
-  - I2S conflicts with SimpleFOC 6PWM on RP2040 (Feb 2025 issue) — not relevant,
-    no I2S on the RP2040 daughterboard.
-  - MT6701 cannot share an SPI bus with other devices (SimpleFOC drivers README) —
-    not relevant, MT6701 is the sole device on SPI0.
+- `BLDCDriver6PWM` is the correct SimpleFOC class for the TMC6300. SimpleFOC
+  has no separate `TMC6300Driver6PWM` class; a search of the SimpleFOC source
+  code confirms zero matches for that name. The TMC6300 is a standalone gate
+  driver, controlled by six independent active-high logic inputs. The generic
+  `BLDCDriver6PWM` class controls this driver correctly.
+- Constructor argument order:
+  `BLDCDriver6PWM(Ah, Al, Bh, Bl, Ch, Cl, enable)`, with the high and low
+  argument of each phase next to each other. The firmware code uses this
+  order.
+- PWM polarity: the `INxH` and `INxL` inputs of the TMC6300 are both active-high.
+  The SimpleFOC default configuration, with neither the
+  `SIMPLEFOC_PWM_HIGHSIDE_ACTIVE_HIGH` nor the `_LOWSIDE_ACTIVE_HIGH` build
+  flag set, assumes an active-high signal on both sides. This default matches
+  the TMC6300, so the firmware sets no polarity flag.
+- FOC loop frequency: a 5 kHz loop is achievable on RP2040 core 1, with this
+  magnetic encoder. This rate is the target for `motor_task_loop()`.
+- `__not_in_flash_func`: this is the correct Pico SDK macro for code that
+  must run from RAM. The firmware marks `_compute_torque` and
+  `motor_task_loop` with this macro, to avoid a cache-miss delay when core 0
+  runs an SPI, I2C, or Serial operation. A flash write from core 0, for
+  example an EEPROM or LittleFS write, pauses the flash-execute access of
+  core 1 completely. Treat this pause as a certain, momentary halt of the
+  motor control loop.
+- Known RP2040 SimpleFOC issues, neither of which affects this design:
+  - An I2S and SimpleFOC six-PWM conflict, reported in February 2025. This
+    issue does not apply, since the RP2040 daughterboard has no I2S use.
+  - A SimpleFOC drivers document states that the MT6701 cannot share an SPI
+    bus with another device. This limit does not apply here, since the
+    MT6701 is the only device on SPI0.
 
 ---
 
 ## MT6701QT magnetic encoder (SSI)
 
-- **Use `MagneticSensorMT6701SSI`** from the SimpleFOC Drivers library
-  (`Arduino-FOC-drivers` git dependency). Do NOT use the generic
-  `MagneticSensorSPI(cs, 14, 0x3FFF)` — that uses the AS5048 register-read
-  convention and mangles the MT6701's 25-bit SSI frame (1 bit ignored +
-  14 angle + 4 status + 6 CRC).
-- **SPI mode:** SPI_MODE2 (CPOL=1, CPHA=0): clock idles high, data sampled on
-  falling edge. The library sets this automatically.
-- **Clock:** Default 1 MHz; maximum 8 MHz. 1 MHz is sufficient for a 5 kHz FOC
-  loop (a single 25-bit read at 1 MHz takes ≈ 25 µs; well under the 200 µs
-  FOC period).
-- **Init API:** `s_sensor.init(&SPI)` — pass the SPIClass pointer. Call after
-  `SPI.setRX/setSCK/begin()`. No delay needed after `SPI.begin()`.
-- **Output:** `s_sensor.getAngle()` returns radians in [0, 2π].
-- **MT6701QT vs MT6701:** Functionally identical for SSI operation. QT = QFN
-  package variant. Same frame format, same SPI mode, same library.
-- **Frame format (24 bits):** bits 23–10 = 14-bit angle, bits 9–6 = 4-bit status,
-  bits 5–0 = 6-bit CRC (poly X^6+X+1). The SimpleFOC library extracts the angle
-  bits and **does not validate the CRC** (common simplification). For a haptic
-  knob, an occasional corrupted reading is corrected by the next FOC cycle — this
-  is acceptable.
+- Use the `MagneticSensorMT6701SSI` class from the SimpleFOC Drivers library
+  (the `Arduino-FOC-drivers` git dependency). Do not use the generic
+  `MagneticSensorSPI(cs, 14, 0x3FFF)` class. That generic class uses the
+  AS5048 register-read convention. This convention corrupts the 25-bit SSI
+  frame of the MT6701 (one ignored bit, 14 angle bits, 4 status bits, and 6
+  CRC bits).
+- SPI mode: SPI_MODE2, with CPOL=1 and CPHA=0. In this mode, the clock line
+  idles high, and the device samples data on the falling edge. The library
+  sets this mode automatically.
+- Clock rate: the default rate is 1 MHz, and the maximum rate is 8 MHz. A
+  rate of 1 MHz is sufficient for a 5 kHz FOC loop. One 25-bit read at 1 MHz
+  takes about 25 microseconds, well under the 200-microsecond FOC period.
+- Init API: call `s_sensor.init(&SPI)`, and pass the `SPIClass` pointer. Make
+  this call after `SPI.setRX()`, `SPI.setSCK()`, and `SPI.begin()`. No delay
+  is needed after `SPI.begin()`.
+- Output: `s_sensor.getAngle()` returns an angle in radians, in the range
+  zero to two-pi.
+- MT6701QT compared to MT6701: the two parts are functionally identical for
+  SSI operation. QT marks the QFN package variant. Both parts use the same
+  frame format, the same SPI mode, and the same library.
+- Frame format, 24 bits total: bits 23 through 10 hold the 14-bit angle, bits
+  9 through 6 hold a 4-bit status field, and bits 5 through 0 hold a 6-bit
+  CRC value (polynomial X^6+X+1). The SimpleFOC library extracts the angle
+  bits, and does not check the CRC value. This omission is a common
+  simplification. For a haptic knob, the next FOC cycle corrects an
+  occasional bad reading, so this omission is acceptable.
+
+---
+
+## VEML7700 ambient-light sensor
+
+- The daughterboard reads this sensor through the Adafruit VEML7700 library,
+  on I2C1 (SDA=26, SCL=27, `Wire1` on the RP2040). The RP2040 firmware calls
+  `s_veml.begin(&Wire1)` during setup.
+- I2C address: 0x10. This address is the Adafruit library default, and the
+  fixed address for this part from the datasheet.
+- Poll rate: the RP2040 reads a new lux value every 2000 ms
+  (`LUX_POLL_MS`), through a call to `s_veml.readLux()`. The firmware sends
+  this value to the P4, in the `ambient_lux` field of `KnobState` (protobuf
+  tag 6).
+- Brightness mapping on the P4: the function in `knob_input.c` maps 0 lux to
+  10% panel brightness, and maps 1000 lux to 100% panel brightness. This
+  function clamps the result at 100%.
+- Update gate: a `KnobState` message arrives from the RP2040 about every
+  5 ms during a knob scroll, but the lux value inside each message changes
+  only every 2000 ms. The P4 writes a new brightness value only when the
+  mapped percentage moves by 3 percentage points or more. This gate avoids
+  hundreds of redundant PWM writes during a single scroll.
+- Open item: this lux-derived brightness value, and the existing idle
+  auto-dim feature, both drive the panel duty cycle today, with no
+  coordination between the two. A future change should make the idle
+  auto-dim feature scale this lux-derived base value. This change would
+  replace the current state, where each feature owns the duty cycle on its
+  own.
 
 ---
 
 ## UART protocol
 
-**Transport:** UART1 @ 921600 baud, 8N1, no flow control.
-**Framing:** nanopb protobuf → 4-byte CRC32 appended → COBS encoded → 0x00
-frame delimiter.
+Transport: UART1 at 921600 baud, 8 data bits, no parity, 1 stop bit, and no
+flow control.
+
+Framing: the firmware encodes a nanopb protobuf message, appends a 4-byte
+CRC32 value, applies COBS encoding, then appends a `0x00` frame delimiter.
 
 ### CRC32
 
-Both sides produce standard IEEE 802.3 / zlib CRC32 (check value `0xCBF43926`
-for "123456789"). **They agree** — verified:
+Both sides produce the standard IEEE 802.3 and zlib CRC32 value. Both sides
+produce the check value `0xCBF43926` for the input string "123456789". The
+two implementations agree, and this document verifies that agreement:
 
 | Side | Implementation |
 |---|---|
-| ESP32-P4 | `esp_rom_crc32_le(0, data, len)` — ROM function; internally inverts seed on entry and result on exit, equivalent to standard zlib with initial seed 0xFFFFFFFF and final XOR 0xFFFFFFFF |
-| RP2040 | Software bit-reversal, poly 0xEDB88320 (reflected), seed 0xFFFFFFFF, final `~crc` |
+| ESP32-P4 | `esp_rom_crc32_le(0, data, len)`, an ESP-IDF ROM function. This function inverts the seed value on entry, and inverts the result value on exit. This behaviour equals the standard zlib algorithm, with an initial seed of 0xFFFFFFFF and a final XOR of 0xFFFFFFFF. |
+| RP2040 | A software implementation, with bit-reversal, the reflected polynomial 0xEDB88320, a seed of 0xFFFFFFFF, and a final `~crc` step. |
 
-Do NOT call `esp_rom_crc32_le(0xFFFFFFFF, ...) ^ 0xFFFFFFFF` — that double-inverts
-and produces a different result, silently dropping every packet.
+Do not call `esp_rom_crc32_le(0xFFFFFFFF, ...) ^ 0xFFFFFFFF`. This call
+applies the seed inversion twice, and produces an incorrect result. This
+error drops every packet, with no error message.
 
 ### COBS
 
-Standard Consistent Overhead Byte Stuffing. The encode/decode implementations
-are verified correct including the 254-byte full-run edge case (code=0xFF segment).
-The encode function returns the **total length including the 0x00 delimiter**
-(callers pass the full length to `write()`/`uart_write_bytes()`).
+The firmware uses standard Consistent Overhead Byte Stuffing. The encode and
+decode functions are verified correct, including the 254-byte full-run edge
+case (a segment with code value 0xFF). The encode function returns the total
+length, including the `0x00` delimiter byte. Each caller passes this full
+length to `write()` or to `uart_write_bytes()`.
 
 ### nanopb
 
-Version 0.4.9.1 vendored:
-- `rp2040/lib/nanopb/` — PlatformIO library
-- `waveshare/esp-idf/components/nanopb/` — ESP-IDF local component (name `nanopb`)
+The firmware vendors nanopb version 0.4.9.1, in two locations:
 
-The `nanopb/nanopb` package does **not** exist on the ESP component registry.
-No registry dependency — both projects use the vendored runtime.
+- `rp2040/lib/nanopb/`: the PlatformIO library copy.
+- `waveshare/esp-idf/components/nanopb/`: the ESP-IDF local component copy,
+  named `nanopb`.
 
-Generated files (`home_controller.pb.h/.c`) committed at
-`proto/home_controller.pb.h`, copied to `rp2040/src/proto_gen/` and
-`waveshare/esp-idf/main/`. Do not regenerate unless the `.proto` schema changes.
+The `nanopb/nanopb` package does not exist on the ESP component registry.
+Neither project depends on that registry entry; both projects use the
+vendored copy of the runtime.
 
-### Retry and ACK
+The firmware commits the generated files, `home_controller.pb.h` and
+`home_controller.pb.c`, at `proto/home_controller.pb.h`. Build scripts copy
+these files to `rp2040/src/proto_gen/` and to `waveshare/esp-idf/main/`. Do
+not regenerate these files unless the `.proto` schema changes.
 
-P4 stores the last sent `ToKnob` and retransmits every 250 ms via
-`xTimerCreate("knob_retry", ...)` until the RP2040 echoes the nonce in a
-`FromKnob.ack` field. Cleared in the RX task once the matching nonce is received.
+### Retry and acknowledgment
+
+The P4 stores the last `ToKnob` message it sent, and retransmits this
+message every 250 ms, through a timer created with `xTimerCreate("knob_retry",
+...)`. The P4 continues this retry until the RP2040 echoes the matching nonce
+in a `FromKnob.ack` field. The receive task clears the retry once it reads
+the matching nonce.
 
 ---
 
 ## Dual-core init order (RP2040)
 
-`setup()` and `setup1()` run **concurrently** on RP2040 (core 0 and core 1).
-The cross-core critical section must be initialised before either core uses it.
+The `setup()` function, on core 0, and the `setup1()` function, on core 1,
+run at the same time. The code must initialize the cross-core critical
+section before either core uses that section.
 
 ```
-core 0 setup():   motor_shared_init()  → critical_section_init() + s_cs_ready=true
+core 0 setup():   motor_shared_init()  -> critical_section_init() + s_cs_ready=true
                   interface_task_init()
-core 1 setup1():  motor_task_init()    → runs FOC, uses the lock (safe: ready-flag guards it)
+core 1 setup1():  motor_task_init()    -> runs FOC, uses the lock (safe: ready-flag guards it)
 ```
 
-`motor_shared_init()` MUST be called from core-0 `setup()` FIRST.
-All `critical_section_enter_blocking()` calls are guarded by `s_cs_ready` so
-core 1's FOC loop sees a harmless no-op if it races ahead before the lock is ready.
+The code must call `motor_shared_init()` from the core-0 `setup()` function
+first. Each call to `critical_section_enter_blocking()` checks the
+`s_cs_ready` flag first. This check makes each such call a safe no-op, if the
+FOC loop on core 1 starts before the lock is ready.
 
 ---
 
@@ -216,231 +289,284 @@ core 1's FOC loop sees a harmless no-op if it races ahead before the lock is rea
 
 | File | Purpose |
 |---|---|
-| `proto/home_controller.proto` | Schema (KnobConfig / KnobState / ToKnob / FromKnob) |
-| `proto/home_controller.pb.h/.c` | Pre-generated nanopb output |
-| `rp2040/platformio.ini` | RP2040 PlatformIO project |
-| `rp2040/src/main.cpp` | Dual-core entry point |
-| `rp2040/src/motor_task.h/.cpp` | FOC loop, detent physics (Apache 2.0 + SmartKnob attribution) |
-| `rp2040/src/interface_task.h/.cpp` | UART protocol, sensors, LEDs (core 0) |
-| `rp2040/src/proto_gen/` | Copy of generated .pb files |
-| `rp2040/lib/nanopb/` | Vendored nanopb 0.4.9.1 runtime |
-| `waveshare/components/p4_shared/knob.c` (+ `include/knob.h`) | P4-side UART driver, both builds (Apache 2.0 + SmartKnob attribution) |
-| `waveshare/components/p4_shared/knob_input.c` (+ `include/knob_input.h`) | Context-aware input mapper, both builds |
-| `waveshare/components/p4_shared/home_controller.pb.c` (+ `include/home_controller.pb.h`) | Copy of generated .pb files |
-| `waveshare/esp-idf/components/nanopb/` | Vendored nanopb 0.4.9.1 for ESP-IDF (shared into the HA build via EXTRA_COMPONENT_DIRS) |
-| `NOTICE` | Apache 2.0 req 4(d) attribution (SmartKnob, SimpleFOC, nanopb) |
+| `proto/home_controller.proto` | The schema for `KnobConfig`, `KnobState`, `ToKnob`, and `FromKnob`. |
+| `proto/home_controller.pb.h/.c` | The pre-generated nanopb output. |
+| `rp2040/platformio.ini` | The RP2040 PlatformIO project file. |
+| `rp2040/src/main.cpp` | The dual-core entry point. |
+| `rp2040/src/motor_task.h/.cpp` | The FOC loop and the detent physics (Apache 2.0, with SmartKnob attribution). |
+| `rp2040/src/interface_task.h/.cpp` | The UART protocol, the sensor reads, and the LED control, on core 0. |
+| `rp2040/src/proto_gen/` | A copy of the generated `.pb` files. |
+| `rp2040/lib/nanopb/` | The vendored nanopb 0.4.9.1 runtime. |
+| `waveshare/components/p4_shared/knob.c` (with `include/knob.h`) | The P4-side UART driver, used by both builds (Apache 2.0, with SmartKnob attribution). |
+| `waveshare/components/p4_shared/knob_input.c` (with `include/knob_input.h`) | The context-aware input mapper, used by both builds. |
+| `waveshare/components/p4_shared/home_controller.pb.c` (with `include/home_controller.pb.h`) | A copy of the generated `.pb` files. |
+| `waveshare/esp-idf/components/nanopb/` | The vendored nanopb 0.4.9.1 runtime for ESP-IDF, shared into the HA build through `EXTRA_COMPONENT_DIRS`. |
+| `NOTICE` | The Apache 2.0 section 4(d) attribution, for SmartKnob, SimpleFOC, and nanopb. |
 
-(The knob files moved from `waveshare/esp-idf/main/` into the shared
-`p4_shared` component -- one copy now serves both the direct-Spotify and HA
-builds.)
+The knob source files moved from `waveshare/esp-idf/main/` into the shared
+`p4_shared` component. One copy of these files now serves both the direct
+Spotify build and the Home Assistant build.
 
-### `KNOB_ENABLED` compile flag
+### The `KNOB_ENABLED` compile flag
 
-Both builds' `main.c` gate `knob_input_start()` behind `#if KNOB_ENABLED`
-(default 0). Since 2026-07-14 the flag is plumbed through each build's
-`main/CMakeLists.txt`, so it works from the command line without editing code:
+The `main.c` file of each build places the call to `knob_input_start()`
+behind an `#if KNOB_ENABLED` guard. The default value is 0. Since 2026-07-14,
+the `main/CMakeLists.txt` file of each build forwards this flag, so a
+command-line build can set the flag with no source change:
 
 ```
-idf.py build -DKNOB_ENABLED=1    # knob on
-idf.py build -DKNOB_ENABLED=0    # knob off again -- the value is STICKY in the
-                                 # CMake cache; omitting the flag keeps the
-                                 # previous value, so turn it off explicitly
+idf.py build -DKNOB_ENABLED=1    # turn the knob support on
+idf.py build -DKNOB_ENABLED=0    # turn the knob support off again
 ```
 
-Default off = the UART is never configured and no GPIO is touched; P4 builds
-without the knob hardware are completely unaffected.
+The CMake cache stores this flag value. A build that omits the flag keeps
+the previous value. Set the flag explicitly to turn knob support off.
+
+When this flag is 0, the firmware never configures the UART, and never
+touches a knob-related GPIO pin. A P4 build with no knob hardware attached
+runs correctly, with no change in behaviour, when this flag is 0.
 
 ---
 
-## Pre-flight code review (2026-07-05, before the PCB arrives) — BOTH FIXED
+## Pre-flight code review, 2026-07-05: two findings, both fixed
 
-Read-only review of `rp2040/src/{main,motor_task,interface_task}.cpp`,
-`waveshare/components/p4_shared/{knob.c,knob_input.c}`, and
-`proto/home_controller.proto`. Two real findings, both fixed the same day
-(untested on real hardware -- there is no PCB yet -- but P4-side changes
-build-verified clean on both waveshare targets; the RP2040 fix could not be
-compile-checked, no PlatformIO in this environment -- read it carefully on
-the first build).
+This review covers `rp2040/src/main.cpp`, `rp2040/src/motor_task.cpp`,
+`rp2040/src/interface_task.cpp`, `waveshare/components/p4_shared/knob.c`,
+`waveshare/components/p4_shared/knob_input.c`, and
+`proto/home_controller.proto`. The review is a read-only review, since no
+circuit board existed yet at this date. The review found two real issues,
+and the project fixed both issues on the same day. Neither fix has a
+hardware test yet, since no circuit board existed. The P4-side changes are
+build-verified on both Waveshare targets. A PlatformIO toolchain was not
+available in the environment that produced the RP2040 fix, so that fix has
+no compile check yet. Review the RP2040 fix with care at the first real
+build.
 
-### 1. `_compute_torque()` does not handle the encoder's angle wrap (significant) -- FIXED
+### Finding 1: no angle-unwrap handling in `_compute_torque()` (significant), fixed
 
-`MagneticSensorMT6701SSI::getAngle()` returns radians in **[0, 2π)** — it wraps
-every physical revolution. `motor_task.cpp`'s `_compute_torque()` computes
-`raw = (current_angle - s_angle_reference) / position_width_radians` directly,
-with no unwrap/accumulation between calls. The moment `current_angle` crosses
-the 2π boundary relative to `s_angle_reference`, the computed delta jumps by
-∓2π instead of the true small step — a sudden torque discontinuity (a kick or
-a snap to the wrong detent).
+The function `MagneticSensorMT6701SSI::getAngle()` returns an angle in
+radians, in the range zero up to (but not including) two-pi. This value
+wraps at each physical revolution. The function `_compute_torque()`, in
+`motor_task.cpp`, computed
+`raw = (current_angle - s_angle_reference) / position_width_radians`
+directly, with no unwrap or accumulation step between calls. At the moment
+`current_angle` crosses the two-pi boundary relative to `s_angle_reference`,
+the computed delta jumps. This delta jumps by plus or minus two-pi, instead
+of the true small step. This jump is a sudden torque discontinuity: a kick,
+or a snap to the wrong detent.
 
-**How exposed each menu is** (`knob_input.c`'s `_send_*_config` functions):
-- **MENU_VOLUME** (`_send_volume_config`, 3.6°/detent × 0-100) — **guaranteed to
-  wrap**: the full 0→100 range is exactly 360° (2π), and volume is anchored
-  ONCE on menu activation (`_activate_menu`), never re-anchored per detent. A
-  normal 0-to-100 turn crosses the wrap.
-- **MENU_NOW_PLAYING** (`_send_now_playing_config`, 5°/detent, up to `duration_ms
-  / 500` detents) — wraps for any track longer than ~2 minutes (`72°×that many
-  detents`), same no-per-detent-reanchor issue as Volume.
-- **MENU_ALBUMS** (`_send_albums_config`, 10°/detent) — partially mitigated:
-  `_on_state()` DOES call `_send_albums_config(pos)` after every detent, which
-  re-anchors `s_angle_reference` on the RP2040 once the round-trip lands. But
-  the local FOC loop runs at 5 kHz while the re-anchor requires a full UART
-  round-trip (P4 processes KnobState -> sends KnobConfig -> RP2040 decodes +
-  applies on its next tick), so a fast multi-detent flick can still outrun the
-  re-anchor and cross the wrap before it catches up — this project's whole
-  browser is tuned for fast flick-scrolling, so this isn't a hypothetical.
+Exposure by menu, from the `_send_*_config` functions in `knob_input.c`:
 
-**Fix applied** in `rp2040/src/motor_task.cpp`: `motor_task_loop()` now
-accumulates a persistent `s_unwrapped_angle` every tick (`_wrap_delta()` wraps
-only the ONE-TICK change, which is always tiny relative to 2π, so that step is
-unambiguous even though the absolute angle isn't). `s_angle_reference` and
-`_compute_torque()`'s parameter (renamed `unwrapped_angle` for clarity) both
-now operate on this continuous basis instead of a raw `getAngle()` reading, so
-all three menus are fixed at once, independent of re-anchor frequency. Uses a
-local `KNOB_PI` constant rather than `M_PI` (not proven available on this
-toolchain — nothing else in the RP2040 codebase used it, and PlatformIO isn't
-installed in the environment this fix was written in, so it couldn't be
-compile-checked to confirm). **First-flash check:** turn the Volume knob
-through a full 0->100 sweep (guaranteed to cross the old wrap point) and
-confirm no torque kick/glitch partway through.
+- MENU_VOLUME (`_send_volume_config`, at 3.6 degrees per detent, over a
+  range of 0 to 100): this menu always wraps. The full 0-to-100 range equals
+  exactly 360 degrees, or two-pi. The volume anchor is set once, at menu
+  activation, in `_activate_menu()`, and the code never re-anchors this
+  value per detent. A normal turn from 0 to 100 crosses the wrap point.
+- MENU_NOW_PLAYING (`_send_now_playing_config`, at 5 degrees per detent, for
+  up to `duration_ms / 500` detents): this menu wraps for any track longer
+  than about two minutes (72 degrees times that many detents), for the same
+  reason as MENU_VOLUME: no per-detent re-anchor.
+- MENU_ALBUMS (`_send_albums_config`, at 10 degrees per detent): this menu
+  is partly protected. The function `_on_state()` calls
+  `_send_albums_config(pos)` after every detent, and this call re-anchors
+  `s_angle_reference` on the RP2040, once the round trip completes. The
+  local FOC loop runs at 5 kHz, while a re-anchor needs a full UART round
+  trip: the P4 processes a `KnobState` message, sends a `KnobConfig`
+  message, and the RP2040 decodes and applies that message on its next
+  tick. A fast multi-detent turn can outrun this re-anchor, and cross the
+  wrap point before the re-anchor catches up. The browser design of this
+  project favours fast scrolling by flick. Treat this case as a real,
+  expected case, not a rare edge case.
 
-### 2. Albums/Now-Playing anchor to position 0 on activation, not the live value (moderate) -- FIXED
+Fix applied, in `rp2040/src/motor_task.cpp`: the function `motor_task_loop()`
+now keeps a persistent value, `s_unwrapped_angle`, and updates this value on
+every tick. The function `_wrap_delta()` wraps only the change within one
+tick. This one-tick change stays small relative to two-pi, so each step
+stays unambiguous, even though the absolute angle is not. Both
+`s_angle_reference` and the parameter of `_compute_torque()`, renamed to
+`unwrapped_angle` for clarity, now use this continuous value, in place of a
+raw `getAngle()` reading. This single change fixes all three menus, with no
+dependency on re-anchor frequency. The fix defines a local constant,
+`KNOB_PI`, in place of `M_PI`. The RP2040 codebase had no prior use of
+`M_PI`. The availability of this constant on this toolchain was not
+confirmed, since a PlatformIO toolchain was not available when the fix was
+written.
 
-`_activate_menu()` correctly anchors **MENU_VOLUME** to the live device volume
-(`ui_get_volume()`) so the first detent doesn't snap playback to a wrong
-value — the comment there explains why. **MENU_ALBUMS** and
-**MENU_NOW_PLAYING** don't get the same treatment: both call their config
-builder with a hardcoded `0` regardless of which album is actually centred or
-how far into the track playback actually is.
+First-flash check: turn the volume knob through a full 0-to-100 sweep. This
+sweep is certain to cross the old wrap point. Confirm no torque kick or
+glitch during the sweep.
 
-The delta-based scroll (`ui_scroll_browser(delta)`) itself isn't affected —
-increments are relative, so scrolling still moves the right direction. What
-breaks is the **endstop feel**: the RP2040 believes position 0 is wherever the
-menu was activated, so turning backward from (say) album 40 of 56 hits a
-phantom endstop after ~0 detents instead of the 40 albums actually behind it,
-while turning forward feels like it has 55 detents of headroom even if the
-browser is already near the end of the list. Same issue for Now-Playing scrub
-relative to actual playback position.
+### Finding 2: Albums and Now-Playing menus anchor to position zero on activation, not to the live value (moderate), fixed
 
-**Fix applied**: `_activate_menu()` in `knob_input.c` now anchors
-MENU_NOW_PLAYING to `ui_get_progress_ms() / SCRUB_STEP_MS` (that getter already
-existed, just wasn't called here) and MENU_ALBUMS to a new
-`ui_get_centered_album_index()` (added to the `ui_*` seam in `ui.c`/`ui.h`,
-mirroring `ui_get_volume()`'s lock-and-read pattern exactly). Both fall back to
-a sensible default (0) if read before the first poll/browser build, same as
-Volume's existing `-1` fallback. Build-verified on both waveshare targets.
+The function `_activate_menu()` correctly anchors MENU_VOLUME to the live
+device volume, read through `ui_get_volume()`. This anchor stops the first
+detent from snapping playback to an incorrect value. A comment at that call
+explains the reason. MENU_ALBUMS and MENU_NOW_PLAYING did not receive the
+same treatment. The config-builder call of each menu used a fixed value of
+0. This fixed value ignored which album was centred, and ignored how far
+into the track playback had reached.
 
-### Minor / low-priority observations (updated 2026-07-14)
+The delta-based scroll function, `ui_scroll_browser(delta)`, is not affected
+by this issue, since its steps are relative: scrolling still moves in the
+correct direction. The issue affects the endstop feel instead: the RP2040
+treats position 0 as the point where the menu was activated. Consider a
+turn backward from album 40 of 56. This turn reaches a false endstop after
+about 0 detents, instead of after the 40 albums that are actually behind the
+current position. A turn forward, in the same case, feels like it has 55
+detents of range remaining. This false feeling occurs even when the browser
+is already near the end of the list. The Now-Playing menu has the same
+issue, relative to the actual playback position.
 
-- **`ToKnob` compile-time size guard -- RESOLVED as impossible, documented
-  instead.** nanopb cannot emit `ToKnob_size` because the LED bytes fields are
-  `pb_callback_t` (unbounded); the pb.h says so explicitly. `_send_packet()` in
-  `knob.c` now carries a worst-case-by-hand bound comment (~140 B vs the 256 B
-  buffer) and `pb_encode()` still fails cleanly with a log if a schema change
-  ever outgrows it.
-- **Unacked-config diagnostic -- DONE.** `knob.c`'s retry timer now warns after
-  ~2 s of no ack ("knob not acking (nonce N, M retries) -- link down or
-  unplugged?") and then every ~30 s, so a dead/miswired link is visible on the
-  bench instead of silently retrying forever.
-- **`ToKnob.request_state` is defined in the proto but never sent or handled.**
-  Not a bug (the RP2040 already pushes state proactively every `STATE_TX_MS` or
-  on change), just unused schema surface — fine to leave for a future "force an
-  immediate state push" need.
+Fix applied: the function `_activate_menu()`, in `knob_input.c`, now anchors
+MENU_NOW_PLAYING to the value `ui_get_progress_ms() / SCRUB_STEP_MS`. That
+getter function already existed; the fix only adds the call at this point.
+The fix anchors MENU_ALBUMS to a new function,
+`ui_get_centered_album_index()`, added to the `ui_*` interface in `ui.c` and
+`ui.h`. This function matches the lock-and-read pattern of
+`ui_get_volume()` exactly. Both menus fall back to a default value of 0, if
+a read happens before the first poll or browser build. This fallback
+matches the existing -1 fallback for Volume. This fix is build-verified on
+both Waveshare targets.
+
+### Minor observations, updated 2026-07-14
+
+- `ToKnob` compile-time size guard: resolved as not possible, and documented
+  instead. nanopb cannot compute a `ToKnob_size` constant, since the LED
+  byte fields use `pb_callback_t`, an unbounded type; the generated `pb.h`
+  file states this limit directly. The function `_send_packet()`, in
+  `knob.c`, now carries a hand-computed worst-case comment (about 140 bytes,
+  against a 256-byte buffer). The function `pb_encode()` still fails with a
+  clear log message, if a future schema change exceeds this bound.
+- Unacked-configuration diagnostic: complete. The retry timer in `knob.c`
+  now logs a warning after about 2 seconds with no acknowledgment: "knob not
+  acking (nonce N, M retries) - link down or unplugged?" This warning then
+  repeats about every 30 seconds. This warning makes a disconnected or
+  miswired link visible on the test bench, in place of an unexplained retry
+  loop.
+- The field `ToKnob.request_state` exists in the proto schema, but no code
+  sends or handles this field yet. This gap is not a bug: the RP2040 already
+  sends its state on its own, every `STATE_TX_MS` interval, or on a change.
+  This field is unused schema surface, kept in reserve for a future "request
+  an immediate state push" need.
 
 ---
 
-## Pre-hardware setup pass (2026-07-14) — everything verifiable without the PCB is verified
+## Pre-hardware setup pass, 2026-07-14: every check possible without the board is complete
 
-Done in preparation for wiring the daughterboard. All build-verified; nothing
-here has touched real knob hardware yet.
+This section records preparation work for wiring the daughterboard. Every
+item below is build-verified. No item below has run against real knob
+hardware yet.
 
-- **RP2040 firmware compiled for the FIRST time** (`pio run`, PlatformIO at
-  `~/.platformio`): **SUCCESS — RAM 4.6% (12,048 B), Flash 4.6% (95,776 B)**,
-  `rp2040/.pio/build/rp2040/firmware.uf2` produced. This retires the standing
-  "RP2040 code has never been compile-checked" risk (angle-unwrap fix, KNOB_PI,
-  the static_assert — all confirmed compiling).
-  - `platformio.ini` had two dead registry pins that failed dependency
-    resolution; fixed: `Adafruit VEML7700 Lib` -> `Adafruit VEML7700 Library`,
-    `Adafruit MAX1704X @ ^1.2.2` (version never existed) -> `@ ^1.0.3`.
-- **HA build had a knob compile bug waiting to fire**: `main.c` called
-  `knob_input_init()` — the function is `knob_input_start()`. Fixed; the HA
-  hardcoded `#define KNOB_ENABLED 0` is now `#ifndef`-guarded like the direct
-  build.
-- **`idf.py build -DKNOB_ENABLED=1` now actually works**: previously the README
-  documented the flag but neither build's CMake forwarded it to the compiler
-  (so it silently did nothing). Both `main/CMakeLists.txt` now translate the
-  cache flag into a compile definition. Remember it is sticky — flip back with
-  `-DKNOB_ENABLED=0`.
-- **Both P4 targets build green with `KNOB_ENABLED=1`** (direct 28% free, HA
-  25% free) and were then restored to the deployable `=0` state.
-- **Bench diagnostic added**: P4 logs "knob not acking ... link down or
-  unplugged?" after ~2 s of unacked config (then every ~30 s) — the first
-  hookup failure mode is a miswired UART, and it used to be silent.
+- The RP2040 firmware compiled for the first time, with `pio run`, through a
+  PlatformIO installation at `~/.platformio`. The build succeeded: RAM use
+  was 4.6% (12,048 bytes), and flash use was 4.6% (95,776 bytes). This build
+  produced `rp2040/.pio/build/rp2040/firmware.uf2`. This result closes the
+  standing risk that the RP2040 code had never passed a compile check: the
+  angle-unwrap fix, the `KNOB_PI` constant, and the `static_assert` line all
+  compile correctly.
+  - The file `platformio.ini` named two library versions that failed
+    dependency resolution. The fix changed `Adafruit VEML7700 Lib` to
+    `Adafruit VEML7700 Library`, and changed `Adafruit MAX1704X @ ^1.2.2`,
+    a version that never existed, to `@ ^1.0.3`.
+- The HA build carried a knob compile fault that had not yet triggered:
+  `main.c` called a function named `knob_input_init()`, while the actual
+  function name is `knob_input_start()`. This fix corrects the call, and
+  changes the fixed `#define KNOB_ENABLED 0` line of the HA build to an
+  `#ifndef` guard, matching the direct build.
+- The build flag `idf.py build -DKNOB_ENABLED=1` now works correctly. Before
+  this fix, the README described this flag. The CMake configuration of
+  neither build forwarded the flag to the compiler, so the flag had no
+  effect. The `main/CMakeLists.txt` file of each build now translates this
+  cache flag into a compile definition. This flag value is sticky in the
+  CMake cache; set `-DKNOB_ENABLED=0` explicitly to turn the flag off again.
+- Both P4 build targets build correctly with `KNOB_ENABLED=1` set: 28% free
+  space on the direct build, and 25% free space on the HA build. Each build
+  then returned to the deployable state, with the flag set to 0.
+- A bench diagnostic addition: the P4 now logs "knob not acking ... link
+  down or unplugged?" after about 2 seconds with no acknowledgment on a
+  configuration send, then repeats the log every 30 seconds. A miswired
+  UART connection is the most likely first hookup fault, and this log makes
+  that fault visible, in place of no message at all.
 
-### Component-list cross-check (against Lewis's build list, 2026-07-14)
+### Component-list cross-check, against Lewis's build list, 2026-07-14
 
-Everything in the list matches the firmware, with these notes:
+Every item in the build list matches the firmware, with these notes:
 
 | Item | Firmware status |
 |---|---|
-| **MAX17048 "Address 0x32"** | **LIST ERROR — the MAX17048 I2C address is 0x36** (datasheet fixed address; the Adafruit lib default the firmware uses). Nothing to change in code; correct the list before it feeds PCB/debug assumptions. |
-| VEML7700 0x10 | Matches (Adafruit default, Wire1 on RP2040 SDA=26/SCL=27). Drives P4 auto-brightness — implemented. |
-| TMC6300 6PWM (+3.3 uH VM inductor) | Matches `BLDCDriver6PWM` GPIO0–5 + EN 6, active-high (no polarity flags needed). Inductor is hardware-only. |
-| SparkFun gimbal motor (not arrived) | Firmware assumes `MOTOR_POLE_PAIRS 7` (typical 12N14P gimbal) — confirm on arrival. Motor/driver absence does NOT block a UART/buttons/strain bench test (FOC alignment fails gracefully; core 0 runs regardless). |
-| MT6701 SSI + diametric magnet | Matches `MagneticSensorMT6701SSI`, sole device on SPI0 (MISO16/SCK18/CS17). Diametric magnet required — correct. |
-| BF350 + HX711 | Matches DOUT=10/CLK=11; `HX711_PRESS_THRESHOLD 5000` is a placeholder to calibrate. **PCB note: tie the HX711 RATE pin HIGH (80 SPS)** — at the default 10 SPS a quick tap can be missed entirely and long-press timing gets +-100 ms jitter. |
-| 4x MX switches, hot-swap | Matches GPIO12–15, INPUT_PULLUP, active-low. Debounce deliberately deferred to hardware (tune to the real switches). |
-| SK6812 ring + button LEDs, level shifters | Matches GPIO20 (12 ring) / GPIO21 (4 buttons), GRBW. Level shifters are PCB-stage; firmware indifferent. |
-| LiPo 3.7 V | TMC6300 VM range is 2–11 V — running the motor straight off the cell is the SmartKnob-proven arrangement. |
-| MAX17048 not yet ordered | Fine: with the chip absent, `begin()` fails and battery reads garbage/0 — it only goes to a debug log today. No blocker. |
-| IMU / hall-effect "maybe add" | Not in firmware. Free RP2040 GPIOs for them: 7, 19, 22, 28, 29; an IMU can share I2C1 (0x68/0x69 — no clash with 0x10/0x36). Proto is append-only extensible. |
-| ESP32-H2 + Pi (Thread border router), USB-TTL for the C6 | External to this firmware; matches the HA plan. |
+| MAX17048, listed address 0x32 | List error. The correct MAX17048 I2C address is 0x36, a fixed address from the datasheet, and the default address in the Adafruit library the firmware uses. No code change is needed; correct the build list before this error affects a PCB design or a debug assumption. |
+| VEML7700, address 0x10 | Matches the Adafruit default, on Wire1 (RP2040 SDA=26, SCL=27). This sensor drives the P4's automatic brightness feature, already implemented. |
+| TMC6300 six-PWM driver, with a 3.3-microhenry VM inductor | Matches `BLDCDriver6PWM` on GPIO0 through GPIO5, with enable on GPIO6, active-high, with no polarity flag needed. The inductor is a hardware-only part. |
+| SparkFun gimbal motor, not yet arrived | The firmware assumes `MOTOR_POLE_PAIRS 7` (a typical value for a 12N14P gimbal motor); confirm this value once the motor arrives. The absence of the motor or the driver does not block a bench test of the UART, the buttons, and the strain gauge: FOC alignment fails gracefully, and core 0 runs regardless. |
+| MT6701 SSI encoder, with a diametric magnet | Matches `MagneticSensorMT6701SSI`, the sole device on SPI0 (MISO on GPIO16, SCK on GPIO18, CS on GPIO17). The diametric magnet type is the correct type. |
+| BF350 bridge, with an HX711 amplifier | Matches DOUT on GPIO10, CLK on GPIO11. The value `HX711_PRESS_THRESHOLD 5000` is a placeholder, pending calibration. PCB note: tie the HX711 RATE pin HIGH, for an 80-samples-per-second rate. At the default rate of 10 samples per second, a quick tap can go undetected, and long-press timing gains plus or minus 100 ms of jitter. |
+| Four MX switches, hot-swap type | Matches GPIO12 through GPIO15, with INPUT_PULLUP set, active-low. The design defers debounce to the hardware stage, for tuning against the real switches. |
+| SK6812 ring and button LEDs, with level shifters | Matches GPIO20 (12 ring LEDs) and GPIO21 (4 button LEDs), in GRBW order. Level shifters are a PCB-stage concern; the firmware does not depend on them. |
+| A 3.7 V LiPo cell | The TMC6300's VM input range is 2 V to 11 V. Running the motor directly from the cell is the same arrangement SmartKnob uses. |
+| MAX17048, not yet ordered | This is not a blocker. With the chip absent, `begin()` fails, and the battery reading stays at zero or an invalid value. This failure reaches only a debug log today. |
+| An IMU or a hall-effect sensor, listed as a possible addition | Neither part is in the firmware yet. Free RP2040 GPIO pins for such a part: 7, 19, 22, 28, and 29. An IMU could share I2C1, at address 0x68 or 0x69, with no conflict against the existing 0x10 and 0x36 addresses. The proto schema is append-only, so it supports this addition later. |
+| An ESP32-H2 and a Raspberry Pi, as a Thread border router, plus a USB-to-TTL adapter for the C6 | These parts sit outside this firmware's scope; they match the Home Assistant plan. |
 
-### Wiring the UART link (the one cross-connection to get right)
+### Wiring the UART link: the one cross-connection to get right
 
-| P4 (J3 header) | direction | RP2040 |
+| P4 (J3 header) | Direction | RP2040 |
 |---|---|---|
-| GPIO32 = UART1 TX (J3 pin 31) | -> | GPIO9 = UART1 RX |
-| GPIO46 = UART1 RX (bottom-right J3 cluster) | <- | GPIO8 = UART1 TX |
-| GND | <-> | GND (common ground, required) |
+| GPIO32 = UART1 TX (J3 pin 31) | to | GPIO9 = UART1 RX |
+| GPIO46 = UART1 RX (bottom-right J3 cluster) | from | GPIO8 = UART1 TX |
+| GND | both directions | GND (a common ground connection is required) |
 
-Both sides are 3.3 V logic — no level shifting on the UART. **Beep-test GPIO46
-on J3 before soldering** (edge of the readable schematic region; GPIO47/48 are
-drop-in alternatives if 46 turns out inaccessible — change `KNOB_UART_RX_PIN`
-in `p4_shared/include/knob.h`).
+Both sides use 3.3 V logic levels, so the UART link needs no level shifter.
+Test GPIO46 on J3 with a continuity check before soldering. This pin sits at
+the edge of a hard-to-read region of the schematic. GPIO47 and GPIO48 are
+drop-in alternatives, if GPIO46 turns out to be unreachable; change the
+value of `KNOB_UART_RX_PIN`, in `p4_shared/include/knob.h`, to switch pins.
 
-### Bring-up order (first flash)
+### Bring-up order, for the first flash
 
-1. Flash the RP2040 alone over USB (`pio run -t upload`, or copy
-   `rp2040/.pio/build/rp2040/firmware.uf2` onto the BOOTSEL drive). It runs
-   standalone — no P4 needed.
-2. Wire the UART (table above) + common GND. Power the RP2040.
-3. Build + flash the P4 with the knob on:
-   `idf.py build -DKNOB_ENABLED=1` then `idf.py -p COM4 flash monitor`.
-4. In the monitor expect `knob: knob UART init OK (tx=32 rx=46 baud=921600)`,
-   then NO "knob not acking" warnings — acks flowing = link proven. If the
-   warning appears, swap TX/RX first (the classic).
-5. MX buttons: press SW1–SW4 -> `knob_input: active menu -> N` lines.
-6. Strain press -> play/pause toggles. Calibrate `HX711_PRESS_THRESHOLD`.
-7. Motor (once TMC6300 + gimbal arrive): confirm pole pairs vs
-   `MOTOR_POLE_PAIRS 7`; turn the knob -> carousel scrolls with detents;
-   full 0->100 volume sweep with no torque kick (validates the angle-unwrap
-   fix at its guaranteed-wrap point).
-8. Ambient lux changes panel brightness; battery % appears in the debug log
-   (once the MAX17048 is fitted).
+1. Flash the RP2040 alone, over USB, with `pio run -t upload`, or by copying
+   `rp2040/.pio/build/rp2040/firmware.uf2` onto the BOOTSEL drive. The
+   RP2040 runs on its own at this step; the P4 is not needed yet.
+2. Wire the UART connection, from the table above, plus the common ground
+   connection. Power on the RP2040.
+3. Build and flash the P4, with the knob support turned on:
+   `idf.py build -DKNOB_ENABLED=1`, then `idf.py -p COM4 flash monitor`.
+4. In the serial monitor, expect the line
+   `knob: knob UART init OK (tx=32 rx=46 baud=921600)`, then expect no "knob
+   not acking" warnings. A steady flow of acknowledgments proves the link
+   works. If the warning appears, swap the TX and RX wires first; this
+   swap is the most common wiring fault.
+5. Press each MX button, SW1 through SW4, and expect a
+   `knob_input: active menu -> N` line for each press.
+6. Press the strain sensor, and expect a play or pause toggle. Calibrate the
+   value `HX711_PRESS_THRESHOLD` against this test.
+7. Once the TMC6300 and the gimbal motor arrive, test the motor: confirm the
+   pole-pair count against `MOTOR_POLE_PAIRS 7`. Turn the knob, and expect
+   the browser to scroll with detents. Run a full 0-to-100 volume sweep, and
+   expect no torque kick; this test validates the angle-unwrap fix at its
+   guaranteed wrap point.
+8. Confirm that a change in ambient light changes the panel brightness.
+   Confirm that a battery percentage value appears in the debug log, once
+   the MAX17048 chip is fitted.
 
-### Input conditioning to tune on hardware (needs real sensor/switch noise)
+### Input conditioning to tune once the hardware exists
 
-These two are deliberately left raw until the board exists, because the right
-thresholds depend on the actual strain bridge gain and switch bounce profile:
+These two items stay untuned until the board exists. The correct threshold
+values depend on the real strain-bridge gain and the real switch bounce
+profile:
 
-- **HX711 press hysteresis.** `interface_task.cpp` currently fires a press on a
-  single `raw > HX711_PRESS_THRESHOLD` crossing. Strain readings are noisy near
-  the threshold, so add a Schmitt trigger (separate press/release thresholds,
-  e.g. release at ~70% of press) once you can scope the resting vs. pressed raw
-  values. Without it, hovering at the threshold emits repeated `press_nonce`
-  increments → phantom play/pause spam.
-- **MX button debounce.** `_send_state()` reads raw `digitalRead()` at the 5 ms
-  TX cadence; mechanical bounce on an edge can toggle `button_mask` several
-  times → multiple menu activations from one press. Add a few-ms stable-state
-  debounce per button (the CYD's `mcp_input` consume-on-read latch is the
-  reference pattern). Tune the window to the actual switches.
+- HX711 press hysteresis. The file `interface_task.cpp` currently signals a
+  press on a single crossing of `raw > HX711_PRESS_THRESHOLD`. A strain
+  reading is noisy near this threshold, so add a Schmitt-trigger pattern: a
+  separate release threshold, for example at about 70% of the press
+  threshold, once the resting and pressed raw values are known from a real
+  test. Without this change, a reading that hovers near the threshold
+  produces repeated `press_nonce` increments, and each increment triggers an
+  unwanted play or pause toggle.
+- MX button debounce. The function `_send_state()` reads a raw
+  `digitalRead()` value at each 5 ms transmission interval. A mechanical
+  bounce at a button edge can toggle the `button_mask` value several times.
+  Each toggle can trigger a separate menu activation from one physical
+  press. Add a stable-state debounce of a few milliseconds, per button. The
+  `mcp_input` consume-on-read latch of the CYD build is the reference
+  pattern for this kind of debounce. Tune the debounce window against the
+  real switches.

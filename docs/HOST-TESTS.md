@@ -1,22 +1,23 @@
 # Host Test Coverage
 
-The repository has a host-runnable regression suite for logic that does not
-need an ESP32, RP2040, display, Spotify account, or Home Assistant instance.
-It uses Python's standard `unittest` runner and small native-C harnesses with
-fake ESP-IDF services.
+The repository has a host-runnable regression suite. This suite tests logic
+that needs no ESP32, RP2040, display, Spotify account, or Home Assistant
+instance. The suite uses the standard Python `unittest` runner. The suite
+also uses small native-C test programs with fake ESP-IDF services.
 
 ## Run the suite
 
-From the repository root:
+Run these two commands from the repository root:
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 python scripts/check_p4_reliability.py both
 ```
 
-Pillow is the only test dependency. Native-C cases run when `cc`, `gcc`, or
-`clang` is available; otherwise those cases are reported as skipped. GitHub
-Actions runs them on Ubuntu, where a compiler is preinstalled.
+Pillow is the only test dependency. A native-C test case runs when `cc`,
+`gcc`, or `clang` is present. When none of these compilers is present, the
+suite reports the native-C cases as skipped. GitHub Actions runs the suite on
+Ubuntu, where a compiler is present.
 
 ## Coverage map
 
@@ -35,11 +36,12 @@ Actions runs them on Ubuntu, where a compiler is preinstalled.
 
 ## Test design rules
 
-- Host tests never contain or load private credentials.
-- Native harnesses fake ESP-IDF APIs but compile the real production `.c`
-  implementation into the test executable.
-- Hardware behaviour is not simulated when a simulation would give false
-  confidence; those gaps remain explicit in the table above.
-- The existing ESP-IDF workflow remains the compile/link gate for the lead P4
-  firmware. The host-test workflow is complementary and runs on every push and
-  pull request.
+- A host test never contains or loads a private credential.
+- A native test harness fakes each ESP-IDF API. Each native test harness
+  compiles the real production `.c` implementation into the test executable.
+- The suite does not simulate hardware behaviour when a simulation would
+  give a false confidence level. Each such gap stays explicit, in the table
+  above.
+- The existing ESP-IDF workflow stays the compile and link gate for the lead
+  P4 firmware. The host-test workflow adds coverage to that gate. The
+  host-test workflow runs on each push and on each pull request.
