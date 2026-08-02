@@ -197,7 +197,7 @@
 #define TUNE_FOCUS_DIM HC_TUNE5(140)
 #endif
 #ifndef TUNE_CF_SCALE
-#define TUNE_CF_SCALE HC_TUNE5(333)
+#define TUNE_CF_SCALE HC_TUNE5(130)
 #endif
 #ifndef TUNE_CF_MAX_SIDE
 #define TUNE_CF_MAX_SIDE HC_TUNE5(3)
@@ -1382,6 +1382,13 @@ static lv_obj_t *s_sndset_btns[SND_SET_OPTS] = {0};
 static lv_obj_t *s_sndset_lbls[SND_SET_OPTS] = {0};
 static int       s_sndset_opt_count          = 0;
 
+/* Output switching is exclusive by default. SEPARATE preserves playback on
+ * the old output when the user selects another output. */
+enum { OUTPUT_SWITCH_TRANSFER = 0, OUTPUT_SWITCH_SEPARATE, OUTPUT_SWITCH_COUNT };
+static uint8_t   s_output_switch = OUTPUT_SWITCH_TRANSFER;
+static lv_obj_t *s_output_switch_btns[OUTPUT_SWITCH_COUNT] = {0};
+static lv_obj_t *s_output_switch_lbls[OUTPUT_SWITCH_COUNT] = {0};
+
 /* Live FPS counter updated every 1 s while visible. */
 static lv_obj_t  *s_fps_label      = NULL;
 static lv_obj_t  *s_fps_toggle_btn = NULL;
@@ -1444,6 +1451,7 @@ static lv_obj_t       *s_cf_img = NULL;
 #define NVS_KEY_SOUND         "ui_sound"
 #define NVS_KEY_VOLUME        "ui_vol"
 #define NVS_KEY_SOUND_SET     "ui_sndset"
+#define NVS_KEY_OUTPUT_SWITCH "output_switch"
 /* This blob holds each DEVELOPER shape override. The blob contains the full
  * [mode][control] grid and each of its set-flags. A new control therefore
  * needs no new NVS key. The blob has a version number. A layout change
@@ -1525,6 +1533,9 @@ static void on_settings_tab(lv_event_t *e);
 static void refresh_settings_tabs(void);
 static void on_sound_set_option(lv_event_t *e);
 static void refresh_sound_set_selection(void);
+static void on_output_switch_option(lv_event_t *e);
+static void refresh_output_switch_selection(void);
+static void save_output_switch(uint8_t v);
 /* SETUP tab (runtime credentials) */
 static void refresh_setup_fields(void);
 static void on_setup_field_tap(lv_event_t *e);
@@ -2789,6 +2800,9 @@ static void np_build_title_artist(void)
      * fixed duration (ms), not lv_anim_speed() -- that caps at ~10.23 s. */
     lv_obj_set_style_anim_duration(s_np_title, dv(DV_MARQUEE_MS), LV_PART_MAIN);
     apply_title_text_style(s_np_title);
+    /* Song titles stay centred in every theme. Browser album titles keep the
+     * developer alignment control because they belong to a separate view. */
+    lv_obj_set_style_text_align(s_np_title, LV_TEXT_ALIGN_CENTER, 0);
     set_title_text(s_np_title, "Nothing playing");
 
     s_np_artist = lv_label_create(s_screen_np);
@@ -3007,6 +3021,7 @@ static void np_build_volume_fader(void)
      * reflects the active device's level; the command fires on release (one per
      * drag, not per pixel) with the HUD giving live feedback during the drag. */
     int fx = dv(DV_FADER_X);
+    int label_y = 40;
     lv_obj_t *vol_ico = lv_label_create(s_screen_np);
     s_vol_hud = vol_ico;
     lv_obj_set_style_text_color(vol_ico, lv_color_hex(s_th->text2), 0);
@@ -3027,6 +3042,7 @@ static void np_build_volume_fader(void)
      * was raised to keep the knob's ~26px overhang clear of the label at
      * 100% volume -- see the TUNE_FADER_Y comment for the exact numbers. */
     if (is_paper_theme()) {
+        label_y = TUNE_LEVEL_Y;
         lv_obj_add_flag(vol_ico, LV_OBJ_FLAG_HIDDEN);
         lv_obj_t *lvl = paper_field_label(s_screen_np, "VOLUME", 0, TUNE_LEVEL_Y);
         /* Pin to one line as a guard against a future width/font change
@@ -3046,13 +3062,21 @@ static void np_build_volume_fader(void)
 
     vol_hud_show(s_track.volume_pct, false);
 
+    /* Keep the knob clear of the label for every theme. The knob extends past
+     * the top of the track by half its width plus the slider padding. */
+    int fader_y = dv(DV_FADER_Y);
+    int knob_overhang = FADER_W / 2 + 4;
+    int min_fader_y = label_y + lv_font_get_line_height(font_sm())
+                      + knob_overhang + 8;
+    if (fader_y < min_fader_y) fader_y = min_fader_y;
+
     s_np_volume = lv_slider_create(s_screen_np);
     /* Position + height are per-mode (ui_tune.h). The square PIXEL/PAPER knob
      * overhangs the track ends by ~26px, so PAPER uses a shorter, lower-
      * started track to clear the LEVEL label above and the printed rule
      * below (see the TUNE_FADER_Y comment in ui_tune.h). */
     lv_obj_set_size(s_np_volume, FADER_W, dv(DV_FADER_H));
-    lv_obj_set_pos(s_np_volume, dv(DV_FADER_X), dv(DV_FADER_Y));
+    lv_obj_set_pos(s_np_volume, dv(DV_FADER_X), fader_y);
     lv_slider_set_range(s_np_volume, 0, 100);
     lv_slider_set_value(s_np_volume, 50, LV_ANIM_OFF);
     {
@@ -3090,7 +3114,7 @@ static void np_build_volume_fader(void)
      * direction matches the fader travel. Geometry tracks the fader tune. */
     int bw = 52, bh = 52;
     int bx = fx + FADER_W + 12;
-    int fy = dv(DV_FADER_Y);
+    int fy = fader_y;
     int fh = dv(DV_FADER_H);
     struct { const char *sym; lv_event_cb_t cb; int y; } vb[] = {
         { LV_SYMBOL_PLUS,  on_vol_plus,  fy },
@@ -3549,7 +3573,10 @@ static void cf_prep_card(cf_card_t *c, int32_t card_cx, float dist_norm,
     /* Live COVERFLOW SCALE knob, stored x100. CF_COL_MAX bounds the column
      * tables, so the drawn width is clamped to it -- a larger scale must not
      * overrun the internal-SRAM scratch. */
-    float cf_scale = (float)dv(DV_CF_SCALE) / 100.0f;
+    int32_t cf_scale_pct = dv(DV_CF_SCALE);
+    if (cf_scale_pct < 80) cf_scale_pct = 80;
+    if (cf_scale_pct > 130) cf_scale_pct = 130;
+    float cf_scale = (float)cf_scale_pct / 100.0f;
     int   base_w = (int)((float)ALBUM_THUMB_W * cf_scale);
     int   base_h = (int)((float)ALBUM_THUMB_H * cf_scale);
     if (base_w > CF_COL_MAX) base_w = CF_COL_MAX;
@@ -5033,6 +5060,37 @@ static void settings_build_sound_page(lv_obj_t *pg_snd)
         s_sndset_btns[i] = btn;
         s_sndset_lbls[i] = lbl;
     }
+
+#if P4_HAS_HA_LIGHTS
+    settings_header(pg_snd, "OUTPUT SWITCHING", 24, 334);
+    static const char *const names[OUTPUT_SWITCH_COUNT] = {
+        "TRANSFER", "SEPARATE",
+    };
+    for (int i = 0; i < OUTPUT_SWITCH_COUNT; i++) {
+        lv_obj_t *btn = lv_button_create(pg_snd);
+        lv_obj_set_size(btn, 256, 48);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, i == 0 ? -132 : 132, 366);
+        style_key_btn(btn);
+        style_button_press(btn);
+        lv_obj_add_event_cb(btn, on_output_switch_option, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, names[i]);
+        lv_obj_set_style_text_font(lbl, font_md(), 0);
+        lv_obj_center(lbl);
+        s_output_switch_btns[i] = btn;
+        s_output_switch_lbls[i] = lbl;
+    }
+    lv_obj_t *note = lv_label_create(pg_snd);
+    lv_label_set_text(note,
+        "TRANSFER stops the old output and continues on the new output.\n"
+        "SEPARATE lets both outputs play independently.");
+    lv_obj_set_width(note, 520);
+    lv_obj_set_style_text_color(note, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(note, font_sm(), 0);
+    lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(note, LV_ALIGN_TOP_MID, 0, 424);
+#endif
 }
 
 /* ── SETUP tab: runtime credential entry ─────────────────────────────────────
@@ -5742,6 +5800,7 @@ static void build_settings_screen(void)
     refresh_fps_selection();
     refresh_sound_selection();
     refresh_sound_set_selection();
+    refresh_output_switch_selection();
     build_stack_rail(s_screen_settings, MAIN_PAGE_SETTINGS);
 }
 
@@ -6699,6 +6758,7 @@ static void apply_theme_cb(void *unused)
     s_br_index_lbl = NULL;   /* the builders recreate them when PAPER is on  */
 
     lv_obj_t *old_queue = s_screen_queue;
+    bool was_queue = (active == old_queue);
     s_screen_queue = NULL;
 
     /* Free the theme-look thumbnail pools; build_browser_screen() reallocates
@@ -6706,6 +6766,39 @@ static void apply_theme_cb(void *unused)
     if (s_pix_thumbs)   { heap_caps_free(s_pix_thumbs);   s_pix_thumbs = NULL; }
     if (s_paper_thumbs) { heap_caps_free(s_paper_thumbs); s_paper_thumbs = NULL; }
     if (s_glyph_thumbs) { heap_caps_free(s_glyph_thumbs); s_glyph_thumbs = NULL; }
+
+    /* Delete each inactive old screen before the replacement screens are
+     * allocated. Keep only the active screen until its replacement is ready.
+     * This reduces the internal-memory peak during a theme or font change. */
+    lv_indev_reset(NULL, NULL);
+    if (old_browser && old_browser != active) {
+        lv_obj_delete(old_browser);
+        old_browser = NULL;
+    }
+    if (old_np && old_np != active) {
+        lv_obj_delete(old_np);
+        old_np = NULL;
+    }
+    if (old_settings && old_settings != active) {
+        lv_obj_delete(old_settings);
+        old_settings = NULL;
+    }
+    if (old_devices && old_devices != active) {
+        lv_obj_delete(old_devices);
+        old_devices = NULL;
+    }
+    if (old_album_add && old_album_add != active) {
+        lv_obj_delete(old_album_add);
+        old_album_add = NULL;
+    }
+    if (old_lights && old_lights != active) {
+        lv_obj_delete(old_lights);
+        old_lights = NULL;
+    }
+    if (old_queue && old_queue != active) {
+        lv_obj_delete(old_queue);
+        old_queue = NULL;
+    }
 
     build_browser_screen();
     build_np_screen();
@@ -6825,7 +6918,6 @@ static void apply_theme_cb(void *unused)
     }
     /* Activate the equivalent new screen first -- the active screen can't be
      * deleted -- then drop the old ones. */
-    bool was_queue = (active == old_queue);
     lv_screen_load(was_np ? s_screen_np :
                    was_setting ? s_screen_settings :
                    was_devices ? s_screen_devices :
@@ -6838,9 +6930,9 @@ static void apply_theme_cb(void *unused)
      * settings screen the user is still touching) leaves the indev pointing at
      * a freed object -> use-after-free crash. */
     lv_indev_reset(NULL, NULL);
-    lv_obj_delete(old_browser);
-    lv_obj_delete(old_np);
-    lv_obj_delete(old_settings);
+    if (old_browser) lv_obj_delete(old_browser);
+    if (old_np) lv_obj_delete(old_np);
+    if (old_settings) lv_obj_delete(old_settings);
     if (old_devices) lv_obj_delete(old_devices);
     if (old_album_add) lv_obj_delete(old_album_add);
     if (old_lights)  lv_obj_delete(old_lights);
@@ -6936,6 +7028,10 @@ static void load_settings(void)
     uint8_t ss = 0;        /* 0 = AUTO, else named-set index + 1 */
     if (nvs_get_u8(h, NVS_KEY_SOUND_SET, &ss) == ESP_OK)
         audio_set_set(ss == 0 ? -1 : (int)ss - 1);
+    uint8_t output_switch = OUTPUT_SWITCH_TRANSFER;
+    if (nvs_get_u8(h, NVS_KEY_OUTPUT_SWITCH, &output_switch) == ESP_OK &&
+        output_switch < OUTPUT_SWITCH_COUNT)
+        s_output_switch = output_switch;
     nvs_close(h);
     apply_audio_theme();   /* AUTO target follows the restored MODE */
 }
@@ -6988,6 +7084,7 @@ static void save_hifi_font(uint8_t v)              { nvs_save_u8(NVS_KEY_HIFI_FO
 static void save_fps(uint8_t v)                    { nvs_save_u8(NVS_KEY_FPS, v); }
 static void save_sound(uint8_t v)                  { nvs_save_u8(NVS_KEY_SOUND, v); }
 static void save_volume(uint8_t v)                 { nvs_save_u8(NVS_KEY_VOLUME, v); }
+static void save_output_switch(uint8_t v)          { nvs_save_u8(NVS_KEY_OUTPUT_SWITCH, v); }
 
 /* Map the active visual MODE to a UI-sound palette so the sounds match the look:
  * PIXEL -> chiptune squares, GLYPH -> ambient, PAPER -> typewriter clicks, the
@@ -7060,10 +7157,15 @@ void ui_init(lv_image_dsc_t *art_dsc)
 
 void ui_set_track_info(const spotify_track_t *info)
 {
+    int64_t diag_started_us = esp_timer_get_time();
     if (bsp_display_lock(1000) != ESP_OK) {
-        ESP_LOGW(TAG, "ui_set_track_info: display lock timeout, skipping");
+        ESP_LOGW(TAG, "ui_set_track_info: display lock timeout after %lld ms, skipping",
+                 (esp_timer_get_time() - diag_started_us) / 1000);
         return;
     }
+    int64_t diag_locked_us = esp_timer_get_time();
+    bool diag_track_changed = false;
+    bool diag_browser_changed = false;
     if (!info) {
         /* No active playback (HTTP 204) or transient error -- stop the
          * progress simulation but keep the last track title/artist visible
@@ -7072,6 +7174,7 @@ void ui_set_track_info(const spotify_track_t *info)
         s_track.is_playing = false;
     } else {
         bool same_track = (strncmp(info->title, s_track.title, sizeof s_track.title) == 0);
+        diag_track_changed = !same_track;
         uint32_t keep_progress = info->progress_ms;
         bool keep_play_state = false;
         if (s_seek_guard_until && same_track) {
@@ -7124,6 +7227,7 @@ void ui_set_track_info(const spotify_track_t *info)
                 }
             }
             if (new_idx != s_playing_card_idx) {
+                diag_browser_changed = true;
                 int old_idx = s_playing_card_idx;
                 s_playing_card_idx = new_idx;
                 if (s_card_pool) {
@@ -7168,15 +7272,28 @@ void ui_set_track_info(const spotify_track_t *info)
         vol_hud_show(info->volume_pct, false);
     }
     bsp_display_unlock();
+    int64_t diag_finished_us = esp_timer_get_time();
+    int64_t diag_total_us = diag_finished_us - diag_started_us;
+    if (diag_track_changed || diag_total_us >= 20000) {
+        ESP_LOGI(TAG,
+                 "diag_ui_meta changed=%d browser_changed=%d lock_ms=%lld apply_ms=%lld total_ms=%lld",
+                 diag_track_changed ? 1 : 0, diag_browser_changed ? 1 : 0,
+                 (diag_locked_us - diag_started_us) / 1000,
+                 (diag_finished_us - diag_locked_us) / 1000,
+                 diag_total_us / 1000);
+    }
 }
 
 void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
 {
     if (!s_art_dsc || !rgb_data || w == 0 || h == 0) return;
+    int64_t diag_started_us = esp_timer_get_time();
     if (bsp_display_lock(1000) != ESP_OK) {
-        ESP_LOGW(TAG, "ui_art_refresh: display lock timeout, skipping");
+        ESP_LOGW(TAG, "ui_art_refresh: display lock timeout after %lld ms, skipping",
+                 (esp_timer_get_time() - diag_started_us) / 1000);
         return;
     }
+    int64_t diag_locked_us = esp_timer_get_time();
 
     /* Cache raw art pointer/dims for re-pixelation when switching into PIXEL
      * mid-session (apply_theme_cb calls pix_art_update directly). */
@@ -7258,6 +7375,14 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
         }
     }
     bsp_display_unlock();
+    int64_t diag_finished_us = esp_timer_get_time();
+    ESP_LOGI(TAG,
+             "diag_ui_art theme=%s lock_ms=%lld apply_ms=%lld total_ms=%lld size=%ux%u",
+             k_mode_names[s_mode],
+             (diag_locked_us - diag_started_us) / 1000,
+             (diag_finished_us - diag_locked_us) / 1000,
+             (diag_finished_us - diag_started_us) / 1000,
+             (unsigned)w, (unsigned)h);
 }
 
 /* The device's own local Sendspin player ("Home Controller"). Backend-neutral:
@@ -8574,6 +8699,35 @@ static void on_sound_set_option(lv_event_t *e)
     ESP_LOGI(TAG, "sound set -> %s", (opt == 0) ? "AUTO" : audio_set_name(set));
 }
 
+static void refresh_output_switch_selection(void)
+{
+    for (int i = 0; i < OUTPUT_SWITCH_COUNT; i++) {
+        if (!s_output_switch_btns[i] || !s_output_switch_lbls[i]) continue;
+        bool on = (i == (int)s_output_switch);
+        lv_obj_set_style_bg_color(s_output_switch_btns[i],
+            on ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
+        lv_obj_set_style_text_color(s_output_switch_lbls[i],
+            on ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
+    }
+}
+
+static void on_output_switch_option(lv_event_t *e)
+{
+    uint8_t option = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (option >= OUTPUT_SWITCH_COUNT || option == s_output_switch) return;
+    s_output_switch = option;
+    save_output_switch(option);
+    refresh_output_switch_selection();
+    audio_play(AUDIO_SFX_SELECT);
+    ESP_LOGI(TAG, "output switching -> %s",
+             option == OUTPUT_SWITCH_TRANSFER ? "transfer" : "separate");
+}
+
+bool ui_output_switch_transfer_enabled(void)
+{
+    return s_output_switch == OUTPUT_SWITCH_TRANSFER;
+}
+
 /* Presented-frame accounting for the FPS readout. Fires on the LVGL task after
  * each refresh; we only read the clock -- NO lv_*_invalidate() here (that
  * asserts during rendering and wedges the task). */
@@ -8759,6 +8913,13 @@ static void rebuild_browser_cb(void *unused)
      * rebuilt on the new screen, else s_wifi_dots dangles into the freed old
      * screen and the WiFi timer writes to freed objects (crash). */
     wifi_dots_stop();
+    if (!was_browser && old_browser) {
+        /* The old browser is not visible. Release its LVGL objects before the
+         * new browser is allocated to reduce the rebuild memory peak. */
+        lv_obj_delete(old_browser);
+        old_browser = NULL;
+        s_screen_browser = NULL;
+    }
     build_browser_screen();
     if (is_glyph_theme()) wifi_dots_start(s_screen_browser);
 

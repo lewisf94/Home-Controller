@@ -76,6 +76,8 @@ class RepositoryContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("#define TUNE_MODE_COUNT MODE_HIFI", ui)
+        self.assertIn("#define TUNE_CF_SCALE HC_TUNE5(130)", ui)
+        self.assertNotIn("#define TUNE_CF_SCALE HC_TUNE5(333)", ui)
         self.assertIn("fidx * TUNE_MODE_COUNT + default_mode", ui)
         self.assertIn("m < TUNE_MODE_COUNT", ui)
         self.assertIn("m == TUNE_MODE_COUNT - 1", ui)
@@ -86,6 +88,11 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("pm_len <= sizeof pm", ui)
         self.assertIn("FULL COLOUR (FIXED)", ui)
         self.assertIn("tick_x0 + i * tick_pitch", ui)
+        self.assertIn("if (cf_scale_pct > 130) cf_scale_pct = 130;", ui)
+        self.assertIn(
+            "lv_obj_set_style_text_align(s_np_title, LV_TEXT_ALIGN_CENTER, 0);",
+            ui,
+        )
         self.assertIn(
             "is_hifi_theme() && !s_dv_set[MODE_HIFI][0][DV_BTN_BORDER]",
             ui,
@@ -107,6 +114,43 @@ class RepositoryContractTests(unittest.TestCase):
         for source in (p4, rp):
             self.assertIn("static size_t _cobs_encode", source)
             self.assertIn("static size_t _cobs_decode", source)
+
+    def test_p4_output_transfer_and_layout_guards(self) -> None:
+        shared_ui = (
+            REPO_ROOT / "waveshare" / "components" / "p4_shared" / "ui.c"
+        ).read_text(encoding="utf-8")
+        ha_main = (REPO_ROOT / "waveshare" / "esp-idf-ha" / "main" / "main.c").read_text(
+            encoding="utf-8"
+        )
+        ha_client = (
+            REPO_ROOT / "waveshare" / "esp-idf-ha" / "main" / "ha_client.c"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("int min_fader_y = label_y + lv_font_get_line_height(font_sm())", shared_ui)
+        self.assertIn("lv_obj_set_pos(s_np_volume, dv(DV_FADER_X), fader_y);", shared_ui)
+        self.assertIn("static uint8_t   s_output_switch = OUTPUT_SWITCH_TRANSFER;", shared_ui)
+        self.assertIn('#define NVS_KEY_OUTPUT_SWITCH "output_switch"', shared_ui)
+        self.assertIn("bool ui_output_switch_transfer_enabled(void)", shared_ui)
+        self.assertIn("old_browser && old_browser != active", shared_ui)
+        self.assertIn("!was_browser && old_browser", shared_ui)
+
+        self.assertIn("c.transfer.transfer_playback = ui_output_switch_transfer_enabled();", ha_main)
+        self.assertIn("ha_switch_active_entity(cmd.transfer.device_id", ha_main)
+        self.assertIn("void ha_switch_active_entity(const char *sel, bool transfer_playback)", ha_client)
+        self.assertIn('call_service_entity("media_player", "media_pause", old_entity, NULL);', ha_client)
+        self.assertIn("spotify_search_tracks(query, matches, 3, &count", ha_client)
+        self.assertIn("output transfer resolved Spotify track", ha_client)
+        self.assertIn('strcmp(s_spotify_sources[i], "Home Assistant") == 0', ha_client)
+        self.assertIn("run_pending_transfer();", ha_client)
+        self.assertIn("This output does not support remote volume", ha_client)
+        self.assertIn("diag_ha_command id=%d result=%s rtt_ms=%lld", ha_client)
+        self.assertIn("diag_meta seq=%u updated=%s", ha_client)
+        self.assertIn("art_url_is_ha_host(url)", ha_client)
+        self.assertIn("file_ctx.bytes_written", ha_client)
+        self.assertIn("diag_art seq=%u stage=queued", ha_main)
+        self.assertIn("diag_art seq=%u stage=complete", ha_main)
+        self.assertIn("diag_ui_meta changed=%d browser_changed=%d", shared_ui)
+        self.assertIn("diag_ui_art theme=%s", shared_ui)
 
     def test_ci_workflow_runs_host_suite(self) -> None:
         workflow = REPO_ROOT / ".github" / "workflows" / "host-tests.yml"

@@ -69,7 +69,36 @@ static int64_t s_ws_restart_due_us = 0;            /* written by the ha task onl
 static int64_t s_last_rx_us = 0;                   /* last inbound WS frame (heartbeat) */
 static int64_t s_ping_await_us = 0;                /* heartbeat ping sent-at; 0 = not awaiting a pong */
 
+/* Small, fixed diagnostics tables keep command timing observable without
+ * allocating on the HA path. A late result can overwrite its modulo slot; the
+ * ID check then suppresses a misleading measurement. */
+#define HA_DIAG_REQUEST_SLOTS 8
+typedef struct {
+    int id;
+    int64_t sent_us;
+} ha_diag_request_t;
+static ha_diag_request_t s_diag_requests[HA_DIAG_REQUEST_SLOTS];
+static uint32_t s_diag_track_seq = 0;
+
 static spotify_track_t s_track = {0};
+static char s_media_content_id[160] = {0};
+static char s_media_content_type[32] = {0};
+
+typedef enum {
+    TRANSFER_TARGET_NONE = 0,
+    TRANSFER_TARGET_SPOTIFY,
+    TRANSFER_TARGET_MA,
+    TRANSFER_TARGET_HA,
+} transfer_target_t;
+static transfer_target_t s_transfer_target = TRANSFER_TARGET_NONE;
+static char     s_transfer_entity[96] = {0};
+static char     s_transfer_media_id[160] = {0};
+static char     s_transfer_media_type[32] = {0};
+static char     s_transfer_title[80] = {0};
+static char     s_transfer_artist[64] = {0};
+static uint32_t s_transfer_position_ms = 0;
+static int64_t  s_transfer_due_us = 0;
+static bool     s_transfer_seek_pending = false;
 
 /* HA core Spotify integration support. That integration creates one account
  * media_player whose `source_list` holds the Connect devices known to Spotify.
@@ -89,6 +118,8 @@ static portMUX_TYPE s_art_mux = portMUX_INITIALIZER_UNLOCKED;
 static char s_pending_art[256] = {0};
 static bool s_art_pending = false;
 static char s_art_loaded[256] = {0};     /* last URL we already fetched */
+static uint32_t s_pending_art_seq = 0;
+static int64_t s_pending_art_event_us = 0;
 
 /* Inbound frame reassembly (WS frames can arrive in chunks). */
 static char  *s_rx     = NULL;
@@ -698,6 +729,24 @@ static bool ws_send(const char *json)
     return (ret >= 0);
 }
 
+static void diag_request_sent(int id)
+{
+    ha_diag_request_t *slot = &s_diag_requests[(unsigned)id % HA_DIAG_REQUEST_SLOTS];
+    slot->id = id;
+    slot->sent_us = esp_timer_get_time();
+}
+
+static void diag_request_result(int id, bool failed)
+{
+    ha_diag_request_t *slot = &s_diag_requests[(unsigned)id % HA_DIAG_REQUEST_SLOTS];
+    if (slot->id != id || slot->sent_us == 0) return;
+    int64_t elapsed_us = esp_timer_get_time() - slot->sent_us;
+    ESP_LOGI(TAG, "diag_ha_command id=%d result=%s rtt_ms=%lld",
+             id, failed ? "failed" : "ok", elapsed_us / 1000);
+    slot->id = 0;
+    slot->sent_us = 0;
+}
+
 /* Spotify HTTPS helpers for Add Albums search. Kept in the HA backend because
  * playback still goes through Home Assistant; only catalogue search talks
  * directly to Spotify. */
@@ -1203,7 +1252,9 @@ static bool call_service_entity(const char *domain, const char *service,
     ESP_LOGI(TAG, "call_service id=%d %s.%s -> %s%s",
              id, domain, service, entity_id ? entity_id : "",
              (service_data && service_data[0]) ? " (+data)" : "");
-    return ws_send(buf);
+    bool sent = ws_send(buf);
+    if (sent) diag_request_sent(id);
+    return sent;
 }
 
 /* call_service against the active media_player (s_entity) -- every playback
@@ -1271,6 +1322,130 @@ bool ha_play_album(const char *spotify_uri)
     snprintf(data, sizeof(data),
              "\"media_id\":\"%s\",\"media_type\":\"album\"", media_id);
     return call_service("music_assistant", "play_media", data);
+}
+
+static bool transfer_media_id(char *out, size_t out_len, transfer_target_t target)
+{
+    const char *id = s_transfer_media_id;
+    if (!id[0]) return false;
+    if (target == TRANSFER_TARGET_SPOTIFY) {
+        if (strncmp(id, "spotify:track:", 14) == 0) {
+            snprintf(out, out_len, "%s", id);
+            return true;
+        }
+        if (strncmp(id, "spotify://track/", 16) == 0) {
+            snprintf(out, out_len, "spotify:track:%s", id + 16);
+            return true;
+        }
+
+        /* Music Assistant can expose a library:// or provider-specific media
+         * ID even when the track came from Spotify. Resolve that ID from the
+         * visible title and artist before the Spotify Connect handoff. */
+        char query[80];
+        snprintf(query, sizeof(query), "%.45s %.28s",
+                 s_transfer_title, s_transfer_artist);
+        ha_album_candidate_t *matches = heap_caps_calloc(
+            3, sizeof(*matches), MALLOC_CAP_SPIRAM);
+        if (!matches) return false;
+        int count = 0;
+        char err[128] = {0};
+        bool ok = spotify_search_tracks(query, matches, 3, &count,
+                                        err, sizeof(err));
+        int best = -1;
+        int best_score = -1;
+        for (int i = 0; ok && i < count; i++) {
+            int score = 0;
+            if (ascii_contains_ci(matches[i].title, s_transfer_title) ||
+                ascii_contains_ci(s_transfer_title, matches[i].title)) score += 2;
+            if (ascii_contains_ci(matches[i].artist, s_transfer_artist) ||
+                ascii_contains_ci(s_transfer_artist, matches[i].artist)) score += 1;
+            if (score > best_score) {
+                best = i;
+                best_score = score;
+            }
+        }
+        if (best >= 0 && best_score >= 2) {
+            snprintf(out, out_len, "%s", matches[best].uri);
+            ESP_LOGI(TAG, "output transfer resolved Spotify track: %s -- %s -> %s",
+                     s_transfer_artist, s_transfer_title, out);
+        } else {
+            ESP_LOGW(TAG, "output transfer Spotify lookup failed: query='%s' matches=%d reason=%s",
+                     query, count, err[0] ? err : "no matching title");
+        }
+        heap_caps_free(matches);
+        return best >= 0 && best_score >= 2;
+    }
+    if (target == TRANSFER_TARGET_MA && strncmp(id, "spotify:track:", 14) == 0) {
+        snprintf(out, out_len, "spotify://track/%s", id + 14);
+        return true;
+    }
+    snprintf(out, out_len, "%s", id);
+    return true;
+}
+
+static void clear_pending_transfer(void)
+{
+    s_transfer_target = TRANSFER_TARGET_NONE;
+    s_transfer_due_us = 0;
+    s_transfer_seek_pending = false;
+    s_transfer_entity[0] = '\0';
+    s_transfer_media_id[0] = '\0';
+    s_transfer_media_type[0] = '\0';
+    s_transfer_title[0] = '\0';
+    s_transfer_artist[0] = '\0';
+    s_transfer_position_ms = 0;
+}
+
+static void run_pending_transfer(void)
+{
+    if (s_transfer_target == TRANSFER_TARGET_NONE || !s_transfer_entity[0]) return;
+
+    if (s_transfer_seek_pending) {
+        char data[48];
+        snprintf(data, sizeof(data), "\"seek_position\":%u",
+                 (unsigned)(s_transfer_position_ms / 1000));
+        call_service_entity("media_player", "media_seek", s_transfer_entity, data);
+        ESP_LOGI(TAG, "output transfer seek -> %s at %u ms",
+                 s_transfer_entity, (unsigned)s_transfer_position_ms);
+        clear_pending_transfer();
+        return;
+    }
+
+    char media_id[192];
+    if (!transfer_media_id(media_id, sizeof(media_id), s_transfer_target)) {
+        ui_show_toast("Output changed, but this track cannot transfer to Spotify", 3500);
+        clear_pending_transfer();
+        return;
+    }
+
+    char data[300];
+    bool sent;
+    if (s_transfer_target == TRANSFER_TARGET_MA) {
+        snprintf(data, sizeof(data),
+                 "\"media_id\":\"%s\",\"media_type\":\"track\"", media_id);
+        sent = call_service_entity("music_assistant", "play_media",
+                                   s_transfer_entity, data);
+    } else {
+        const char *type = s_transfer_media_type[0] ? s_transfer_media_type : "track";
+        snprintf(data, sizeof(data),
+                 "\"media_content_id\":\"%s\",\"media_content_type\":\"%s\"",
+                 media_id, type);
+        sent = call_service_entity("media_player", "play_media",
+                                   s_transfer_entity, data);
+    }
+    if (!sent) {
+        ui_show_toast("Output transfer could not start the track", 3500);
+        clear_pending_transfer();
+        return;
+    }
+
+    ESP_LOGI(TAG, "output transfer play -> %s", s_transfer_entity);
+    if (s_transfer_position_ms >= 1500) {
+        s_transfer_seek_pending = true;
+        s_transfer_due_us = esp_timer_get_time() + 1000LL * 1000LL;
+    } else {
+        clear_pending_transfer();
+    }
 }
 
 static bool queue_available(void)
@@ -1390,10 +1565,15 @@ static void apply_state_object(const char *st)
     static uint32_t s_media_pos_raw = 0;
     static int64_t  s_media_pos_ref_us = 0;
     if (!st || *st != '{') return;
+    int64_t event_us = esp_timer_get_time();
+    char state_updated[40] = {0};
+    json_obj_get_str(st, "last_updated", state_updated, sizeof(state_updated));
 
     char state[24] = {0};
     json_obj_get_str(st, "state", state, sizeof(state));
     s_track.is_playing = (strcmp(state, "playing") == 0);
+    bool track_changed = false;
+    bool art_changed = false;
 
     const char *attrs = json_obj_get(st, "attributes");
     if (attrs && *attrs == '{') {
@@ -1404,7 +1584,8 @@ static void apply_state_object(const char *st)
         json_obj_get_str(attrs, "media_artist",     s_track.artist, sizeof(s_track.artist));
         json_obj_get_str(attrs, "media_album_name", s_track.album,  sizeof(s_track.album));
         json_obj_get_str(attrs, "friendly_name",    s_track.device_name, sizeof(s_track.device_name));
-        bool track_changed = (strcmp(prev_title, s_track.title) != 0);
+        track_changed = (strcmp(prev_title, s_track.title) != 0);
+        if (track_changed) s_diag_track_seq++;
 
         /* HA's media_position is a snapshot sampled at media_position_updated_at,
          * NOT a live counter. Re-basing progress to it on every poll snaps the
@@ -1435,8 +1616,11 @@ static void apply_state_object(const char *st)
             taskENTER_CRITICAL(&s_art_mux);
             strncpy(s_pending_art, art, sizeof(s_pending_art) - 1);
             s_pending_art[sizeof(s_pending_art) - 1] = '\0';
+            s_pending_art_seq = s_diag_track_seq;
+            s_pending_art_event_us = event_us;
             s_art_pending = true;
             taskEXIT_CRITICAL(&s_art_mux);
+            art_changed = true;
         }
 
         s_track.volume_pct = -1;
@@ -1453,10 +1637,12 @@ static void apply_state_object(const char *st)
          * the native Spotify integration uses media_content_id (track URI)
          * from which we can extract the album portion if it's an album type.
          * Leave empty when neither is present -- auto-snap silently no-ops. */
-        char content_id[128] = {0};
+        char content_id[160] = {0};
         char content_type[32] = {0};
         json_obj_get_str(attrs, "media_content_id",   content_id,   sizeof(content_id));
         json_obj_get_str(attrs, "media_content_type", content_type, sizeof(content_type));
+        snprintf(s_media_content_id, sizeof(s_media_content_id), "%s", content_id);
+        snprintf(s_media_content_type, sizeof(s_media_content_type), "%s", content_type);
         if (strncmp(content_id, "spotify:album:", 14) == 0) {
             snprintf(s_track.album_uri, sizeof(s_track.album_uri), "%s", content_id);
         } else if (strncmp(content_id, "spotify://album/", 16) == 0) {
@@ -1485,7 +1671,18 @@ static void apply_state_object(const char *st)
     }
 
     ESP_LOGI(TAG, "state: %s -- %s [%s]", s_track.artist, s_track.title, state);
+    int64_t ui_started_us = esp_timer_get_time();
     ui_set_track_info(&s_track);
+    int64_t ui_finished_us = esp_timer_get_time();
+    if (track_changed) {
+        ESP_LOGI(TAG,
+                 "diag_meta seq=%u updated=%s parse_ms=%lld ui_call_ms=%lld art_changed=%d",
+                 (unsigned)s_diag_track_seq,
+                 state_updated[0] ? state_updated : "unknown",
+                 (ui_started_us - event_us) / 1000,
+                 (ui_finished_us - ui_started_us) / 1000,
+                 art_changed ? 1 : 0);
+    }
 }
 
 /* Iterate the state-array from get_states; find our entity and apply it. */
@@ -1513,6 +1710,7 @@ static const char *find_entity_in_array(const char *arr)
  * read on the ha task (switch); the list is always built before it can be tapped. */
 static char s_dev_ids[MAX_DEVICES][96];
 static bool s_dev_playable[MAX_DEVICES];
+static bool s_dev_is_ma[MAX_DEVICES];
 static int  s_dev_count = 0;
 static ui_device_t s_devices[MAX_DEVICES];
 static bool s_devices_cache_valid = false;
@@ -1652,7 +1850,7 @@ static void build_device_list(const char *arr)
     int skipped_unavailable = 0;
     int skipped_renderer = 0;
     int skipped_duplicate = 0;
-    bool is_ma_slot[MAX_DEVICES] = {0};
+    memset(s_dev_is_ma, 0, sizeof(s_dev_is_ma));
     s_spotify_source_count = 0;   /* re-discovered below on every build */
     s_spotify_entity[0] = '\0';
     s_spotify_source_now[0] = '\0';
@@ -1718,7 +1916,7 @@ static void build_device_list(const char *arr)
 
                 const char *name = fname[0] ? fname : eid + 13;
                 int slot = device_duplicate_index(devs, n, name);
-                if (slot >= 0 && (!is_ma || is_ma_slot[slot])) {
+                if (slot >= 0 && (!is_ma || s_dev_is_ma[slot])) {
                     ESP_LOGI(TAG, "device: %s duplicate of %s skipped", eid, s_dev_ids[slot]);
                     skipped_duplicate++;
                     p = json_skip_value(p);
@@ -1737,7 +1935,7 @@ static void build_device_list(const char *arr)
                 d->is_active = (strcmp(eid, s_entity) == 0);
                 d->is_sonos  = false;   /* all HA entities switch via ui_request_transfer */
                 s_dev_playable[slot] = is_ma || renderer;
-                is_ma_slot[slot] = is_ma;
+                s_dev_is_ma[slot] = is_ma;
                 ESP_LOGI(TAG, "device[%d]: %s name='%s' state=%s kind=%s",
                          slot, eid, d->name, state,
                          is_ma ? "ma" : renderer ? "renderer" : "other");
@@ -1749,6 +1947,13 @@ static void build_device_list(const char *arr)
     /* Append the Spotify account's Connect devices (source_list) as their own
      * rows, so e.g. the phone is directly selectable. Never auto-picked. */
     for (int i = 0; i < s_spotify_source_count && n < MAX_DEVICES; i++) {
+        /* This integration-created target accepts select_source but does not
+         * identify a useful physical output in this installation. Keep it out
+         * of the picker so it cannot be confused with the controller speaker. */
+        if (strcmp(s_spotify_sources[i], "Home Assistant") == 0) {
+            ESP_LOGI(TAG, "spotify source 'Home Assistant' hidden");
+            continue;
+        }
         /* Skip a Connect source that is really an output already listed as a
          * speaker -- e.g. this device's own "Home Controller" MA player. It is
          * controllable via that speaker row; the self-referential Connect row
@@ -1771,6 +1976,7 @@ static void build_device_list(const char *arr)
                        strcmp(s_spotify_sources[i], s_spotify_source_now) == 0;
         d->is_sonos = false;
         s_dev_playable[n] = false;
+        s_dev_is_ma[n] = false;
         ESP_LOGI(TAG, "device[%d]: spotify connect source '%s'%s", n,
                  s_spotify_sources[i], d->is_active ? " (active)" : "");
         n++;
@@ -2027,6 +2233,7 @@ static void handle_message(const char *msg)
                      id, err_code[0] ? err_code : "?", err_msg,
                      err ? err : "(none)");
         }
+        if (id) diag_request_result(id, failed);
         if (id == s_states_req_id) {
             /* Clear before auto-selecting. ha_set_active_entity() can start a
              * new snapshot; clearing afterwards would otherwise lose its id. */
@@ -2094,9 +2301,13 @@ static void handle_message(const char *msg)
              * Toast it so a control that silently did nothing is explained --
              * e.g. Music Assistant refusing a seek while the local player is
              * idle/stopped. */
-            char toast[160];
-            snprintf(toast, sizeof toast, "Player rejected command: %s", err_msg);
-            ui_show_toast(toast, 3000);
+            if (ascii_contains_ci(err_msg, "cannot control device volume")) {
+                ui_show_toast("This output does not support remote volume", 3500);
+            } else {
+                char toast[160];
+                snprintf(toast, sizeof toast, "Player rejected command: %s", err_msg);
+                ui_show_toast(toast, 3000);
+            }
         }
     }
 }
@@ -2352,6 +2563,10 @@ void ha_client_tick(void)
     if (s_subscribe_pending && s_authenticated && !s_states_req_id && !s_sub_id) {
         if (subscribe_active_entity()) s_subscribe_pending = false;
     }
+    if (s_transfer_due_us && esp_timer_get_time() >= s_transfer_due_us) {
+        s_transfer_due_us = 0;
+        run_pending_transfer();
+    }
     if (s_inventory_pending_since_us &&
         esp_timer_get_time() - s_inventory_pending_since_us >= HA_ALBUM_REQ_TIMEOUT_US) {
         ESP_LOGW(TAG, "inventory refresh timed out");
@@ -2484,21 +2699,99 @@ void ha_request_lights_fresh(void)
     s_lights_settle_due_us = esp_timer_get_time() + LIGHT_SETTLE_DELAY_US;
 }
 
-void ha_set_active_entity(const char *sel)
+static const char *resolve_selected_entity(const char *sel, bool *is_ma,
+                                           bool *is_spotify_source)
 {
-    if (!sel || !sel[0]) return;
+    if (is_ma) *is_ma = false;
+    if (is_spotify_source) *is_spotify_source = false;
+    if (!sel || !sel[0]) return NULL;
 
-    /* The UI rows carry the device-list index (entity_ids are too long for
-     * ui_device_t.id); resolve it back to the full entity_id. */
     const char *entity = sel;
     char *end = NULL;
     long idx = strtol(sel, &end, 10);
-    if (end && *end == '\0' && idx >= 0 && idx < s_dev_count && s_dev_ids[idx][0])
+    if (end && *end == '\0' && idx >= 0 && idx < s_dev_count && s_dev_ids[idx][0]) {
         entity = s_dev_ids[idx];
+        if (is_ma) *is_ma = s_dev_is_ma[idx];
+    } else if (is_ma) {
+        for (int i = 0; i < s_dev_count; i++) {
+            if (strcmp(entity, s_dev_ids[i]) == 0) {
+                *is_ma = s_dev_is_ma[i];
+                break;
+            }
+        }
+    }
+    if (is_spotify_source)
+        *is_spotify_source =
+            strncmp(entity, SPOTIFY_SRC_PREFIX, strlen(SPOTIFY_SRC_PREFIX)) == 0;
+    return entity;
+}
+
+void ha_switch_active_entity(const char *sel, bool transfer_playback)
+{
+    bool target_is_ma = false;
+    bool target_is_spotify_source = false;
+    const char *selected = resolve_selected_entity(sel, &target_is_ma,
+                                                   &target_is_spotify_source);
+    if (!selected) return;
+
+    const char *target_entity = selected;
+    if (target_is_spotify_source) {
+        if (!s_spotify_entity[0]) return;
+        target_entity = s_spotify_entity;
+    }
+
+    /* A switch between two Spotify Connect sources is already a native
+     * Spotify transfer. Do not pause or restart the account session. */
+    bool changes_entity = strcmp(target_entity, s_entity) != 0;
+    if (!transfer_playback || !changes_entity || !s_track.is_playing) {
+        ha_set_active_entity(sel);
+        return;
+    }
+
+    char old_entity[sizeof(s_entity_buf)];
+    snprintf(old_entity, sizeof(old_entity), "%s", s_entity);
+    call_service_entity("media_player", "media_pause", old_entity, NULL);
+
+    clear_pending_transfer();
+    snprintf(s_transfer_entity, sizeof(s_transfer_entity), "%s", target_entity);
+    snprintf(s_transfer_media_id, sizeof(s_transfer_media_id), "%s",
+             s_media_content_id);
+    snprintf(s_transfer_media_type, sizeof(s_transfer_media_type), "%s",
+             s_media_content_type);
+    snprintf(s_transfer_title, sizeof(s_transfer_title), "%s", s_track.title);
+    snprintf(s_transfer_artist, sizeof(s_transfer_artist), "%s", s_track.artist);
+    s_transfer_position_ms = s_track.progress_ms;
+    s_transfer_target = target_is_spotify_source ? TRANSFER_TARGET_SPOTIFY
+                      : target_is_ma             ? TRANSFER_TARGET_MA
+                                                 : TRANSFER_TARGET_HA;
+
+    ha_set_active_entity(sel);
+    if (s_transfer_media_id[0]) {
+        /* Give HA time to select a Spotify Connect source before play_media.
+         * The seek follows one second after playback starts. */
+        s_transfer_due_us = esp_timer_get_time()
+                          + (target_is_spotify_source ? 800LL : 250LL) * 1000LL;
+        ui_show_toast("Transferring playback...", 1800);
+        ESP_LOGI(TAG, "output transfer: %s -> %s media_id='%s' track='%s -- %s'",
+                 old_entity, target_entity, s_transfer_media_id,
+                 s_transfer_artist, s_transfer_title);
+    } else {
+        ui_show_toast("Old output paused; current track has no transferable ID", 3500);
+        clear_pending_transfer();
+    }
+}
+
+void ha_set_active_entity(const char *sel)
+{
+    bool unused_is_ma = false;
+    bool is_spotify_source = false;
+    const char *entity = resolve_selected_entity(sel, &unused_is_ma,
+                                                 &is_spotify_source);
+    if (!entity) return;
 
     /* A Spotify Connect source row: ask the Spotify account entity to transfer
      * playback to that device, then follow the account entity for state. */
-    if (strncmp(entity, SPOTIFY_SRC_PREFIX, strlen(SPOTIFY_SRC_PREFIX)) == 0) {
+    if (is_spotify_source) {
         if (!s_spotify_entity[0]) return;
         const char *src = entity + strlen(SPOTIFY_SRC_PREFIX);
         char data[80];
@@ -2542,13 +2835,16 @@ void ha_set_active_entity(const char *sel)
     s_subscribe_pending = true;
 }
 
-bool ha_take_pending_art(char *rel_out, size_t out_len)
+bool ha_take_pending_art(char *rel_out, size_t out_len,
+                         uint32_t *seq_out, int64_t *event_us_out)
 {
     bool got = false;
     taskENTER_CRITICAL(&s_art_mux);
     if (s_art_pending) {
         strncpy(rel_out, s_pending_art, out_len - 1);
         rel_out[out_len - 1] = '\0';
+        if (seq_out) *seq_out = s_pending_art_seq;
+        if (event_us_out) *event_us_out = s_pending_art_event_us;
         s_art_pending = false;
         got = true;
     }
@@ -2574,13 +2870,31 @@ void ha_art_full_url(const char *rel, char *out, size_t out_len)
 }
 
 /* ── Album-art HTTP download to file (no TLS; local network) ─────────────── */
+typedef struct {
+    FILE *file;
+    size_t bytes_written;
+    bool write_failed;
+} art_file_ctx_t;
+
 static esp_err_t art_file_event(esp_http_client_event_t *evt)
 {
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data) {
-        FILE *f = (FILE *)evt->user_data;
-        fwrite(evt->data, 1, evt->data_len, f);
+        art_file_ctx_t *ctx = (art_file_ctx_t *)evt->user_data;
+        size_t written = fwrite(evt->data, 1, evt->data_len, ctx->file);
+        ctx->bytes_written += written;
+        if (written != (size_t)evt->data_len) ctx->write_failed = true;
     }
     return ESP_OK;
+}
+
+static bool art_url_is_ha_host(const char *url)
+{
+    if (!url || !s_host) return false;
+    char prefix[160];
+    snprintf(prefix, sizeof(prefix), "http://%s:%d/", s_host, s_port);
+    if (strncmp(url, prefix, strlen(prefix)) == 0) return true;
+    snprintf(prefix, sizeof(prefix), "https://%s:%d/", s_host, s_port);
+    return strncmp(url, prefix, strlen(prefix)) == 0;
 }
 
 bool ha_download_to_file(const char *url, const char *path, size_t *out_len,
@@ -2588,11 +2902,14 @@ bool ha_download_to_file(const char *url, const char *path, size_t *out_len,
 {
     FILE *f = fopen(path, "wb");
     if (!f) { ESP_LOGE(TAG, "open %s failed", path); return false; }
+    art_file_ctx_t file_ctx = {
+        .file = f,
+    };
 
     esp_http_client_config_t cfg = {
         .url               = url,
         .event_handler     = art_file_event,
-        .user_data         = f,
+        .user_data         = &file_ctx,
         .crt_bundle_attach = esp_crt_bundle_attach,  /* enable https (Spotify covers) */
         .timeout_ms        = 8000,
     };
@@ -2602,7 +2919,7 @@ bool ha_download_to_file(const char *url, const char *path, size_t *out_len,
     /* HA's /api/media_player_proxy/ endpoints require authentication even on
      * the local network. Without the Bearer token they return 401. Only send it
      * to HA-host URLs -- never to an external CDN (would leak the HA token). */
-    if (send_ha_auth && s_token && s_token[0]) {
+    if (send_ha_auth && art_url_is_ha_host(url) && s_token && s_token[0]) {
         char bearer[320];
         snprintf(bearer, sizeof(bearer), "Bearer %s", s_token);
         esp_http_client_set_header(c, "Authorization", bearer);
@@ -2614,8 +2931,15 @@ bool ha_download_to_file(const char *url, const char *path, size_t *out_len,
     esp_http_client_cleanup(c);
     fclose(f);
 
-    if (out_len) *out_len = (len > 0) ? (size_t)len : 0;
-    bool ok = (err == ESP_OK && status == 200);
-    if (!ok) ESP_LOGW(TAG, "art GET failed (err=%d status=%d)", (int)err, status);
+    if (out_len) *out_len = file_ctx.bytes_written;
+    bool length_ok = len < 0 || (size_t)len == file_ctx.bytes_written;
+    bool ok = err == ESP_OK && status == 200 && file_ctx.bytes_written > 0 &&
+              !file_ctx.write_failed && length_ok;
+    if (!ok) {
+        ESP_LOGW(TAG,
+                 "art GET failed (err=%d status=%d expected=%d written=%u write_failed=%d)",
+                 (int)err, status, len, (unsigned)file_ctx.bytes_written,
+                 file_ctx.write_failed ? 1 : 0);
+    }
     return ok;
 }
