@@ -128,17 +128,24 @@ work as pending.
 
 ## Waveshare Themes And Developer Controls
 
-The interface has five modes:
+The interface has six modes:
 
 - BASIC.
 - GLYPH.
 - PIXEL.
 - PAPER.
 - BOLD.
+- HIFI.
 
 Each mode has a dark and a light face.
 
 BOLD uses compiled Jost Bold fonts and geometric interface shapes.
+
+HIFI is a neo broadcast-console theme. It uses static hairline grids,
+registration marks, framed controls, full-colour album art, and a selectable
+compiled heading font. The heading font choices are Terminal Grotesque,
+GTL001, Space Mono, and Bebas Neue. HIFI uses BASIC layout defaults until a
+user saves a HIFI-specific developer override.
 
 The BOLD theme is not build-verified or hardware-verified.
 

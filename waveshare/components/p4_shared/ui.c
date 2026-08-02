@@ -52,6 +52,189 @@
 #include "ui.h"
 
 #include "ui_tune.h"   /* user-tweakable layout/colour knobs -- edit THAT file */
+
+/* Newer firmware exposes live developer controls. A private build folder can
+ * temporarily carry an earlier ui_tune.h while its credentials remain private.
+ * These defaults keep that older private build source-compatible. A current
+ * tuning header defines the same names, so it always takes precedence. */
+#define HC_TUNE5(v) { v, v, v, v, v }
+#ifndef TUNE_KEY_RADIUS
+#define TUNE_KEY_RADIUS { 3, -1, 0, 0, 14 }
+#endif
+#ifndef TUNE_ART_RADIUS
+#define TUNE_ART_RADIUS { 3, 0, 0, 0, 12 }
+#endif
+#ifndef TUNE_PROG_H
+#define TUNE_PROG_H HC_TUNE5(8)
+#endif
+#ifndef TUNE_SEL_W
+#define TUNE_SEL_W HC_TUNE5(160)
+#endif
+#ifndef TUNE_SEL_H
+#define TUNE_SEL_H HC_TUNE5(6)
+#endif
+#ifndef TUNE_TKEY_CIRCLE
+#define TUNE_TKEY_CIRCLE HC_TUNE5(0)
+#endif
+#ifndef TUNE_TITLE_UPPER
+#define TUNE_TITLE_UPPER HC_TUNE5(1)
+#endif
+#ifndef TUNE_TITLE_LETTER_SP
+#define TUNE_TITLE_LETTER_SP HC_TUNE5(1)
+#endif
+#ifndef TUNE_ARTIST_LSP
+#define TUNE_ARTIST_LSP HC_TUNE5(1)
+#endif
+#ifndef TUNE_HEADER_LSP
+#define TUNE_HEADER_LSP HC_TUNE5(2)
+#endif
+#ifndef TUNE_ARTIST_UPPER
+#define TUNE_ARTIST_UPPER HC_TUNE5(1)
+#endif
+#ifndef TUNE_LINE_SPACE
+#define TUNE_LINE_SPACE HC_TUNE5(0)
+#endif
+#ifndef TUNE_MARQUEE_MS
+#define TUNE_MARQUEE_MS HC_TUNE5(15000)
+#endif
+#ifndef TUNE_MARQUEE_FIT_ONLY
+#define TUNE_MARQUEE_FIT_ONLY HC_TUNE5(1)
+#endif
+#ifndef TUNE_TITLE_ALIGN
+#define TUNE_TITLE_ALIGN HC_TUNE5(1)
+#endif
+#ifndef TUNE_TITLE_LONG
+#define TUNE_TITLE_LONG HC_TUNE5(0)
+#endif
+#ifndef TUNE_TKEY_GAP
+#define TUNE_TKEY_GAP HC_TUNE5(20)
+#endif
+#ifndef TUNE_CARD_BORDER
+#define TUNE_CARD_BORDER { 0, 1, 0, 2, 0 }
+#endif
+#ifndef TUNE_BTN_BORDER
+#define TUNE_BTN_BORDER { 0, 1, 0, 2, 0 }
+#endif
+#ifndef TUNE_CARD_SHADOW
+#define TUNE_CARD_SHADOW HC_TUNE5(0)
+#endif
+#ifndef TUNE_PROG_CAP
+#define TUNE_PROG_CAP { 0, 0, 1, 1, 0 }
+#endif
+#ifndef TUNE_PAD
+#define TUNE_PAD HC_TUNE5(6)
+#endif
+#ifndef TUNE_SCROLLER_Y
+#define TUNE_SCROLLER_Y HC_TUNE5(30)
+#endif
+#ifndef TUNE_BR_TITLE_Y
+#define TUNE_BR_TITLE_Y HC_TUNE5(330)
+#endif
+#ifndef TUNE_BR_ARTIST_Y
+#define TUNE_BR_ARTIST_Y HC_TUNE5(365)
+#endif
+#ifndef TUNE_NP_TITLE_Y
+#define TUNE_NP_TITLE_Y HC_TUNE5(320)
+#endif
+#ifndef TUNE_NP_ARTIST_Y
+#define TUNE_NP_ARTIST_Y HC_TUNE5(354)
+#endif
+#ifndef TUNE_PROG_Y
+#define TUNE_PROG_Y HC_TUNE5(390)
+#endif
+#ifndef TUNE_TKEY_Y
+#define TUNE_TKEY_Y HC_TUNE5(414)
+#endif
+#ifndef TUNE_TKEY_SZ
+#define TUNE_TKEY_SZ HC_TUNE5(52)
+#endif
+#ifndef TUNE_FADER_X
+#define TUNE_FADER_X HC_TUNE5(72)
+#endif
+#ifndef TUNE_FADER_Y
+#define TUNE_FADER_Y HC_TUNE5(88)
+#endif
+#ifndef TUNE_FADER_H
+#define TUNE_FADER_H HC_TUNE5(232)
+#endif
+#ifndef TUNE_ART_W
+#define TUNE_ART_W HC_TUNE5(256)
+#endif
+#ifndef TUNE_ART_Y
+#define TUNE_ART_Y HC_TUNE5(44)
+#endif
+#ifndef TUNE_TS_W
+#define TUNE_TS_W HC_TUNE5(64)
+#endif
+#ifndef TUNE_SEL_LINE_DY
+#define TUNE_SEL_LINE_DY HC_TUNE5(6)
+#endif
+#ifndef TUNE_FPS_X
+#define TUNE_FPS_X HC_TUNE5(72)
+#endif
+#ifndef TUNE_FPS_Y
+#define TUNE_FPS_Y HC_TUNE5(12)
+#endif
+#ifndef TUNE_WIFI_X0
+#define TUNE_WIFI_X0 HC_TUNE5(22)
+#endif
+#ifndef TUNE_WIFI_BOT
+#define TUNE_WIFI_BOT HC_TUNE5(32)
+#endif
+#ifndef TUNE_TOPBTN_Y
+#define TUNE_TOPBTN_Y HC_TUNE5(8)
+#endif
+#ifndef TUNE_CARD_SIZE
+#define TUNE_CARD_SIZE HC_TUNE5(286)
+#endif
+#ifndef TUNE_CARD_GAP
+#define TUNE_CARD_GAP HC_TUNE5(28)
+#endif
+#ifndef TUNE_FOCUS_SCALE
+#define TUNE_FOCUS_SCALE HC_TUNE5(256)
+#endif
+#ifndef TUNE_FOCUS_DIM
+#define TUNE_FOCUS_DIM HC_TUNE5(140)
+#endif
+#ifndef TUNE_CF_SCALE
+#define TUNE_CF_SCALE HC_TUNE5(333)
+#endif
+#ifndef TUNE_CF_MAX_SIDE
+#define TUNE_CF_MAX_SIDE HC_TUNE5(3)
+#endif
+#ifndef TUNE_CF_LEAN_FLIP
+#define TUNE_CF_LEAN_FLIP HC_TUNE5(0)
+#endif
+#ifndef TUNE_TRANS_MS
+#define TUNE_TRANS_MS HC_TUNE5(250)
+#endif
+#ifndef TUNE_DIM_AFTER_S
+#define TUNE_DIM_AFTER_S HC_TUNE5(60)
+#endif
+#ifndef TUNE_DIM_DEEP_S
+#define TUNE_DIM_DEEP_S HC_TUNE5(300)
+#endif
+#ifndef TUNE_DIM_LEVEL
+#define TUNE_DIM_LEVEL HC_TUNE5(30)
+#endif
+#ifndef TUNE_DIM_DEEP_LEVEL
+#define TUNE_DIM_DEEP_LEVEL HC_TUNE5(10)
+#endif
+#ifndef TUNE_VOL_STEP
+#define TUNE_VOL_STEP HC_TUNE5(5)
+#endif
+#ifndef TUNE_TAP_TOL
+#define TUNE_TAP_TOL HC_TUNE5(90)
+#endif
+#ifndef TUNE_PP_GUARD_MS
+#define TUNE_PP_GUARD_MS HC_TUNE5(2000)
+#endif
+#ifndef TUNE_GLYPH_CELL
+#define TUNE_GLYPH_CELL HC_TUNE5(5)
+#endif
+#ifndef TUNE_PROG_PARTS
+#define TUNE_PROG_PARTS HC_TUNE5(20)
+#endif
 #include "albums.h"
 #include "album_thumbs.h"
 #include "audio.h"
@@ -238,9 +421,26 @@ extern const lv_font_t lv_font_arvo_24;
  * does not apply to the BOLD theme. */
 extern const lv_font_t lv_font_jost_28;
 extern const lv_font_t lv_font_jost_24;
+extern const lv_font_t lv_font_hifi_terminal_20;
+extern const lv_font_t lv_font_hifi_terminal_28;
+extern const lv_font_t lv_font_hifi_gtl001_20;
+extern const lv_font_t lv_font_hifi_gtl001_28;
+extern const lv_font_t lv_font_hifi_space_20;
+extern const lv_font_t lv_font_hifi_space_28;
+extern const lv_font_t lv_font_hifi_bebas_20;
+extern const lv_font_t lv_font_hifi_bebas_28;
 #define FONT_SANS  0
 #define FONT_SLAB  1
 static uint8_t s_font_choice = FONT_SANS;
+
+enum {
+    HIFI_FONT_TERMINAL = 0,
+    HIFI_FONT_GTL001,
+    HIFI_FONT_SPACE_MONO,
+    HIFI_FONT_BEBAS,
+    HIFI_FONT_COUNT,
+};
+static uint8_t s_hifi_font_choice = HIFI_FONT_TERMINAL;
 
 static lv_obj_t *s_screen_np      = NULL;
 static lv_obj_t *s_screen_browser = NULL;
@@ -426,6 +626,11 @@ static const theme_t THEME_PAPER_DARK = { 0x211D14, 0x2B2719, 0xE4DCC4, 0xB0A88E
  * font_lg() and font_md(). */
 static const theme_t THEME_BOLD       = { 0x000000, 0x1C1C1C, 0xFFFFFF, 0xB0B0B0, 0x707070, 0x2C2C2C };
 static const theme_t THEME_BOLD_LIGHT = { 0xFFFFFF, 0xF0F0F0, 0x000000, 0x555555, 0x999999, 0xE0E0E0 };
+/* HIFI is a compact broadcast-console theme. It uses warm studio neutrals,
+ * hairline instrumentation, and full-colour album art. It intentionally keeps
+ * BASIC geometry, so all existing touch targets stay hardware-verified. */
+static const theme_t THEME_HIFI_DARK  = { 0x0E100E, 0x191C18, 0xF1F0E8, 0xAEB2A9, 0x6C7168, 0x343932 };
+static const theme_t THEME_HIFI_LIGHT = { 0xECEADF, 0xF7F4EA, 0x171916, 0x555A52, 0x898C82, 0xC7C8BD };
 /* s_th pointed directly at one of the compiled theme_t structs in an earlier
  * version of this file. s_th now points at a separate, changeable copy. This
  * design lets a GROUND or INK override change the active colours with no
@@ -434,11 +639,14 @@ static const theme_t THEME_BOLD_LIGHT = { 0xFFFFFF, 0xF0F0F0, 0x000000, 0x555555
 static theme_t s_th_live;
 static const theme_t *s_th = &s_th_live;
 
-/* MODE selects the design language: BASIC, GLYPH, PIXEL, PAPER or BOLD. A
+#define DV_FACES 2
+
+/* MODE selects the design language: BASIC, GLYPH, PIXEL, PAPER, BOLD or HIFI. A
  * separate DARK/LIGHT toggle selects the active face of the palette pair for
  * that mode. COLOUR (the accent) adds one accent colour to any combination
  * of mode and face. */
-enum { MODE_BASIC = 0, MODE_GLYPH, MODE_PIXEL, MODE_PAPER, MODE_BOLD, MODE_COUNT };
+enum { MODE_BASIC = 0, MODE_GLYPH, MODE_PIXEL, MODE_PAPER, MODE_BOLD, MODE_HIFI, MODE_COUNT };
+#define TUNE_MODE_COUNT MODE_HIFI
 static uint8_t s_mode = MODE_BASIC;
 static bool    s_dark = true;
 /* [mode][0] = dark face, [mode][1] = light face. */
@@ -448,29 +656,9 @@ static const theme_t *const k_mode_palettes[MODE_COUNT][2] = {
     [MODE_PIXEL] = { &THEME_PIXEL,      &THEME_PIXEL_LIGHT },
     [MODE_PAPER] = { &THEME_PAPER_DARK, &THEME_PAPER },
     [MODE_BOLD]  = { &THEME_BOLD,       &THEME_BOLD_LIGHT },
+    [MODE_HIFI]  = { &THEME_HIFI_DARK,  &THEME_HIFI_LIGHT },
 };
-static void apply_palette(void)
-{
-    s_th_live = *k_mode_palettes[s_mode][s_dark ? 0 : 1];
-    /* Apply the derived colours only when this mode and this face have a
-     * GROUND or INK override. Each hardware-verified theme (GLYPH, PIXEL and
-     * PAPER) has an individually adjusted palette. Each of these palettes
-     * must render as an exact copy of its compiled values when no override
-     * is present. */
-    int face = s_dark ? 0 : 1;
-    bool touched = s_dv_set[s_mode][face][DV_GROUND_R] || s_dv_set[s_mode][face][DV_GROUND_G] ||
-                   s_dv_set[s_mode][face][DV_GROUND_B] || s_dv_set[s_mode][face][DV_INK_R]    ||
-                   s_dv_set[s_mode][face][DV_INK_G]    || s_dv_set[s_mode][face][DV_INK_B];
-    if (touched) {
-        uint32_t g = dv_ground_hex(), k = dv_ink_hex();
-        s_th_live.bg      = g;
-        s_th_live.text    = k;
-        s_th_live.surface = mix_hex(g, k, 0.110f);
-        s_th_live.text2   = mix_hex(k, g, 0.305f);
-        s_th_live.dim     = mix_hex(k, g, 0.560f);
-        s_th_live.track   = mix_hex(g, k, 0.172f);
-    }
-}
+static void apply_palette(void);
 /* THEME ALBUM ART: when off, PIXEL/PAPER keep their chrome but the covers stay
  * unstyled (no dither/pixelation). NVS-persisted. */
 static bool s_theme_art = true;
@@ -567,13 +755,6 @@ static const int32_t k_dvd_tap_tol[MODE_COUNT]     = TUNE_TAP_TOL;
 static const int32_t k_dvd_pp_guard[MODE_COUNT]    = TUNE_PP_GUARD_MS;
 static const int32_t k_dvd_glyph_cell[MODE_COUNT]  = TUNE_GLYPH_CELL;
 static const int32_t k_dvd_prog_parts[MODE_COUNT]  = TUNE_PROG_PARTS;
-
-/* Number of stored faces (dark, light) for each control. This definition is
- * here because the GROUND and INK default arrays below are the first
- * consumers of this value. An earlier version of this file defined this
- * value later, next to s_dv[]. The definition now precedes each use, in
- * agreement with the rest of this block. */
-#define DV_FACES 2
 
 /* GROUND (background) and INK (text) each separate into a red value, a green
  * value and a blue value. Each colour part can then use a plain slider with a
@@ -778,7 +959,10 @@ static int32_t dv_of(uint8_t mode, int face, int idx)
        so this is byte-identical to the pre-colour-batch behaviour). Per-face
        rows use a [MODE_COUNT*DV_FACES] layout, dark block then light block. */
     int      fidx = k_dv[idx].per_face ? face : 0;
-    int32_t  d = k_dv[idx].defaults[fidx * MODE_COUNT + mode];
+    /* ui_tune.h intentionally has five compiled default columns. HIFI maps to
+     * BASIC until a user creates a HIFI-specific developer override. */
+    uint8_t  default_mode = mode == MODE_HIFI ? MODE_BASIC : mode;
+    int32_t  d = k_dv[idx].defaults[fidx * TUNE_MODE_COUNT + default_mode];
     return s_dv_set[mode][face][idx] ? s_dv[mode][face][idx] : d;
 }
 static int32_t dv(int idx) { return dv_of(s_mode, dv_face_slot(idx), idx); }
@@ -812,6 +996,25 @@ static uint32_t mix_hex(uint32_t a, uint32_t b, float t)
     if (c > 255) c = 255;
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)c;
 }
+
+static void apply_palette(void)
+{
+    s_th_live = *k_mode_palettes[s_mode][s_dark ? 0 : 1];
+    int face = s_dark ? 0 : 1;
+    bool touched = s_dv_set[s_mode][face][DV_GROUND_R] || s_dv_set[s_mode][face][DV_GROUND_G] ||
+                   s_dv_set[s_mode][face][DV_GROUND_B] || s_dv_set[s_mode][face][DV_INK_R] ||
+                   s_dv_set[s_mode][face][DV_INK_G] || s_dv_set[s_mode][face][DV_INK_B];
+    if (!touched) return;
+
+    uint32_t g = dv_ground_hex(), k = dv_ink_hex();
+    s_th_live.bg      = g;
+    s_th_live.text    = k;
+    s_th_live.surface = mix_hex(g, k, 0.110f);
+    s_th_live.text2   = mix_hex(k, g, 0.305f);
+    s_th_live.dim     = mix_hex(k, g, 0.560f);
+    s_th_live.track   = mix_hex(g, k, 0.172f);
+}
+
 /* A radius control uses -1 for a full pill shape. This function converts -1
  * to the sentinel value that LVGL uses for a full pill shape. */
 static int32_t dv_radius(int idx)
@@ -883,11 +1086,11 @@ static void apply_title_text_style(lv_obj_t *label)
  * INDEX scheme is unchanged) but aren't shown as choices. */
 #define ACCENT_SHOWN_FIRST TUNE_ACCENT_COLS   /* first index of the DEEP row (8) */
 #define ACCENT_SHOWN_COUNT TUNE_ACCENT_COLS   /* 8 hues, single row */
-/* One accent per MODE (C3) -- BOLD can run a different hue than PAPER. All
- * five default to the same deep orange, matching the old single global. */
+/* One accent per MODE (C3) -- each theme can use a separate hue. All six
+ * default to the same deep orange, matching the old single global. */
 static uint8_t s_accent[MODE_COUNT] = {
     ACCENT_SHOWN_FIRST, ACCENT_SHOWN_FIRST, ACCENT_SHOWN_FIRST,
-    ACCENT_SHOWN_FIRST, ACCENT_SHOWN_FIRST,
+    ACCENT_SHOWN_FIRST, ACCENT_SHOWN_FIRST, ACCENT_SHOWN_FIRST,
 };
 static const uint32_t k_accents[ACCENT_COUNT] = TUNE_ACCENTS;
 static uint32_t accent_color(void) { return k_accents[s_accent[s_mode]]; }
@@ -1056,8 +1259,9 @@ static lv_obj_t *s_accent_labels[ACCENT_COUNT]           = {0};
 static lv_obj_t *s_brstyle_btns[BROWSER_STYLE_COUNT]      = {0};
 static lv_obj_t *s_brstyle_labels[BROWSER_STYLE_COUNT]    = {0};
 static lv_obj_t *s_sel_line        = NULL;   /* the centred-card underline object */
-static lv_obj_t *s_font_btns[2]   = {0};    /* Settings FONT row: SANS | SLAB */
-static lv_obj_t *s_font_labels[2] = {0};
+static lv_obj_t *s_font_btns[HIFI_FONT_COUNT]   = {0};
+static lv_obj_t *s_font_labels[HIFI_FONT_COUNT] = {0};
+static uint8_t   s_font_option_count = 0;
 
 /* Device selector screen: a scrollable list rebuilt by ui_set_devices().
  * s_dev_entries caches the current rows so a row's click handler can look up its
@@ -1145,6 +1349,7 @@ static lv_obj_t *s_set_pages[SET_TAB_COUNT]    = {0};   /* page containers */
  * dev_row_refresh() must null-check (a rebuild can outrun a pending refresh). */
 static lv_obj_t *s_dev_val[DV_COUNT]           = {0};
 static uint8_t   s_set_tab = 0;                         /* active category page */
+static uint8_t   s_hifi_header_seq = 0;
 
 /* SETUP tab: runtime credential overrides (creds.h). One row per field; the
  * value label never shows a stored secret, only "set (n chars)". The HA build
@@ -1223,7 +1428,7 @@ static lv_obj_t       *s_cf_img = NULL;
 
 #define NVS_SETTINGS_NS       "settings"
 #define NVS_KEY_TRANSITION    "transition"
-/* "ui_mode" stores the 4-value MODE (BASIC/GLYPH/PIXEL/PAPER); the old
+/* "ui_mode" stores MODE (BASIC/GLYPH/PIXEL/PAPER/BOLD/HIFI); the old
  * 7-value "theme" key is retired (its indices don't map; defaults apply once). */
 #define NVS_KEY_MODE          "ui_mode"
 #define NVS_KEY_DARK          "ui_dark"
@@ -1234,6 +1439,7 @@ static lv_obj_t       *s_cf_img = NULL;
 #define NVS_KEY_SEL_LINE      "sel_line"
 #define NVS_KEY_BRIGHTNESS    "brightness"
 #define NVS_KEY_FONT          "font"
+#define NVS_KEY_HIFI_FONT     "hifi_font"
 #define NVS_KEY_FPS           "fps_disp"
 #define NVS_KEY_SOUND         "ui_sound"
 #define NVS_KEY_VOLUME        "ui_vol"
@@ -1245,12 +1451,15 @@ static lv_obj_t       *s_cf_img = NULL;
  * version, the code ignores the blob and uses the compiled defaults. This
  * check prevents an incorrect read of an old blob. */
 #define NVS_KEY_DEV_TUNE      "devtune"
-#define DEV_TUNE_VER          3u
+#define DEV_TUNE_VER          4u
 
 static const char *const k_transition_names[UI_TRANSITION_COUNT] = {
     "OVER (SLIDE)", "MOVE (PUSH)", "FADE", "NONE (INSTANT)",
 };
-static const char *const k_mode_names[MODE_COUNT] = { "BASIC", "GLYPH", "PIXEL", "PAPER", "BOLD" };
+static const char *const k_mode_names[MODE_COUNT] = { "BASIC", "GLYPH", "PIXEL", "PAPER", "BOLD", "HIFI" };
+static const char *const k_hifi_font_names[HIFI_FONT_COUNT] = {
+    "TERMINAL", "GTL001", "SPACE MONO", "BEBAS NEUE",
+};
 static const char *const k_darklight_names[2]     = { "DARK", "LIGHT" };
 static const char *const k_browser_style_names[BROWSER_STYLE_COUNT] = { "CAROUSEL", "FOCUS", "COVER FLOW" };
 
@@ -1297,6 +1506,7 @@ static void save_browser_style(uint8_t idx);
 static void save_sel_line(uint8_t v);
 static void save_brightness(uint8_t v);
 static void save_font(uint8_t v);
+static void save_hifi_font(uint8_t v);
 static void on_browser_style_option(lv_event_t *e);
 static void on_line_toggle(lv_event_t *e);
 static void refresh_line_selection(void);
@@ -1388,10 +1598,12 @@ static bool is_glyph_theme(void);
 static bool is_pixel_theme(void);
 static bool is_paper_theme(void);
 static bool is_bold_theme(void);
+static bool is_hifi_theme(void);
 static const lv_font_t *font_lg(void);
 static const lv_font_t *font_md(void);
 static const lv_font_t *font_sm(void);
 static const lv_font_t *font_icon(void);
+static const lv_font_t *hifi_heading_font(uint8_t choice, bool large);
 /* GLYPH heading font: round-dot matrix (Nothing-style), used by font_lg only.
  * Its fallback chain (dot_24 -> dot_sym_24 -> montserrat) keeps symbols and
  * accented glyphs rendering inside dotted headings. */
@@ -1403,6 +1615,10 @@ static void paperize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
 static void glyphize_rgb565(const uint16_t *src, uint16_t sw, uint16_t sh,
                             uint16_t *dst, uint16_t dw, uint16_t dh);
 static lv_obj_t *paper_rule(lv_obj_t *parent, int x, int y, int w, int h);
+static lv_obj_t *hifi_rule(lv_obj_t *parent, int x, int y, int w, int h,
+                           uint32_t color, lv_opa_t opa);
+static void hifi_screen_chrome(lv_obj_t *screen);
+static void hifi_signal_badge(lv_obj_t *parent, const char *text);
 /* Gas-particle progress bar */
 static void prog_particles_start(lv_obj_t *screen);
 static void prog_particles_stop(void);
@@ -1510,31 +1726,34 @@ static lv_color_t opt_sel_fg(void)
  * knobs (TUNE_KEY_RADIUS / TUNE_BTN_BORDER, adjustable in Settings >
  * DEVELOPER); their compiled defaults encode what each theme used to hardcode:
  * BASIC/PIXEL radius 3 no border, GLYPH a full pill with a 1 px hairline,
- * PAPER a hard square with a 2 px ink rule, BOLD radius 14 no border. */
+ * PAPER and HIFI hard squares with hairline instrumentation, BOLD radius 14. */
 static void style_key_btn(lv_obj_t *btn)
 {
-    lv_obj_set_style_radius(btn, dv_radius(DV_KEY_RADIUS), 0);
+    lv_obj_set_style_radius(btn, is_hifi_theme() ? 0 : dv_radius(DV_KEY_RADIUS), 0);
     lv_obj_set_style_shadow_width(btn, 0, 0);
     /* Border WIDTH is the knob; the COLOUR stays theme identity (PAPER rules
      * in ink, GLYPH hairlines in the track grey). */
     int32_t bw = dv(DV_BTN_BORDER);
+    if (is_hifi_theme() && !s_dv_set[MODE_HIFI][0][DV_BTN_BORDER]) bw = 1;
     lv_obj_set_style_border_width(btn, bw, 0);
     if (bw > 0) {
         lv_obj_set_style_border_color(btn,
-            lv_color_hex(is_paper_theme() ? s_th->text : s_th->track), 0);
+            lv_color_hex(is_paper_theme() ? s_th->text :
+                         is_hifi_theme() ? s_th->text2 : s_th->track), 0);
         lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
     }
 }
 
 static void style_text_entry(lv_obj_t *ta)
 {
-    lv_obj_set_style_radius(ta, is_paper_theme() ? 0 : 4, 0);
+    lv_obj_set_style_radius(ta, (is_paper_theme() || is_hifi_theme()) ? 0 : 4, 0);
     lv_obj_set_style_bg_color(ta, lv_color_hex(s_th->surface), 0);
     lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(ta, lv_color_hex(s_th->text), 0);
     lv_obj_set_style_border_width(ta, is_paper_theme() ? 2 : 1, 0);
     lv_obj_set_style_border_color(ta,
-        lv_color_hex(is_paper_theme() ? s_th->text : s_th->track), 0);
+        lv_color_hex(is_paper_theme() ? s_th->text :
+                     is_hifi_theme() ? s_th->text2 : s_th->track), 0);
     lv_obj_set_style_border_opa(ta, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(ta, 12, 0);
     lv_obj_set_style_pad_ver(ta, 8, 0);
@@ -1551,15 +1770,18 @@ static void style_theme_keyboard(lv_obj_t *kb)
     lv_obj_set_style_pad_column(kb, 5, LV_PART_MAIN);
 
     lv_obj_set_style_radius(kb,
-        is_paper_theme() ? 0 : is_glyph_theme() ? LV_RADIUS_CIRCLE : 4,
+        (is_paper_theme() || is_hifi_theme()) ? 0 :
+        is_glyph_theme() ? LV_RADIUS_CIRCLE : 4,
         LV_PART_ITEMS);
     lv_obj_set_style_bg_color(kb, lv_color_hex(s_th->surface), LV_PART_ITEMS);
     lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
     lv_obj_set_style_text_color(kb, lv_color_hex(s_th->text), LV_PART_ITEMS);
-    lv_obj_set_style_border_width(kb, is_paper_theme() ? 2 : is_glyph_theme() ? 1 : 0,
+    lv_obj_set_style_border_width(kb, is_paper_theme() ? 2 :
+                                  (is_glyph_theme() || is_hifi_theme()) ? 1 : 0,
                                   LV_PART_ITEMS);
     lv_obj_set_style_border_color(kb,
-        lv_color_hex(is_paper_theme() ? s_th->text : s_th->track), LV_PART_ITEMS);
+        lv_color_hex(is_paper_theme() ? s_th->text :
+                     is_hifi_theme() ? s_th->text2 : s_th->track), LV_PART_ITEMS);
     lv_obj_set_style_border_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
 
     lv_obj_set_style_bg_color(kb, opt_sel_bg(), LV_PART_ITEMS | LV_STATE_PRESSED);
@@ -1580,6 +1802,70 @@ static lv_obj_t *paper_rule(lv_obj_t *parent, int x, int y, int w, int h)
     lv_obj_set_style_bg_opa(r, (lv_opa_t)200, 0);
     lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     return r;
+}
+
+/* HIFI furniture uses only static rectangles and labels. It does not use a
+ * transform, canvas, or per-frame callback, which keeps it safe on the P4. */
+static lv_obj_t *hifi_rule(lv_obj_t *parent, int x, int y, int w, int h,
+                           uint32_t color, lv_opa_t opa)
+{
+    lv_obj_t *r = lv_obj_create(parent);
+    lv_obj_set_size(r, w, h);
+    lv_obj_set_pos(r, x, y);
+    lv_obj_set_style_radius(r, 0, 0);
+    lv_obj_set_style_border_width(r, 0, 0);
+    lv_obj_set_style_pad_all(r, 0, 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(r, opa, 0);
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    return r;
+}
+
+static void hifi_screen_chrome(lv_obj_t *screen)
+{
+    if (!is_hifi_theme() || !screen) return;
+    for (int x = 160; x < SCREEN_W; x += 160)
+        hifi_rule(screen, x, 0, 1, SCREEN_H, s_th->track, (lv_opa_t)42);
+    for (int y = 120; y < SCREEN_H; y += 120)
+        hifi_rule(screen, 0, y, SCREEN_W, 1, s_th->track, (lv_opa_t)42);
+
+    lv_obj_t *frame = lv_obj_create(screen);
+    lv_obj_set_size(frame, SCREEN_W - 16, SCREEN_H - 16);
+    lv_obj_set_pos(frame, 8, 8);
+    lv_obj_set_style_radius(frame, 0, 0);
+    lv_obj_set_style_bg_opa(frame, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(frame, 1, 0);
+    lv_obj_set_style_border_color(frame, lv_color_hex(s_th->track), 0);
+    lv_obj_set_style_border_opa(frame, (lv_opa_t)150, 0);
+    lv_obj_remove_flag(frame, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    const int x0 = 8, x1 = SCREEN_W - 26, y0 = 8, y1 = SCREEN_H - 10;
+    hifi_rule(screen, x0, y0, 18, 2, accent_color(), LV_OPA_COVER);
+    hifi_rule(screen, x0, y0, 2, 18, accent_color(), LV_OPA_COVER);
+    hifi_rule(screen, x1, y0, 18, 2, accent_color(), LV_OPA_COVER);
+    hifi_rule(screen, SCREEN_W - 10, y0, 2, 18, accent_color(), LV_OPA_COVER);
+    hifi_rule(screen, x0, y1, 18, 2, accent_color(), LV_OPA_COVER);
+    hifi_rule(screen, x0, SCREEN_H - 26, 2, 18, accent_color(), LV_OPA_COVER);
+    hifi_rule(screen, x1, y1, 18, 2, accent_color(), LV_OPA_COVER);
+    hifi_rule(screen, SCREEN_W - 10, SCREEN_H - 26, 2, 18, accent_color(), LV_OPA_COVER);
+}
+
+static void hifi_signal_badge(lv_obj_t *parent, const char *text)
+{
+    if (!is_hifi_theme() || !parent) return;
+    static const uint8_t levels[] = { 5, 12, 8, 18, 10, 15, 6 };
+    const int x0 = 292, baseline = 30;
+    for (int i = 0; i < (int)(sizeof levels / sizeof levels[0]); i++)
+        hifi_rule(parent, x0 + i * 6, baseline - levels[i], 3, levels[i],
+                  i == 3 ? accent_color() : s_th->text2, LV_OPA_COVER);
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_width(lbl, 230);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(s_th->text2), 0);
+    lv_obj_set_style_text_font(lbl, hifi_heading_font(s_hifi_font_choice, false), 0);
+    lv_obj_set_style_text_letter_space(lbl, 1, 0);
+    lv_obj_set_pos(lbl, 344, 8);
 }
 
 /* Full-screen ink frame: the printed-form outer border every PAPER screen
@@ -1944,7 +2230,12 @@ static void browser_build_cards(void)
          * pool is active. The object border below is a FALLBACK only, for a
          * failed pool allocation. This fallback border stays full-size in
          * Focus mode, but a pool allocation failure is a rare event. */
-        if (s_card_pool) {
+        if (is_hifi_theme()) {
+            lv_obj_set_style_border_width(card, 1, 0);
+            lv_obj_set_style_border_color(card,
+                lv_color_hex((int)i == s_playing_card_idx ? accent_color() : s_th->text2), 0);
+            lv_obj_set_style_border_opa(card, (lv_opa_t)180, 0);
+        } else if (s_card_pool) {
             lv_obj_set_style_border_width(card, dv(DV_CARD_BORDER), 0);
             lv_obj_set_style_border_color(card, lv_color_hex(s_th->text), 0);
         } else if ((int)i == s_playing_card_idx) {
@@ -2133,6 +2424,8 @@ static void browser_build_paper_furniture(void)
         char ib[20];
         snprintf(ib, sizeof ib, "%02d / %02d", s_card_count ? 1 : 0, (int)s_card_count);
         lv_label_set_text(s_br_index_lbl, ib);
+    } else if (is_hifi_theme()) {
+        hifi_signal_badge(s_screen_browser, "01 // LIBRARY");
     }
 }
 
@@ -2148,7 +2441,7 @@ static void browser_build_selection_line(void)
      * thickness control, so the line keeps a capsule shape at each
      * thickness setting. */
     lv_obj_set_style_radius(s_sel_line,
-        (dv(DV_PROG_CAP) || is_paper_theme()) ? 0 : dv(DV_SEL_H) / 2, 0);
+        (dv(DV_PROG_CAP) || is_paper_theme() || is_hifi_theme()) ? 0 : dv(DV_SEL_H) / 2, 0);
     lv_obj_set_style_border_width(s_sel_line, 0, 0);
     lv_obj_set_style_bg_color(s_sel_line, lv_color_hex(accent_color()), 0);
     lv_obj_set_style_bg_opa(s_sel_line, LV_OPA_COVER, 0);
@@ -2158,6 +2451,18 @@ static void browser_build_selection_line(void)
      * art above and the title below (both also per-mode -- see ui_tune.h). */
     lv_obj_align(s_sel_line, LV_ALIGN_TOP_MID, 0,
                  SCROLLER_Y + SCROLLER_H + dv(DV_SEL_DY));
+    if (is_hifi_theme()) {
+        lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+        const int tick_count = 7;
+        const int tick_pitch = 8;
+        const int tick_group_w = (tick_count - 1) * tick_pitch + 1;
+        const int tick_x0 = (dv(DV_SEL_W) - tick_group_w) / 2;
+        for (int i = 0; i < tick_count; i++) {
+            lv_obj_t *tick = hifi_rule(s_sel_line, tick_x0 + i * tick_pitch, -4, 1,
+                                       (i == 3) ? 8 : 4, s_th->text2, (lv_opa_t)180);
+            lv_obj_remove_flag(tick, LV_OBJ_FLAG_CLICKABLE);
+        }
+    }
     if (!s_show_sel_line) lv_obj_add_flag(s_sel_line, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -2309,6 +2614,9 @@ static void build_stack_rail(lv_obj_t *parent, main_page_t active_page)
     }
 
     int first_cy = 36;   /* centre-y of the first dot within the rail */
+    if (is_hifi_theme() && MAIN_PAGE_COUNT > 1)
+        hifi_rule(rail, rail_w / 2, first_cy, 1,
+                  (MAIN_PAGE_COUNT - 1) * dot_pitch, s_th->track, (lv_opa_t)185);
     for (int i = 0; i < MAIN_PAGE_COUNT; i++) {
         bool active = (i == (int)active_page);
         int cy = first_cy + i * dot_pitch;
@@ -2323,9 +2631,10 @@ static void build_stack_rail(lv_obj_t *parent, main_page_t active_page)
                             (void *)(uintptr_t)i);
 
         lv_obj_t *dot = lv_obj_create(tap);
-        lv_obj_set_size(dot, active ? 10 : 7, active ? 10 : 7);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_border_width(dot, active ? 0 : 1, 0);
+        lv_obj_set_size(dot, is_hifi_theme() ? (active ? 20 : 11) : (active ? 10 : 7),
+                        is_hifi_theme() ? (active ? 4 : 2) : (active ? 10 : 7));
+        lv_obj_set_style_radius(dot, is_hifi_theme() ? 0 : LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(dot, is_hifi_theme() ? 0 : (active ? 0 : 1), 0);
         lv_obj_set_style_border_color(dot, lv_color_hex(s_th->text2), 0);
         lv_obj_set_style_bg_color(dot,
             lv_color_hex(active ? accent_color() : s_th->track), 0);
@@ -2361,6 +2670,7 @@ static void build_browser_screen(void)
     s_screen_browser = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_browser, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_browser, LV_OPA_COVER, 0);
+    hifi_screen_chrome(s_screen_browser);
     lv_obj_remove_flag(s_screen_browser, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_browser, on_gesture, LV_EVENT_GESTURE, NULL);
 
@@ -2419,6 +2729,20 @@ static void np_build_paper_chrome(void)
          * ink border straddles its box edge, so a rule flush with ART_Y +
          * ART_H ran through the border stroke instead of clearing it. */
         paper_rule(s_screen_np, 8, ART_Y + ART_H + 4, SCREEN_W - 16, 1);
+    } else if (is_hifi_theme()) {
+        hifi_signal_badge(s_screen_np, "02 // SIGNAL");
+        int art_w = dv(DV_ART_W), art_x = (SCREEN_W - art_w) / 2, art_y = dv(DV_ART_Y);
+        hifi_rule(s_screen_np, art_x + 8, art_y + 8, art_w, art_w,
+                  accent_color(), LV_OPA_COVER);
+        lv_obj_t *outline = lv_obj_create(s_screen_np);
+        lv_obj_set_size(outline, art_w, art_w);
+        lv_obj_set_pos(outline, art_x - 8, art_y - 8);
+        lv_obj_set_style_radius(outline, 0, 0);
+        lv_obj_set_style_bg_opa(outline, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(outline, 1, 0);
+        lv_obj_set_style_border_color(outline, lv_color_hex(s_th->text2), 0);
+        lv_obj_set_style_border_opa(outline, (lv_opa_t)175, 0);
+        lv_obj_remove_flag(outline, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     }
 }
 
@@ -2441,6 +2765,10 @@ static void np_build_art(void)
     if (is_paper_theme()) {
         lv_obj_set_style_border_width(s_np_art, 2, 0);
         lv_obj_set_style_border_color(s_np_art, lv_color_hex(s_th->text), 0);
+        lv_obj_set_style_border_opa(s_np_art, LV_OPA_COVER, 0);
+    } else if (is_hifi_theme()) {
+        lv_obj_set_style_border_width(s_np_art, 1, 0);
+        lv_obj_set_style_border_color(s_np_art, lv_color_hex(s_th->text2), 0);
         lv_obj_set_style_border_opa(s_np_art, LV_OPA_COVER, 0);
     } else {
         lv_obj_set_style_border_width(s_np_art, 0, 0);
@@ -2602,6 +2930,12 @@ static void np_build_paper_ruler(void)
         lv_obj_remove_flag(s_paper_cursor, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_pos(s_paper_cursor, PROG_X - PAPER_CUR_W / 2,
                        PROG_Y + PROG_H / 2 - PAPER_CUR_H / 2);
+    } else if (is_hifi_theme()) {
+        for (int i = 0; i <= 40; i++) {
+            bool major = (i % 5) == 0;
+            hifi_rule(s_screen_np, PROG_X + i * (PROG_W / 40), PROG_Y + PROG_H + 3,
+                      1, major ? 8 : 4, s_th->text2, major ? LV_OPA_COVER : (lv_opa_t)150);
+        }
     }
 }
 
@@ -2728,7 +3062,7 @@ static void np_build_volume_fader(void)
         /* PAPER and PIXEL square the fader off completely -- a 6px radius on
          * the indicator read as "round top, flat bottom" once the fill met the
          * square track ends in PIXEL. */
-        bool sq = is_paper_theme() || is_pixel_theme();
+        bool sq = is_paper_theme() || is_pixel_theme() || is_hifi_theme();
         lv_obj_set_style_radius(s_np_volume, sq ? 0 : 6, LV_PART_MAIN);
         lv_obj_set_style_radius(s_np_volume, sq ? 0 : 6, LV_PART_INDICATOR);
         lv_obj_set_style_radius(s_np_volume, sq ? 0 : 22, LV_PART_KNOB);
@@ -2783,6 +3117,7 @@ static void build_np_screen(void)
     s_screen_np = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_np, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_np, LV_OPA_COVER, 0);
+    hifi_screen_chrome(s_screen_np);
     lv_obj_remove_flag(s_screen_np, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_np, on_gesture, LV_EVENT_GESTURE, NULL);
 
@@ -2838,11 +3173,17 @@ static void refresh_theme_selection(void)
         lv_label_set_text(s_dl_labels[i], k_darklight_names[i]);
     }
     if (s_art_toggle_btn && s_art_toggle_lbl) {
-        lv_obj_set_style_bg_color(s_art_toggle_btn,
-            s_theme_art ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
-        lv_obj_set_style_text_color(s_art_toggle_lbl,
-            s_theme_art ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
-        lv_label_set_text(s_art_toggle_lbl, s_theme_art ? "ON" : "OFF");
+        if (is_hifi_theme()) {
+            lv_obj_set_style_bg_color(s_art_toggle_btn, lv_color_hex(s_th->surface), 0);
+            lv_obj_set_style_text_color(s_art_toggle_lbl, lv_color_hex(s_th->text2), 0);
+            lv_label_set_text(s_art_toggle_lbl, "FULL COLOUR (FIXED)");
+        } else {
+            lv_obj_set_style_bg_color(s_art_toggle_btn,
+                s_theme_art ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
+            lv_obj_set_style_text_color(s_art_toggle_lbl,
+                s_theme_art ? opt_sel_fg() : lv_color_hex(s_th->text2), 0);
+            lv_label_set_text(s_art_toggle_lbl, s_theme_art ? "ON" : "OFF");
+        }
     }
 }
 
@@ -2887,6 +3228,26 @@ static bool is_bold_theme(void)
     return s_mode == MODE_BOLD;
 }
 
+static bool is_hifi_theme(void)
+{
+    return s_mode == MODE_HIFI;
+}
+
+static const lv_font_t *hifi_heading_font(uint8_t choice, bool large)
+{
+    switch (choice) {
+    case HIFI_FONT_GTL001:
+        return large ? &lv_font_hifi_gtl001_28 : &lv_font_hifi_gtl001_20;
+    case HIFI_FONT_SPACE_MONO:
+        return large ? &lv_font_hifi_space_28 : &lv_font_hifi_space_20;
+    case HIFI_FONT_BEBAS:
+        return large ? &lv_font_hifi_bebas_28 : &lv_font_hifi_bebas_20;
+    case HIFI_FONT_TERMINAL:
+    default:
+        return large ? &lv_font_hifi_terminal_28 : &lv_font_hifi_terminal_20;
+    }
+}
+
 /* 1bpp bitmap fonts for the PIXEL retro theme (Press Start 2P + FA5 symbols).
  * Generated offline by lv_font_conv; committed as .c files in main/. */
 extern const lv_font_t lv_font_pixel_16;
@@ -2918,6 +3279,7 @@ static const lv_font_t *font_lg(void)
     if (is_glyph_theme()) return &lv_font_dot_24;
     if (is_paper_theme()) return &lv_font_mono_24;
     if (is_bold_theme()) return &lv_font_jost_28;
+    if (is_hifi_theme()) return hifi_heading_font(s_hifi_font_choice, true);
     if (s_font_choice == FONT_SLAB) return &lv_font_arvo_28;
     return &lv_font_hc_28;
 }
@@ -3916,6 +4278,7 @@ static void build_queue_screen(void)
     s_screen_queue = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_queue, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_queue, LV_OPA_COVER, 0);
+    hifi_screen_chrome(s_screen_queue);
     lv_obj_remove_flag(s_screen_queue, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_queue, on_gesture, LV_EVENT_GESTURE, NULL);
     if (is_paper_theme()) {
@@ -3997,6 +4360,7 @@ static void __attribute__((unused)) build_volume_screen(void)
     s_screen_volume = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_volume, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_volume, LV_OPA_COVER, 0);
+    hifi_screen_chrome(s_screen_volume);
     lv_obj_remove_flag(s_screen_volume, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_volume, on_gesture, LV_EVENT_GESTURE, NULL);
 
@@ -4265,10 +4629,19 @@ static void title_reform(void)
 static lv_obj_t *settings_header(lv_obj_t *parent, const char *txt, int x, int y)
 {
     lv_obj_t *l = lv_label_create(parent);
-    lv_label_set_text(l, txt);
+    if (is_hifi_theme()) {
+        char numbered[96];
+        snprintf(numbered, sizeof numbered, "%02u // %s",
+                 (unsigned)++s_hifi_header_seq, txt);
+        lv_label_set_text(l, numbered);
+        hifi_rule(parent, x - 14, y + 9, 8, 2, accent_color(), LV_OPA_COVER);
+    } else {
+        lv_label_set_text(l, txt);
+    }
     lv_obj_set_style_text_color(l,
         lv_color_hex(is_paper_theme() ? accent_color() : s_th->text2), 0);
-    lv_obj_set_style_text_font(l, font_md(), 0);
+    lv_obj_set_style_text_font(l,
+        is_hifi_theme() ? hifi_heading_font(s_hifi_font_choice, false) : font_md(), 0);
     lv_obj_set_style_text_letter_space(l, dv(DV_HEADER_LSP), 0);
     lv_obj_align(l, LV_ALIGN_TOP_LEFT, x, y);
     return l;
@@ -4405,13 +4778,14 @@ static void settings_build_display_appearance(lv_obj_t *pg_disp)
 static void settings_build_display_theme(lv_obj_t *pg_disp)
 {
     settings_header(pg_disp, "THEME", 24, 102);
-    /* Design languages in one row, centred; pitch shrunk from the original
-     * 176/168 (4 modes) to fit BOLD as a 5th without crowding the 800px page. */
+    /* Six compact mode keys fit the 800px page while keeping their labels
+     * readable. HIFI is appended after BOLD, so existing NVS mode values stay
+     * stable. */
     for (int i = 0; i < MODE_COUNT; i++) {
         lv_obj_t *btn = lv_button_create(pg_disp);
-        lv_obj_set_size(btn, 136, 48);
+        lv_obj_set_size(btn, 120, 48);
         lv_obj_align(btn, LV_ALIGN_TOP_MID,
-                     (int)((i - (MODE_COUNT - 1) / 2.0f) * 144.0f), 134);
+                     (int)((i - (MODE_COUNT - 1) / 2.0f) * 128.0f), 134);
         style_key_btn(btn);
         style_button_press(btn);
         lv_obj_add_event_cb(btn, on_theme_option, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
@@ -4432,8 +4806,10 @@ static void settings_build_display_theme_art(lv_obj_t *pg_disp)
     lv_obj_set_size(s_art_toggle_btn, 520, 48);
     lv_obj_align(s_art_toggle_btn, LV_ALIGN_TOP_MID, 0, 230);
     style_key_btn(s_art_toggle_btn);
-    style_button_press(s_art_toggle_btn);
-    lv_obj_add_event_cb(s_art_toggle_btn, on_art_toggle, LV_EVENT_CLICKED, NULL);
+    if (!is_hifi_theme()) {
+        style_button_press(s_art_toggle_btn);
+        lv_obj_add_event_cb(s_art_toggle_btn, on_art_toggle, LV_EVENT_CLICKED, NULL);
+    }
     s_art_toggle_lbl = lv_label_create(s_art_toggle_btn);
     lv_obj_set_style_text_font(s_art_toggle_lbl, font_md(), 0);
     lv_obj_center(s_art_toggle_lbl);
@@ -4491,13 +4867,36 @@ static void settings_build_display_tail(lv_obj_t *pg_disp)
      * position. Thus, when this section is hidden, the layout closes the
      * empty slot, instead of leaving a 100 pixel gap. */
     int y0 = 694;   /* base of the post-FONT stack when FONT is shown */
+    memset(s_font_btns, 0, sizeof s_font_btns);
+    memset(s_font_labels, 0, sizeof s_font_labels);
+    s_font_option_count = 0;
     if (is_glyph_theme() || is_paper_theme() || is_bold_theme()) {
-        memset(s_font_btns,   0, sizeof s_font_btns);
-        memset(s_font_labels, 0, sizeof s_font_labels);
         y0 = 594;   /* FONT hidden: pull the rest of the column up */
+    } else if (is_hifi_theme()) {
+        settings_header(pg_disp, "HEADING FONT", 24, 594);
+        s_font_option_count = HIFI_FONT_COUNT;
+        for (int i = 0; i < HIFI_FONT_COUNT; i++) {
+            int col = i % 2, row = i / 2;
+            lv_obj_t *btn = lv_button_create(pg_disp);
+            lv_obj_set_size(btn, 256, 48);
+            lv_obj_align(btn, LV_ALIGN_TOP_MID, col == 0 ? -132 : 132,
+                         626 + row * 56);
+            style_key_btn(btn);
+            style_button_press(btn);
+            lv_obj_add_event_cb(btn, on_font_option, LV_EVENT_CLICKED,
+                                (void *)(uintptr_t)i);
+            lv_obj_t *lbl = lv_label_create(btn);
+            lv_label_set_text(lbl, k_hifi_font_names[i]);
+            lv_obj_set_style_text_font(lbl, hifi_heading_font((uint8_t)i, false), 0);
+            lv_obj_center(lbl);
+            s_font_btns[i] = btn;
+            s_font_labels[i] = lbl;
+        }
+        y0 = 750;
     } else {
         settings_header(pg_disp, "FONT", 24, 594);
         static const char *const k_font_names[] = { "SANS", "SLAB" };
+        s_font_option_count = 2;
         for (int i = 0; i < 2; i++) {
             lv_obj_t *btn = lv_button_create(pg_disp);
             lv_obj_set_size(btn, 256, 48);
@@ -5088,15 +5487,22 @@ static void on_dev_export(lv_event_t *e)
         if (k_dv[i].tune[0] == '-') continue;
         char line[192];
         int  n = snprintf(line, sizeof line, "#define %-22s {", k_dv[i].tune);
-        for (int m = 0; m < MODE_COUNT && n > 0 && n < (int)sizeof line; m++) {
+        for (int m = 0; m < TUNE_MODE_COUNT && n > 0 && n < (int)sizeof line; m++) {
             int face = (k_dv[i].per_face && !s_dark) ? 1 : 0;
             n += snprintf(line + n, sizeof line - n, "%6d%s",
                           (int)dv_of((uint8_t)m, face, i),
-                          (m == MODE_COUNT - 1) ? " }" : ",");
+                          (m == TUNE_MODE_COUNT - 1) ? " }" : ",");
         }
         ESP_LOGI(TAG, "%s", line);
     }
-    ESP_LOGI(TAG, "---- mode order: BASIC, GLYPH, PIXEL, PAPER, BOLD --------");
+    ESP_LOGI(TAG, "---- mode order: BASIC, GLYPH, PIXEL, PAPER, BOLD ----");
+    ESP_LOGI(TAG, "---- HIFI uses BASIC compiled defaults; live overrides stay in NVS ----");
+    for (int i = 0; i < DV_COUNT; i++) {
+        int face = (k_dv[i].per_face && !s_dark) ? 1 : 0;
+        if (!s_dv_set[MODE_HIFI][face][i]) continue;
+        ESP_LOGI(TAG, "HIFI/%s %s=%d", face ? "light" : "dark",
+                 k_dv[i].tune, (int)s_dv[MODE_HIFI][face][i]);
+    }
 
     /* COLOUR has no single macro to print. This code prints the resulting
      * theme_t hex values for each mode and each face that has a GROUND or
@@ -5280,6 +5686,7 @@ static void build_settings_screen(void)
     s_screen_settings = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_settings, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_settings, LV_OPA_COVER, 0);
+    hifi_screen_chrome(s_screen_settings);
     lv_obj_set_scrollbar_mode(s_screen_settings, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_event_cb(s_screen_settings, on_gesture, LV_EVENT_GESTURE, NULL);
 
@@ -5290,6 +5697,7 @@ static void build_settings_screen(void)
     /* ====== DISPLAY: every visual setting on one scrolling page ====== */
     lv_obj_t *pg_disp = settings_page();
     s_set_pages[0] = pg_disp;
+    s_hifi_header_seq = 0;
     settings_build_display_appearance(pg_disp);
     settings_build_display_theme(pg_disp);
     settings_build_display_theme_art(pg_disp);
@@ -5300,16 +5708,19 @@ static void build_settings_screen(void)
     /* =============================== SOUND ============================== */
     lv_obj_t *pg_snd = settings_page();
     s_set_pages[1] = pg_snd;
+    s_hifi_header_seq = 0;
     settings_build_sound_page(pg_snd);
 
     /* =============================== SETUP ============================== */
     lv_obj_t *pg_setup = settings_page();
     s_set_pages[2] = pg_setup;
+    s_hifi_header_seq = 0;
     settings_build_setup_page(pg_setup);
 
     /* ============================= DEVELOPER ============================ */
     lv_obj_t *pg_dev = settings_page();
     s_set_pages[3] = pg_dev;
+    s_hifi_header_seq = 0;
     settings_build_dev_page(pg_dev);
 
     settings_build_paper_chrome();
@@ -5339,6 +5750,7 @@ static void build_devices_screen(void)
     s_screen_devices = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_devices, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_devices, LV_OPA_COVER, 0);
+    hifi_screen_chrome(s_screen_devices);
     lv_obj_remove_flag(s_screen_devices, LV_OBJ_FLAG_SCROLLABLE);
     if (is_paper_theme()) {
         paper_frame(s_screen_devices);
@@ -5440,6 +5852,7 @@ static void build_album_add_screen(void)
     s_screen_album_add = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_album_add, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_album_add, LV_OPA_COVER, 0);
+    hifi_screen_chrome(s_screen_album_add);
     lv_obj_remove_flag(s_screen_album_add, LV_OBJ_FLAG_SCROLLABLE);
     if (is_paper_theme()) {
         paper_frame(s_screen_album_add);
@@ -5557,6 +5970,7 @@ static void build_lights_screen(void)
     s_screen_lights = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen_lights, lv_color_hex(s_th->bg), 0);
     lv_obj_set_style_bg_opa(s_screen_lights, LV_OPA_COVER, 0);
+    hifi_screen_chrome(s_screen_lights);
     lv_obj_remove_flag(s_screen_lights, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen_lights, on_gesture, LV_EVENT_GESTURE, NULL);
     if (is_paper_theme()) {
@@ -6479,12 +6893,15 @@ static void load_settings(void)
         uint8_t legacy = 0xFF;
         bool have_legacy = (nvs_get_u8(h, NVS_KEY_ACCENT, &legacy) == ESP_OK &&
                              legacy < ACCENT_COUNT);
-        uint8_t pm[MODE_COUNT];
-        size_t  pm_len = sizeof pm;
-        if (nvs_get_blob(h, NVS_KEY_ACCENT_PM, pm, &pm_len) == ESP_OK &&
-            pm_len == sizeof pm) {
-            for (int m = 0; m < MODE_COUNT; m++)
-                if (pm[m] < ACCENT_COUNT) s_accent[m] = pm[m];
+        uint8_t pm[MODE_COUNT] = {0};
+        size_t  pm_len = 0;
+        esp_err_t pm_err = nvs_get_blob(h, NVS_KEY_ACCENT_PM, NULL, &pm_len);
+        if (pm_err == ESP_OK && pm_len > 0 && pm_len <= sizeof pm) {
+            size_t read_len = pm_len;
+            if (nvs_get_blob(h, NVS_KEY_ACCENT_PM, pm, &read_len) == ESP_OK) {
+                for (size_t m = 0; m < read_len; m++)
+                    if (pm[m] < ACCENT_COUNT) s_accent[m] = pm[m];
+            }
         } else if (have_legacy) {
             uint8_t folded = ACCENT_SHOWN_FIRST + (legacy % TUNE_ACCENT_COLS);
             for (int m = 0; m < MODE_COUNT; m++) s_accent[m] = folded;
@@ -6505,6 +6922,10 @@ static void load_settings(void)
     uint8_t fn = FONT_SANS;
     if (nvs_get_u8(h, NVS_KEY_FONT, &fn) == ESP_OK && fn <= FONT_SLAB) {
         s_font_choice = fn;
+    }
+    uint8_t hfn = HIFI_FONT_TERMINAL;
+    if (nvs_get_u8(h, NVS_KEY_HIFI_FONT, &hfn) == ESP_OK && hfn < HIFI_FONT_COUNT) {
+        s_hifi_font_choice = hfn;
     }
     uint8_t fps = 0;
     if (nvs_get_u8(h, NVS_KEY_FPS, &fps) == ESP_OK) s_fps_enabled = (fps != 0);
@@ -6563,6 +6984,7 @@ static void save_browser_style(uint8_t idx)        { nvs_save_u8(NVS_KEY_BROWSER
 static void save_sel_line(uint8_t v)               { nvs_save_u8(NVS_KEY_SEL_LINE, v); }
 static void save_brightness(uint8_t v)             { nvs_save_u8(NVS_KEY_BRIGHTNESS, v); }
 static void save_font(uint8_t v)                   { nvs_save_u8(NVS_KEY_FONT, v); }
+static void save_hifi_font(uint8_t v)              { nvs_save_u8(NVS_KEY_HIFI_FONT, v); }
 static void save_fps(uint8_t v)                    { nvs_save_u8(NVS_KEY_FPS, v); }
 static void save_sound(uint8_t v)                  { nvs_save_u8(NVS_KEY_SOUND, v); }
 static void save_volume(uint8_t v)                 { nvs_save_u8(NVS_KEY_VOLUME, v); }
@@ -7991,28 +8413,37 @@ static void on_brightness_released(lv_event_t *e)
 
 static void refresh_font_selection(void)
 {
-    for (int i = 0; i < 2; i++) {
+    uint8_t active = is_hifi_theme() ? s_hifi_font_choice : s_font_choice;
+    for (int i = 0; i < s_font_option_count; i++) {
         if (!s_font_btns[i]) continue;
-        bool sel = ((uint8_t)i == s_font_choice);
+        bool sel = ((uint8_t)i == active);
         lv_obj_set_style_bg_color(s_font_btns[i],
             sel ? opt_sel_bg() : lv_color_hex(s_th->surface), 0);
         lv_obj_set_style_bg_opa(s_font_btns[i], LV_OPA_COVER, 0);
         lv_obj_set_style_text_color(s_font_labels[i],
-            sel ? lv_color_white() : lv_color_hex(s_th->text), 0);
+            sel ? opt_sel_fg() : lv_color_hex(s_th->text), 0);
     }
 }
 
 static void on_font_option(lv_event_t *e)
 {
     uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-    if (idx == s_font_choice) return;
-    s_font_choice = idx;
-    save_font(idx);
+    if (idx >= s_font_option_count) return;
+    if (is_hifi_theme()) {
+        if (idx == s_hifi_font_choice) return;
+        s_hifi_font_choice = idx;
+        save_hifi_font(idx);
+    } else {
+        if (idx == s_font_choice) return;
+        s_font_choice = idx;
+        save_font(idx);
+    }
     refresh_font_selection();
     audio_play(AUDIO_SFX_SELECT);
     /* Trigger a full theme rebuild so all screens pick up the new font. */
     lv_async_call(apply_theme_cb, NULL);
-    ESP_LOGI(TAG, "font -> %s", idx == FONT_SLAB ? "SLAB (Arvo)" : "SANS (Montserrat)");
+    ESP_LOGI(TAG, "font -> %s", is_hifi_theme() ? k_hifi_font_names[idx] :
+             (idx == FONT_SLAB ? "SLAB (Arvo)" : "SANS (Montserrat)"));
 }
 
 static void refresh_fps_selection(void)
@@ -8241,7 +8672,8 @@ static void ui_log_stats(void)
         k_mode_names[s_mode], s_dark ? "DARK" : "LIGHT", s_theme_art ? "ON" : "OFF",
         (unsigned)s_accent[s_mode], (unsigned)k_accents[s_accent[s_mode]],
         k_browser_style_names[s_browser_style],
-        s_font_choice == FONT_SLAB ? "SLAB" : "SANS");
+        is_hifi_theme() ? k_hifi_font_names[s_hifi_font_choice] :
+        (s_font_choice == FONT_SLAB ? "SLAB" : "SANS"));
     ESP_LOGI(TAG,
         "brightness=%u sel_line=%s transition=%u sound=%s sound_vol=%d sound_set=%s glyph_dot_cell=%d",
         (unsigned)s_brightness, s_show_sel_line ? "ON" : "OFF", (unsigned)s_transition,

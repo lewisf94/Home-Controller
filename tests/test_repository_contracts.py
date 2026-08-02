@@ -45,6 +45,52 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn('"text_codec.c"', cmake)
         self.assertIn('"album_catalog.c"', cmake)
 
+    def test_neo_hifi_theme_keeps_existing_modes_and_font_contract(self) -> None:
+        shared = REPO_ROOT / "waveshare" / "components" / "p4_shared"
+        ui = (shared / "ui.c").read_text(encoding="utf-8")
+        cmake = (shared / "CMakeLists.txt").read_text(encoding="utf-8")
+
+        # HIFI is appended after the existing persisted modes. Its developer
+        # defaults map to BASIC because the editable tuning header has five
+        # source columns and must not be expanded for this visual-only theme.
+        self.assertIn(
+            "MODE_BASIC = 0, MODE_GLYPH, MODE_PIXEL, MODE_PAPER, MODE_BOLD, MODE_HIFI, MODE_COUNT",
+            ui,
+        )
+        self.assertIn("mode == MODE_HIFI ? MODE_BASIC : mode", ui)
+        self.assertIn('#define NVS_KEY_HIFI_FONT     "hifi_font"', ui)
+
+        for family in ("terminal", "gtl001", "space", "bebas"):
+            for size in (20, 28):
+                source = f"lv_font_hifi_{family}_{size}.c"
+                with self.subTest(source=source):
+                    self.assertTrue((shared / source).is_file())
+                    self.assertIn(f'"{source}"', cmake)
+
+        self.assertTrue((shared / "THIRD_PARTY_FONTS.md").is_file())
+        self.assertTrue((shared / "OFL-1.1.txt").is_file())
+
+    def test_neo_hifi_theme_preserves_legacy_settings_and_ui_contracts(self) -> None:
+        ui = (
+            REPO_ROOT / "waveshare" / "components" / "p4_shared" / "ui.c"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("#define TUNE_MODE_COUNT MODE_HIFI", ui)
+        self.assertIn("fidx * TUNE_MODE_COUNT + default_mode", ui)
+        self.assertIn("m < TUNE_MODE_COUNT", ui)
+        self.assertIn("m == TUNE_MODE_COUNT - 1", ui)
+        self.assertIn(
+            "nvs_get_blob(h, NVS_KEY_ACCENT_PM, NULL, &pm_len)",
+            ui,
+        )
+        self.assertIn("pm_len <= sizeof pm", ui)
+        self.assertIn("FULL COLOUR (FIXED)", ui)
+        self.assertIn("tick_x0 + i * tick_pitch", ui)
+        self.assertIn(
+            "is_hifi_theme() && !s_dv_set[MODE_HIFI][0][DV_BTN_BORDER]",
+            ui,
+        )
+
     def test_p4_and_rp2040_protocol_framing_contracts_match(self) -> None:
         p4 = (
             REPO_ROOT / "waveshare" / "components" / "p4_shared" / "knob.c"
