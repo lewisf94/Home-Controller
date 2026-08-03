@@ -149,6 +149,11 @@ user saves a HIFI-specific developer override.
 
 The BOLD theme is not build-verified or hardware-verified.
 
+The HIFI theme is not build-verified or hardware-verified. HIFI draws a grid,
+a frame, and registration marks on each screen. These parts use more internal
+memory than the other modes. Check the `theme ... ready:` log line against the
+reliability budget before you mark HIFI as verified.
+
 Settings has DISPLAY, SOUND, SETUP, and DEVELOPER tabs.
 
 The DEVELOPER tab has 65 live controls in six pages:

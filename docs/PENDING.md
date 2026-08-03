@@ -10,6 +10,8 @@ The baseline is the hardware-verified daily build.
 
 The latest BOLD and Developer-control batch is not build-verified.
 
+The HIFI theme and the output-transfer batch are also not build-verified.
+
 These release checks remain open:
 
 - [ ] Complete a 60-minute interactive soak.
@@ -32,6 +34,17 @@ These release checks remain open:
 - [ ] Export values through the serial monitor.
 - [ ] Reset one mode to its compiled defaults.
 - [ ] Compare the browser bench with the hardware display.
+- [ ] Test HIFI dark.
+- [ ] Test HIFI light.
+- [ ] Test each of the four HIFI heading fonts.
+- [ ] Record the `theme ... ready:` memory line for each of the six modes.
+- [ ] Confirm that HIFI keeps the internal-memory reserve above its limit.
+- [ ] Confirm that saved Developer overrides survive this update.
+- [ ] Transfer playback to a Music Assistant speaker.
+- [ ] Transfer playback to a Spotify Connect device.
+- [ ] Transfer playback while the built-in speaker plays.
+- [ ] Confirm that a transfer resumes at the previous track position.
+- [ ] Test the SEPARATE output-switching mode.
 
 During the long soak, record these values:
 

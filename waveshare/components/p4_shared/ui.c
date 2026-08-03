@@ -763,7 +763,20 @@ static const int32_t k_dvd_prog_parts[MODE_COUNT]  = TUNE_PROG_PARTS;
  * unmoved slider thus produces the exact committed colour.
  *
  * apply_palette() computes the derived colours (surface, text2, dim, track)
- * only after a user changes a slider. */
+ * only after a user changes a slider.
+ *
+ * WARNING about the layout of each array below. dv_of() reads these arrays
+ * with a stride of TUNE_MODE_COUNT, which is 5, NOT with a stride of
+ * MODE_COUNT, which is 6. Each array therefore holds exactly five dark values,
+ * then exactly five light values. The declared size leaves two unused trailing
+ * slots, which stay at zero. HIFI has no column here at all, because dv_of()
+ * maps HIFI to the BASIC column.
+ *
+ * Do NOT add a sixth value to a dark row for a new mode. A sixth dark value
+ * would land where the first light value must be, and every light face would
+ * then read a wrong colour. To give a new mode its own colours, raise
+ * TUNE_MODE_COUNT and add one value to BOTH the dark row and the light row of
+ * every array below. */
 static const int32_t k_dvd_ground_r[MODE_COUNT * DV_FACES] = {
     /* dark  */   0,  20,  10,  33,   0,
     /* light */ 236, 237, 226, 232, 255,
@@ -948,6 +961,22 @@ typedef struct {
     int32_t  val[MODE_COUNT][DV_FACES][DV_COUNT];
     uint8_t  set[MODE_COUNT][DV_FACES][DV_COUNT];
 } dev_tune_blob_t;
+
+/* Version 3 of the blob, saved before the HIFI mode existed. That version had
+ * five modes. The current version has six. The saved bytes therefore have a
+ * different size and a different stride, so the current struct cannot read
+ * them. This copy keeps the tuning a user already saved for the five original
+ * modes. HIFI starts with no override, which means the BASIC defaults.
+ *
+ * Do not delete this type when the version increases again. Add the next
+ * migration beside it instead. */
+#define DEV_TUNE_VER_5MODE   3u
+#define DEV_TUNE_MODES_5     5
+typedef struct {
+    uint32_t ver;
+    int32_t  val[DEV_TUNE_MODES_5][DV_FACES][DV_COUNT];
+    uint8_t  set[DEV_TUNE_MODES_5][DV_FACES][DV_COUNT];
+} dev_tune_blob_v3_t;
 
 static int dv_face_slot(int idx)
 {
@@ -6937,6 +6966,19 @@ static void apply_theme_cb(void *unused)
     if (old_album_add) lv_obj_delete(old_album_add);
     if (old_lights)  lv_obj_delete(old_lights);
     if (old_queue)   lv_obj_delete(old_queue);
+
+    /* Report the settled internal-memory cost of this mode. Each mode builds
+     * a different quantity of LVGL objects, and each object uses internal
+     * memory, because CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL keeps a small
+     * allocation there. HIFI draws a grid, a frame, and registration marks on
+     * every screen, so it builds the most objects. Compare this line between
+     * modes against the budget in docs/P4-RELIABILITY.md. This log runs only
+     * on a mode or font change, so it adds no load during playback. */
+    ESP_LOGI(TAG, "theme %s ready: int_free=%uKB int_largest=%uKB psram_free=%uKB",
+             k_mode_names[s_mode],
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 }
 
 static void load_settings(void)
@@ -6964,12 +7006,43 @@ static void load_settings(void)
      * at zero, which means the compiled defaults. Thus a damaged or an old
      * blob can never make the interface unusable. */
     {
-        dev_tune_blob_t blob;
-        size_t len = sizeof blob;
-        if (nvs_get_blob(h, NVS_KEY_DEV_TUNE, &blob, &len) == ESP_OK &&
-            len == sizeof blob && blob.ver == DEV_TUNE_VER) {
-            memcpy(s_dv,     blob.val, sizeof s_dv);
-            memcpy(s_dv_set, blob.set, sizeof s_dv_set);
+        /* Read the stored size first, then choose a reader for it. A blob of
+         * an unknown size, or an unknown version, leaves the arrays at zero,
+         * which means the compiled defaults. */
+        size_t stored = 0;
+        if (nvs_get_blob(h, NVS_KEY_DEV_TUNE, NULL, &stored) == ESP_OK) {
+            if (stored == sizeof(dev_tune_blob_t)) {
+                /* This blob is about 4 KB. Read it into PSRAM, not onto the
+                 * stack, because this code runs during boot, when the
+                 * internal-memory reserve matters most. The buffer holds
+                 * plain data, with no DMA use, so PSRAM suits it. */
+                dev_tune_blob_t *blob = heap_caps_malloc(sizeof *blob,
+                                                         MALLOC_CAP_SPIRAM);
+                size_t len = sizeof *blob;
+                if (blob && nvs_get_blob(h, NVS_KEY_DEV_TUNE, blob, &len) == ESP_OK &&
+                    len == sizeof *blob && blob->ver == DEV_TUNE_VER) {
+                    memcpy(s_dv,     blob->val, sizeof s_dv);
+                    memcpy(s_dv_set, blob->set, sizeof s_dv_set);
+                }
+                if (blob) heap_caps_free(blob);
+            } else if (stored == sizeof(dev_tune_blob_v3_t)) {
+                /* A blob saved before HIFI existed. Copy the five original
+                 * modes across, one mode at a time, because the mode stride
+                 * differs between the two layouts. */
+                dev_tune_blob_v3_t *old = heap_caps_malloc(sizeof *old,
+                                                           MALLOC_CAP_SPIRAM);
+                size_t len = sizeof *old;
+                if (old && nvs_get_blob(h, NVS_KEY_DEV_TUNE, old, &len) == ESP_OK &&
+                    len == sizeof *old && old->ver == DEV_TUNE_VER_5MODE) {
+                    for (int m = 0; m < DEV_TUNE_MODES_5; m++) {
+                        memcpy(s_dv[m],     old->val[m], sizeof s_dv[m]);
+                        memcpy(s_dv_set[m], old->set[m], sizeof s_dv_set[m]);
+                    }
+                    ESP_LOGI(TAG, "developer overrides migrated from v%u to v%u",
+                             (unsigned)DEV_TUNE_VER_5MODE, (unsigned)DEV_TUNE_VER);
+                }
+                if (old) heap_caps_free(old);
+            }
         }
     }
     apply_palette();
@@ -7042,12 +7115,23 @@ static void save_dev_tune(void)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_SETTINGS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    dev_tune_blob_t blob = { .ver = DEV_TUNE_VER };
-    memcpy(blob.val, s_dv,     sizeof blob.val);
-    memcpy(blob.set, s_dv_set, sizeof blob.set);
-    nvs_set_blob(h, NVS_KEY_DEV_TUNE, &blob, sizeof blob);
+    /* About 4 KB. Build it in PSRAM, not on the stack. A knob release calls
+     * this function from the LVGL task, whose stack has no room to spare. */
+    dev_tune_blob_t *blob = heap_caps_calloc(1, sizeof *blob, MALLOC_CAP_SPIRAM);
+    if (!blob) {
+        /* Report this. A silent failure here would lose the tuning the user
+         * just made, with no indication of the cause. */
+        ESP_LOGE(TAG, "developer override save failed: no memory for the blob");
+        nvs_close(h);
+        return;
+    }
+    blob->ver = DEV_TUNE_VER;
+    memcpy(blob->val, s_dv,     sizeof blob->val);
+    memcpy(blob->set, s_dv_set, sizeof blob->set);
+    nvs_set_blob(h, NVS_KEY_DEV_TUNE, blob, sizeof *blob);
     nvs_commit(h);
     nvs_close(h);
+    heap_caps_free(blob);
 }
 
 /* Every visual/sound setting persists as a single u8 under NVS_SETTINGS_NS, so
@@ -7274,7 +7358,11 @@ void ui_set_track_info(const spotify_track_t *info)
     bsp_display_unlock();
     int64_t diag_finished_us = esp_timer_get_time();
     int64_t diag_total_us = diag_finished_us - diag_started_us;
-    if (diag_track_changed || diag_total_us >= 20000) {
+    /* A slow update is worth reporting even with diagnostics off, because it
+     * indicates a real fault. A normal update reports only when the user
+     * turns diagnostics on, through Settings > DISPLAY > FPS DISPLAY. */
+    if (diag_total_us >= 20000 ||
+        (diag_track_changed && ui_diagnostics_enabled())) {
         ESP_LOGI(TAG,
                  "diag_ui_meta changed=%d browser_changed=%d lock_ms=%lld apply_ms=%lld total_ms=%lld",
                  diag_track_changed ? 1 : 0, diag_browser_changed ? 1 : 0,
@@ -7376,13 +7464,15 @@ void ui_art_refresh(const uint8_t *rgb_data, uint16_t w, uint16_t h)
     }
     bsp_display_unlock();
     int64_t diag_finished_us = esp_timer_get_time();
-    ESP_LOGI(TAG,
-             "diag_ui_art theme=%s lock_ms=%lld apply_ms=%lld total_ms=%lld size=%ux%u",
-             k_mode_names[s_mode],
-             (diag_locked_us - diag_started_us) / 1000,
-             (diag_finished_us - diag_locked_us) / 1000,
-             (diag_finished_us - diag_started_us) / 1000,
-             (unsigned)w, (unsigned)h);
+    if (ui_diagnostics_enabled()) {
+        ESP_LOGI(TAG,
+                 "diag_ui_art theme=%s lock_ms=%lld apply_ms=%lld total_ms=%lld size=%ux%u",
+                 k_mode_names[s_mode],
+                 (diag_locked_us - diag_started_us) / 1000,
+                 (diag_finished_us - diag_locked_us) / 1000,
+                 (diag_finished_us - diag_started_us) / 1000,
+                 (unsigned)w, (unsigned)h);
+    }
 }
 
 /* The device's own local Sendspin player ("Home Controller"). Backend-neutral:
@@ -8915,7 +9005,16 @@ static void rebuild_browser_cb(void *unused)
     wifi_dots_stop();
     if (!was_browser && old_browser) {
         /* The old browser is not visible. Release its LVGL objects before the
-         * new browser is allocated to reduce the rebuild memory peak. */
+         * new browser is allocated to reduce the rebuild memory peak.
+         *
+         * Reset the input device first. The input device can still hold a
+         * pointer to a browser card, or to the browser scroller, from an
+         * earlier touch. ui_notify_covers_updated() reaches this path from
+         * the backend task at any moment, so that earlier touch can be
+         * recent. A delete with a stale input-device pointer is a
+         * use-after-free crash. apply_theme_cb() takes the same precaution
+         * before its own early delete. */
+        lv_indev_reset(NULL, NULL);
         lv_obj_delete(old_browser);
         old_browser = NULL;
         s_screen_browser = NULL;

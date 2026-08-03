@@ -84,6 +84,48 @@ static spotify_track_t s_track = {0};
 static char s_media_content_id[160] = {0};
 static char s_media_content_type[32] = {0};
 
+/* Now-playing fields that the ha task reads while the WebSocket task can be
+ * rewriting them. apply_state_object() runs on the WebSocket event task.
+ * ha_switch_active_entity() runs on the ha task. Without this guard, an
+ * output switch that lands during a state update can copy a half-written
+ * title or media ID, and then transfer the wrong track.
+ *
+ * The publish and the take are both plain fixed-size copies, so a short
+ * critical section is enough. Do not add any parse or network work inside
+ * this section. */
+typedef struct {
+    char     media_id[160];
+    char     media_type[32];
+    char     title[80];
+    char     artist[64];
+    uint32_t position_ms;
+    bool     is_playing;
+} track_snapshot_t;
+static portMUX_TYPE     s_track_mux = portMUX_INITIALIZER_UNLOCKED;
+static track_snapshot_t s_track_snapshot = {0};
+
+static void track_snapshot_publish(void)
+{
+    track_snapshot_t snap;
+    snprintf(snap.media_id,   sizeof(snap.media_id),   "%s", s_media_content_id);
+    snprintf(snap.media_type, sizeof(snap.media_type), "%s", s_media_content_type);
+    snprintf(snap.title,      sizeof(snap.title),      "%s", s_track.title);
+    snprintf(snap.artist,     sizeof(snap.artist),     "%s", s_track.artist);
+    snap.position_ms = s_track.progress_ms;
+    snap.is_playing  = s_track.is_playing;
+
+    taskENTER_CRITICAL(&s_track_mux);
+    s_track_snapshot = snap;
+    taskEXIT_CRITICAL(&s_track_mux);
+}
+
+static void track_snapshot_take(track_snapshot_t *out)
+{
+    taskENTER_CRITICAL(&s_track_mux);
+    *out = s_track_snapshot;
+    taskEXIT_CRITICAL(&s_track_mux);
+}
+
 typedef enum {
     TRANSFER_TARGET_NONE = 0,
     TRANSFER_TARGET_SPOTIFY,
@@ -99,6 +141,7 @@ static char     s_transfer_artist[64] = {0};
 static uint32_t s_transfer_position_ms = 0;
 static int64_t  s_transfer_due_us = 0;
 static bool     s_transfer_seek_pending = false;
+static int      s_transfer_lookup_retries = 0;
 
 /* HA core Spotify integration support. That integration creates one account
  * media_player whose `source_list` holds the Connect devices known to Spotify.
@@ -180,6 +223,17 @@ static int64_t s_album_pending_since_us = 0;
 #define FORCED_INVENTORY_MIN_US      (5LL * 1000LL * 1000LL)
 #define LIGHT_SETTLE_MIN_FREE        (64U * 1024U)
 #define LIGHT_SETTLE_MIN_LARGEST     (32U * 1024U)
+
+/* An output transfer can need a Spotify HTTPS lookup to resolve the track ID.
+ * That lookup is heavy optional network work, so it uses the same budget as
+ * the cover downloads in docs/P4-RELIABILITY.md. The transfer has already
+ * paused the old output by this point, so a blocked lookup retries for a few
+ * seconds before it reports a failure. Silence is a worse outcome than a
+ * short wait. */
+#define TRANSFER_LOOKUP_MIN_FREE     (64U * 1024U)
+#define TRANSFER_LOOKUP_MIN_LARGEST  (32U * 1024U)
+#define TRANSFER_LOOKUP_RETRY_US     (1500LL * 1000LL)
+#define TRANSFER_LOOKUP_MAX_RETRIES  4
 
 /* Delay before restarting the WebSocket after a clean server-side close.
  * Long enough not to hammer a Home Assistant that is still booting, short
@@ -741,8 +795,12 @@ static void diag_request_result(int id, bool failed)
     ha_diag_request_t *slot = &s_diag_requests[(unsigned)id % HA_DIAG_REQUEST_SLOTS];
     if (slot->id != id || slot->sent_us == 0) return;
     int64_t elapsed_us = esp_timer_get_time() - slot->sent_us;
-    ESP_LOGI(TAG, "diag_ha_command id=%d result=%s rtt_ms=%lld",
-             id, failed ? "failed" : "ok", elapsed_us / 1000);
+    /* Always report a failure. Report a normal round-trip time only when the
+     * user turns diagnostics on, through Settings > DISPLAY > FPS DISPLAY. */
+    if (failed || ui_diagnostics_enabled()) {
+        ESP_LOGI(TAG, "diag_ha_command id=%d result=%s rtt_ms=%lld",
+                 id, failed ? "failed" : "ok", elapsed_us / 1000);
+    }
     slot->id = 0;
     slot->sent_us = 0;
 }
@@ -1324,8 +1382,13 @@ bool ha_play_album(const char *spotify_uri)
     return call_service("music_assistant", "play_media", data);
 }
 
-static bool transfer_media_id(char *out, size_t out_len, transfer_target_t target)
+/* Set when the caller should retry later, instead of reporting a failure.
+ * The lookup below is a TLS request, so it must respect the same limits as
+ * every other heavy network operation in this file. */
+static bool transfer_media_id(char *out, size_t out_len, transfer_target_t target,
+                              bool *defer)
 {
+    if (defer) *defer = false;
     const char *id = s_transfer_media_id;
     if (!id[0]) return false;
     if (target == TRANSFER_TARGET_SPOTIFY) {
@@ -1336,6 +1399,23 @@ static bool transfer_media_id(char *out, size_t out_len, transfer_target_t targe
         if (strncmp(id, "spotify://track/", 16) == 0) {
             snprintf(out, out_len, "spotify:track:%s", id + 16);
             return true;
+        }
+
+        /* Neither fast path matched, so the next step is a blocking Spotify
+         * HTTPS search on the ha task. That search needs internal and
+         * DMA-capable memory for the TLS session. Sendspin needs the same
+         * memory for the SDIO transport, so never run this search while the
+         * local speaker plays. See docs/P4-RELIABILITY.md. */
+        if (audio_stream_is_active()) {
+            ESP_LOGW(TAG, "output transfer lookup deferred: local playback active");
+            if (defer) *defer = true;
+            return false;
+        }
+        if (!app_core_reliability_network_budget_ok("output transfer lookup",
+                                                    TRANSFER_LOOKUP_MIN_FREE,
+                                                    TRANSFER_LOOKUP_MIN_LARGEST)) {
+            if (defer) *defer = true;
+            return false;
         }
 
         /* Music Assistant can expose a library:// or provider-specific media
@@ -1394,6 +1474,7 @@ static void clear_pending_transfer(void)
     s_transfer_title[0] = '\0';
     s_transfer_artist[0] = '\0';
     s_transfer_position_ms = 0;
+    s_transfer_lookup_retries = 0;
 }
 
 static void run_pending_transfer(void)
@@ -1412,8 +1493,21 @@ static void run_pending_transfer(void)
     }
 
     char media_id[192];
-    if (!transfer_media_id(media_id, sizeof(media_id), s_transfer_target)) {
-        ui_show_toast("Output changed, but this track cannot transfer to Spotify", 3500);
+    bool defer = false;
+    if (!transfer_media_id(media_id, sizeof(media_id), s_transfer_target, &defer)) {
+        /* A deferred lookup means the memory budget or the local audio stream
+         * blocked it, not that the track is unresolvable. Keep the pending
+         * transfer armed and try again shortly. */
+        if (defer && s_transfer_lookup_retries < TRANSFER_LOOKUP_MAX_RETRIES) {
+            s_transfer_lookup_retries++;
+            s_transfer_due_us = esp_timer_get_time() + TRANSFER_LOOKUP_RETRY_US;
+            ESP_LOGI(TAG, "output transfer lookup retry %d of %d",
+                     s_transfer_lookup_retries, TRANSFER_LOOKUP_MAX_RETRIES);
+            return;
+        }
+        ui_show_toast(defer
+            ? "Output is busy -- could not transfer this track"
+            : "Output changed, but this track cannot transfer to Spotify", 3500);
         clear_pending_transfer();
         return;
     }
@@ -1670,11 +1764,15 @@ static void apply_state_object(const char *st)
         s_media_pos_ref_us  = esp_timer_get_time();
     }
 
+    /* Publish the fields the ha task reads for an output transfer. Do this
+     * after every field above is final, and before the UI call. */
+    track_snapshot_publish();
+
     ESP_LOGI(TAG, "state: %s -- %s [%s]", s_track.artist, s_track.title, state);
     int64_t ui_started_us = esp_timer_get_time();
     ui_set_track_info(&s_track);
     int64_t ui_finished_us = esp_timer_get_time();
-    if (track_changed) {
+    if (track_changed && ui_diagnostics_enabled()) {
         ESP_LOGI(TAG,
                  "diag_meta seq=%u updated=%s parse_ms=%lld ui_call_ms=%lld art_changed=%d",
                  (unsigned)s_diag_track_seq,
@@ -2740,10 +2838,16 @@ void ha_switch_active_entity(const char *sel, bool transfer_playback)
         target_entity = s_spotify_entity;
     }
 
+    /* Take one consistent copy of the now-playing fields. The WebSocket task
+     * owns each of these fields, so read them through the snapshot, never
+     * directly. Every decision below uses this copy. */
+    track_snapshot_t now;
+    track_snapshot_take(&now);
+
     /* A switch between two Spotify Connect sources is already a native
      * Spotify transfer. Do not pause or restart the account session. */
     bool changes_entity = strcmp(target_entity, s_entity) != 0;
-    if (!transfer_playback || !changes_entity || !s_track.is_playing) {
+    if (!transfer_playback || !changes_entity || !now.is_playing) {
         ha_set_active_entity(sel);
         return;
     }
@@ -2755,12 +2859,12 @@ void ha_switch_active_entity(const char *sel, bool transfer_playback)
     clear_pending_transfer();
     snprintf(s_transfer_entity, sizeof(s_transfer_entity), "%s", target_entity);
     snprintf(s_transfer_media_id, sizeof(s_transfer_media_id), "%s",
-             s_media_content_id);
+             now.media_id);
     snprintf(s_transfer_media_type, sizeof(s_transfer_media_type), "%s",
-             s_media_content_type);
-    snprintf(s_transfer_title, sizeof(s_transfer_title), "%s", s_track.title);
-    snprintf(s_transfer_artist, sizeof(s_transfer_artist), "%s", s_track.artist);
-    s_transfer_position_ms = s_track.progress_ms;
+             now.media_type);
+    snprintf(s_transfer_title, sizeof(s_transfer_title), "%s", now.title);
+    snprintf(s_transfer_artist, sizeof(s_transfer_artist), "%s", now.artist);
+    s_transfer_position_ms = now.position_ms;
     s_transfer_target = target_is_spotify_source ? TRANSFER_TARGET_SPOTIFY
                       : target_is_ma             ? TRANSFER_TARGET_MA
                                                  : TRANSFER_TARGET_HA;

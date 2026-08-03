@@ -299,12 +299,14 @@ static bool decode_art(const char *path, uint32_t diag_seq)
     int64_t display_started_us = esp_timer_get_time();
     art_buffer_publish(&s_art, w, h);
     int64_t display_finished_us = esp_timer_get_time();
-    ESP_LOGI(TAG,
-             "diag_art seq=%u stage=render decode_ms=%lld display_ms=%lld size=%ux%u",
-             (unsigned)diag_seq,
-             (display_started_us - decode_started_us) / 1000,
-             (display_finished_us - display_started_us) / 1000,
-             (unsigned)w, (unsigned)h);
+    if (ui_diagnostics_enabled()) {
+        ESP_LOGI(TAG,
+                 "diag_art seq=%u stage=render decode_ms=%lld display_ms=%lld size=%ux%u",
+                 (unsigned)diag_seq,
+                 (display_started_us - decode_started_us) / 1000,
+                 (display_finished_us - display_started_us) / 1000,
+                 (unsigned)w, (unsigned)h);
+    }
     return true;
 }
 
@@ -407,7 +409,7 @@ static void queue_now_playing_art(const char *art_rel, uint32_t diag_seq,
     UBaseType_t depth_before = uxQueueMessagesWaiting(s_media_queue);
     if (xQueueSendToFront(s_media_queue, &work, 0) != pdTRUE) {
         ESP_LOGW(TAG, "media queue full; dropping now-playing art request");
-    } else {
+    } else if (ui_diagnostics_enabled()) {
         ESP_LOGI(TAG,
                  "diag_art seq=%u stage=queued event_to_queue_ms=%lld depth_before=%u",
                  (unsigned)diag_seq,
@@ -449,18 +451,26 @@ static void media_task(void *arg)
                 int64_t download_finished_us = esp_timer_get_time();
                 bool decoded = downloaded && decode_art(ART_FILE_PATH, work.diag_seq);
                 int64_t work_finished_us = esp_timer_get_time();
-                size_t free_internal = heap_caps_get_free_size(
-                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-                size_t largest_internal = heap_caps_get_largest_free_block(
-                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-                ESP_LOGI(TAG,
-                         "diag_art seq=%u stage=complete queue_ms=%lld download_ms=%lld total_ms=%lld bytes=%u ok=%d free=%u largest=%u",
-                         (unsigned)work.diag_seq,
-                         (work_started_us - work.queued_us) / 1000,
-                         (download_finished_us - work_started_us) / 1000,
-                         (work_finished_us - work.event_us) / 1000,
-                         (unsigned)art_len, decoded ? 1 : 0,
-                         (unsigned)free_internal, (unsigned)largest_internal);
+                /* Always report a failed cover, because that indicates a real
+                 * fault. Report a normal cover only when the user turns
+                 * diagnostics on, through Settings > DISPLAY > FPS DISPLAY.
+                 * Read the heap inside this branch: the largest-free-block
+                 * query walks the heap under a lock, so it does not belong on
+                 * the normal art path. */
+                if (!decoded || ui_diagnostics_enabled()) {
+                    size_t free_internal = heap_caps_get_free_size(
+                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                    size_t largest_internal = heap_caps_get_largest_free_block(
+                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                    ESP_LOGI(TAG,
+                             "diag_art seq=%u stage=complete queue_ms=%lld download_ms=%lld total_ms=%lld bytes=%u ok=%d free=%u largest=%u",
+                             (unsigned)work.diag_seq,
+                             (work_started_us - work.queued_us) / 1000,
+                             (download_finished_us - work_started_us) / 1000,
+                             (work_finished_us - work.event_us) / 1000,
+                             (unsigned)art_len, decoded ? 1 : 0,
+                             (unsigned)free_internal, (unsigned)largest_internal);
+                }
             } else {
                 next_runtime_cover = xTaskGetTickCount();
             }
