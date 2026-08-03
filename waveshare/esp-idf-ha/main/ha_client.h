@@ -68,6 +68,7 @@ bool ha_play_album(const char *spotify_uri);   /* "spotify:album:ID" */
  * it is not a Music Assistant player. */
 void ha_request_devices(void);
 void ha_set_active_entity(const char *entity_id);
+void ha_switch_active_entity(const char *entity_id, bool transfer_playback);
 
 /* Album candidates for the shared Add Albums screen. A non-empty query searches
  * Spotify's catalogue directly. An empty query keeps the older HA media-browser
@@ -108,7 +109,8 @@ bool ha_light_set_hs(const char *entity_id, int hue_deg, int sat_pct);
  * handler stashes its relative URL. The ha task polls this (consume-once),
  * builds the absolute URL, downloads + decodes it off the WebSocket task.
  * Returns true and fills `rel_out` if a new picture is pending. */
-bool ha_take_pending_art(char *rel_out, size_t out_len);
+bool ha_take_pending_art(char *rel_out, size_t out_len,
+                         uint32_t *seq_out, int64_t *event_us_out);
 
 /* Build absolute "http://<host>:<port><rel>" for an entity_picture path. */
 void ha_art_full_url(const char *rel, char *out, size_t out_len);

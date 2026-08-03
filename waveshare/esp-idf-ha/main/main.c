@@ -27,6 +27,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
@@ -76,6 +77,7 @@ static const char *TAG = "main";
 #define OTA_URL ""            /* optional secrets.h default firmware URL */
 #endif
 bool creds_get(const char *key, char *out, size_t out_len, const char *fallback);
+bool ui_output_switch_transfer_enabled(void);
 
 /* ── WiFi ──────────────────────────────────────────────────────────────────── */
 /* Connect (with resilient background reconnect after fast retries exhaust)
@@ -116,7 +118,10 @@ typedef struct {
         char     album_uri[64];
         char     album_query[80];
         char     queue_query[80];
-        char     device_id[64];
+        struct {
+            char device_id[64];
+            bool transfer_playback;
+        } transfer;
         char     light_id[96];   /* HCMD_LIGHT_TOGGLE -- matches ui_light_t.entity_id */
         struct {
             char entity_id[96];
@@ -145,6 +150,9 @@ typedef enum {
 typedef struct {
     media_work_type_t type;
     char art_rel[256];
+    uint32_t diag_seq;
+    int64_t event_us;
+    int64_t queued_us;
 } media_work_t;
 
 static QueueHandle_t s_media_queue;
@@ -203,7 +211,9 @@ void ui_request_search_queue_tracks(const char *query)
 void ui_request_transfer(const char *device_id)
 {
     hcmd_t c = { .type = HCMD_TRANSFER };
-    snprintf(c.device_id, sizeof c.device_id, "%s", device_id ? device_id : "");
+    snprintf(c.transfer.device_id, sizeof c.transfer.device_id, "%s",
+             device_id ? device_id : "");
+    c.transfer.transfer_playback = ui_output_switch_transfer_enabled();
     xQueueSend(s_cmd_queue, &c, 0);
 }
 void ui_request_select_sonos(const char *host)
@@ -276,16 +286,26 @@ static void refresh_lights_after_command(bool sent)
     ha_request_lights_fresh();
 }
 
-static void decode_art(const char *path)
+static bool decode_art(const char *path, uint32_t diag_seq)
 {
     uint8_t *buf = art_buffer_idle(&s_art);
-    if (!buf) return;
+    if (!buf) return false;
     uint16_t w = 0, h = 0;
+    int64_t decode_started_us = esp_timer_get_time();
     if (!album_art_decode_file(path, (uint16_t *)buf, ART_DECODE_W * ART_DECODE_H, &w, &h)) {
-        ESP_LOGE(TAG, "art decode failed");
-        return;
+        ESP_LOGE(TAG, "art decode failed (diag_seq=%u)", (unsigned)diag_seq);
+        return false;
     }
+    int64_t display_started_us = esp_timer_get_time();
     art_buffer_publish(&s_art, w, h);
+    int64_t display_finished_us = esp_timer_get_time();
+    ESP_LOGI(TAG,
+             "diag_art seq=%u stage=render decode_ms=%lld display_ms=%lld size=%ux%u",
+             (unsigned)diag_seq,
+             (display_started_us - decode_started_us) / 1000,
+             (display_finished_us - display_started_us) / 1000,
+             (unsigned)w, (unsigned)h);
+    return true;
 }
 
 /* Fetch + decode browser thumbnails for any runtime-added albums that don't
@@ -375,13 +395,25 @@ static cover_status_t fetch_runtime_covers(void)
            more_pending ? COVERS_PROGRESS : COVERS_DONE;
 }
 
-static void queue_now_playing_art(const char *art_rel)
+static void queue_now_playing_art(const char *art_rel, uint32_t diag_seq,
+                                  int64_t event_us)
 {
     if (!s_media_queue || !art_rel || !art_rel[0]) return;
     media_work_t work = { .type = MEDIA_WORK_NOW_PLAYING_ART };
     snprintf(work.art_rel, sizeof(work.art_rel), "%s", art_rel);
-    if (xQueueSendToFront(s_media_queue, &work, 0) != pdTRUE)
+    work.diag_seq = diag_seq;
+    work.event_us = event_us;
+    work.queued_us = esp_timer_get_time();
+    UBaseType_t depth_before = uxQueueMessagesWaiting(s_media_queue);
+    if (xQueueSendToFront(s_media_queue, &work, 0) != pdTRUE) {
         ESP_LOGW(TAG, "media queue full; dropping now-playing art request");
+    } else {
+        ESP_LOGI(TAG,
+                 "diag_art seq=%u stage=queued event_to_queue_ms=%lld depth_before=%u",
+                 (unsigned)diag_seq,
+                 event_us ? (work.queued_us - event_us) / 1000 : 0,
+                 (unsigned)depth_before);
+    }
 }
 
 static void queue_runtime_covers(void)
@@ -411,8 +443,24 @@ static void media_task(void *arg)
                 char art_url[320];
                 ha_art_full_url(work.art_rel, art_url, sizeof(art_url));
                 size_t art_len = 0;
-                if (ha_download_to_file(art_url, ART_FILE_PATH, &art_len, true) && art_len > 0)
-                    decode_art(ART_FILE_PATH);
+                int64_t work_started_us = esp_timer_get_time();
+                bool downloaded = ha_download_to_file(
+                    art_url, ART_FILE_PATH, &art_len, true) && art_len > 0;
+                int64_t download_finished_us = esp_timer_get_time();
+                bool decoded = downloaded && decode_art(ART_FILE_PATH, work.diag_seq);
+                int64_t work_finished_us = esp_timer_get_time();
+                size_t free_internal = heap_caps_get_free_size(
+                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                size_t largest_internal = heap_caps_get_largest_free_block(
+                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                ESP_LOGI(TAG,
+                         "diag_art seq=%u stage=complete queue_ms=%lld download_ms=%lld total_ms=%lld bytes=%u ok=%d free=%u largest=%u",
+                         (unsigned)work.diag_seq,
+                         (work_started_us - work.queued_us) / 1000,
+                         (download_finished_us - work_started_us) / 1000,
+                         (work_finished_us - work.event_us) / 1000,
+                         (unsigned)art_len, decoded ? 1 : 0,
+                         (unsigned)free_internal, (unsigned)largest_internal);
             } else {
                 next_runtime_cover = xTaskGetTickCount();
             }
@@ -453,7 +501,10 @@ static void ha_task(void *arg)
             case HCMD_VOLUME:       ha_set_volume(cmd.volume_pct);    break;
             case HCMD_PLAY_ALBUM:   ha_play_album(cmd.album_uri);        break;
             case HCMD_GET_DEVICES:  ha_request_devices();                break;
-            case HCMD_TRANSFER:     ha_set_active_entity(cmd.device_id); break;
+            case HCMD_TRANSFER:
+                ha_switch_active_entity(cmd.transfer.device_id,
+                                        cmd.transfer.transfer_playback);
+                break;
             case HCMD_GET_ALBUM_CANDIDATES:
                 ha_request_album_candidates(cmd.album_query);
                 break;
@@ -514,8 +565,11 @@ static void ha_task(void *arg)
         }
 
         char art_rel[256];
-        if (ha_take_pending_art(art_rel, sizeof(art_rel)))
-            queue_now_playing_art(art_rel);
+        uint32_t art_seq = 0;
+        int64_t art_event_us = 0;
+        if (ha_take_pending_art(art_rel, sizeof(art_rel),
+                                &art_seq, &art_event_us))
+            queue_now_playing_art(art_rel, art_seq, art_event_us);
     }
 }
 
