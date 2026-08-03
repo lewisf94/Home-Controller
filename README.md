@@ -44,14 +44,16 @@ The Waveshare interface has these additional functions:
 - Capacitive touch.
 - Albums, Now Playing, Queue, Lights, and Settings pages.
 - Carousel, Focus, and Cover Flow browser styles.
-- BASIC, GLYPH, PIXEL, PAPER, and BOLD themes.
+- BASIC, GLYPH, PIXEL, PAPER, BOLD, and HIFI themes.
 - Dark and light theme variants.
+- Four selectable heading fonts in the HIFI theme.
 - On-device developer controls for type, color, shape, layout, browser, and art values.
 - On-device album search and addition.
 - User-interface sounds through the ES8311 speaker.
 - Backlight dim and sleep levels.
 - Direct Sonos control in the Spotify build.
 - Device, queue, light, and Sendspin functions in the Home Assistant build.
+- A choice of two output-switching behaviours in the Home Assistant build.
 - Crash reports, watchdog recovery, and over-the-air updates.
 
 The optional RP2040 haptic-knob controller communicates through UART. Its
@@ -189,7 +191,9 @@ Do not edit generated album source files manually.
 5. The RP2040 sensor tests are hardware-verified.
 6. The RP2040 motor test is build-verified.
 7. The BOLD theme and Developer controls need a build and hardware test.
-8. The custom PCB remains in development.
+8. The HIFI theme needs a build and hardware test.
+9. The output-transfer functions need a build and hardware test.
+10. The custom PCB remains in development.
 
 Refer to [ROADMAP.md](docs/ROADMAP.md) for planned work.
 Refer to [PENDING.md](docs/PENDING.md) for verification debt.

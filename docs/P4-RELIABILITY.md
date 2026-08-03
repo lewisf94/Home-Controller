@@ -111,7 +111,14 @@ ESP-IDF remains the final, hard stop against an overflow.
 5. A UI callback must only add work to a queue. TLS work, WebSocket work,
    Spotify work, HA work, JPEG work, and I2S work must never run while the
    code holds the LVGL lock.
-6. A new streaming or metadata role stays disabled until it has a written
+6. An output transfer to a Spotify Connect device can need a Spotify
+   catalogue search. This search is a blocking HTTPS request on the HA task.
+   This search therefore uses the heavy-work limits above, and this search
+   never runs during Sendspin playback. A blocked search retries four times,
+   at 1.5-second intervals, then reports a failure to the user. The transfer
+   has already paused the old output at that point, so a short retry is
+   better than immediate silence.
+7. A new streaming or metadata role stays disabled until it has a written
    budget for payload cost, stack cost, and transport cost. This role also
    needs a soak-test result before it becomes active.
 

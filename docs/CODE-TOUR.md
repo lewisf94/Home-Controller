@@ -166,7 +166,7 @@ Read the files in roughly this order. Start with the header comment in
 | File | Purpose |
 |---|---|
 | `main.c` | Start here. The entry point and the main sequence: startup, the three tasks, the command queue, the WiFi connection, the poll loop, and the routing between Spotify and Sonos. The header comment is a short version of this tour. |
-| `ui.c` (with `ui.h`) | The full user interface, built with LVGL: the album browser, the now-playing screen, the Settings screens, the five interface modes (BASIC, GLYPH, PIXEL, PAPER, and BOLD), the DEVELOPER settings tab, the Cover Flow effect, the volume controls, and the WiFi signal display. This file lives in the shared `waveshare/components/p4_shared/` component, so both P4 builds use it. This is the largest file in the project. Other code calls the screen only through the `ui_*()` functions declared in `ui.h`. |
+| `ui.c` (with `ui.h`) | The full user interface, built with LVGL: the album browser, the now-playing screen, the Settings screens, the six interface modes (BASIC, GLYPH, PIXEL, PAPER, BOLD, and HIFI), the DEVELOPER settings tab, the Cover Flow effect, the volume controls, and the WiFi signal display. This file lives in the shared `waveshare/components/p4_shared/` component, so both P4 builds use it. This is the largest file in the project. Other code calls the screen only through the `ui_*()` functions declared in `ui.h`. |
 | `ui_tune.h` | A header of adjustable numeric values: text positions, colours, and spacing, grouped by interface mode. The DEVELOPER settings tab can override many of these values at runtime. The `EXPORT TO SERIAL` control in that tab prints values in this header's format, for a developer to copy into this file. |
 | `spotify.c` (with `spotify.h`) | The Spotify web-API client: sign-in and access-token refresh, the playback-state poll, the play, pause, next, seek, and volume commands, the device list, and the cover-art download. This file includes a small hand-written JSON reader, since the code needs only a few fields from each response. |
 | `sonos.c` (with `sonos.h`) | Local control of a Sonos speaker over the network, through the SOAP and UPnP protocol on port 1400: play, pause, seek, volume, the current playback state, and the command to start an album. |
@@ -175,7 +175,7 @@ Read the files in roughly this order. Start with the header comment in
 | `album_thumbs.c` (with the matching header) | The small thumbnail images shown in the browser, built into the program. A script also generates this file. |
 | `littlefs.c` (with the matching header) | A small filesystem on the flash chip. The firmware uses this filesystem as scratch space for a downloaded cover image, before the image is decoded. |
 | `audio.c` (with `audio.h`) | Generates the small user-interface audio effects, for example clicks and chimes, and plays the effects through the speaker on the board. |
-| `lv_font_*.c` | Generated font files, for the pixel, dot, mono, slab, and Jost Bold fonts that the interface modes use. A script produces these files. Do not edit these files by hand. |
+| `lv_font_*.c` | Generated font files, for the pixel, dot, mono, slab, Jost Bold, and HIFI heading fonts that the interface modes use. A script produces these files. Do not edit these files by hand. `THIRD_PARTY_FONTS.md`, in the same folder, records the licence of each font. |
 | `secrets.h` | The WiFi and Spotify credentials for one build. This file is not in the git repository. Copy `secrets.h.example`, and fill in the real values. Never commit this file. |
 
 ---
@@ -221,8 +221,9 @@ for each rule. The rules most relevant to a new reader are these:
 - The album list and the fonts are generated files. Edit the source list or
   run the matching script. Do not edit `albums.c` or an `lv_font_*.c` file by
   hand.
-- The BOLD interface mode is not hardware-verified. Treat a change near this
-  mode with the same care as an unverified feature.
+- The BOLD interface mode and the HIFI interface mode are not
+  hardware-verified. Treat a change near either mode with the same care as an
+  unverified feature.
 
 ---
 

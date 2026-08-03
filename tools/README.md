@@ -52,6 +52,8 @@ The bench does not reproduce these functions:
 - Device icon fonts.
 - Exact bitmap-font metrics.
 - Complete GLYPH, PIXEL, and PAPER interface details.
+- The BOLD and HIFI modes. The bench has no preview for either mode. Use the
+  hardware display to judge these two modes.
 
 ## Fonts
 

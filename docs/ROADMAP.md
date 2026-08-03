@@ -16,6 +16,9 @@ The direct Spotify and Sonos baseline is also hardware-verified.
 
 The latest BOLD and Developer-control batch needs a build and hardware test.
 
+The HIFI theme and the output-transfer batch also need a build and hardware
+test.
+
 The RP2040 Pico and MT6701 sensor path is hardware-verified.
 
 The TMC6300 motor test is build-verified.
@@ -89,10 +92,13 @@ Goal: prove long-duration stability of the current daily build.
 6. Test OTA.
 7. Test crash reporting.
 8. Test runtime cover repair.
-9. Build the latest BOLD and Developer-control batch.
+9. Build the latest BOLD, HIFI, and Developer-control batch.
 10. Test BOLD in both appearances.
-11. Test all Developer pages and serial export.
-12. Compare the browser bench with the hardware display.
+11. Test HIFI in both appearances, with each heading font.
+12. Test all Developer pages and serial export.
+13. Confirm that saved Developer overrides survive the update.
+14. Test output transfer to each output type.
+15. Compare the browser bench with the hardware display.
 
 Exit criteria:
 
@@ -173,7 +179,7 @@ The project has completed these major stages:
 - Shared Waveshare interface and application components.
 - Cover Flow compositor and PPA acceleration.
 - Compiled theme fonts.
-- BOLD theme and browser design bench.
+- BOLD theme, HIFI theme, and browser design bench.
 - Live Developer controls.
 - Runtime album addition.
 - Device credential setup.

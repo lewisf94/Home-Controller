@@ -60,6 +60,8 @@ Test each mode in both appearances.
 - [ ] PAPER light.
 - [ ] BOLD dark.
 - [ ] BOLD light.
+- [ ] HIFI dark.
+- [ ] HIFI light.
 - [ ] Theme album art enabled.
 - [ ] Theme album art disabled.
 - [ ] Every compiled font renders.
@@ -68,9 +70,25 @@ Test each mode in both appearances.
 - [ ] The volume control matches the mode.
 - [ ] Interface sounds match the selected set.
 
+Test each HIFI heading font. The HEADING FONT control is on the DISPLAY tab,
+and this control appears only in the HIFI mode.
+
+- [ ] Terminal Grotesque.
+- [ ] GTL001.
+- [ ] Space Mono.
+- [ ] Bebas Neue.
+- [ ] The HIFI grid, frame, and registration marks draw on each page.
+
 Watch the serial output during repeated mode changes.
 
 No allocation failure or reset is permitted.
+
+Record the `theme ... ready:` line for each of the six modes. This line
+reports the settled internal memory. HIFI builds the most interface objects,
+so HIFI reports the lowest figure. Compare each figure against the limits in
+[P4-RELIABILITY.md](P4-RELIABILITY.md).
+
+- [ ] Each mode holds the internal reserve above its desired line.
 
 ## Waveshare Developer-Control Test
 
@@ -89,6 +107,16 @@ No allocation failure or reset is permitted.
 - [ ] RESET MODE restores the compiled values.
 - [ ] A reboot preserves an override.
 - [ ] The browser bench gives an approximate visual match.
+- [ ] HIFI uses the BASIC values until a HIFI override is saved.
+
+Test the override migration once, on the first boot of this firmware, on a
+device that already holds saved overrides:
+
+- [ ] Each override saved before this update is still present.
+- [ ] The log reports `developer overrides migrated`.
+
+This check is only possible once for each device. The migration runs from a
+version 3 record. After the first save, the device holds a version 4 record.
 
 ## Waveshare Reliability Test
 
@@ -205,6 +233,28 @@ Then run eight hours of playback and idle operation.
 - [ ] Light color control works.
 - [ ] Light state refresh shows the accepted value.
 - [ ] A rejected token starts a visible retry cycle.
+
+### Output Switching
+
+Set OUTPUT SWITCHING to TRANSFER on the SOUND tab. Then run these steps:
+
+- [ ] Transfer playback to a Music Assistant speaker.
+- [ ] Transfer playback to a Spotify Connect device.
+- [ ] Playback continues on the new output.
+- [ ] The old output stops.
+- [ ] Playback resumes at the previous track position.
+- [ ] Transfer a track that Music Assistant reports with a `library://` ID.
+- [ ] Start a transfer while the built-in speaker plays.
+
+The last step must not produce an audio fault. The firmware defers the
+catalogue search while Sendspin plays. Expect the log line `output transfer
+lookup deferred: local playback active`, then either a completed transfer or
+the message `Output is busy`.
+
+Set OUTPUT SWITCHING to SEPARATE. Then run these steps:
+
+- [ ] Select a second output.
+- [ ] The first output continues to play.
 
 ## Runtime Album Test
 

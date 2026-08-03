@@ -180,6 +180,8 @@ The theme system uses related industrial-design references:
 - GLYPH uses a dot-matrix instrument style.
 - PIXEL uses a low-resolution computer style.
 - PAPER uses a printed technical-instrument style.
+- BOLD uses a geometric-sans display style.
+- HIFI uses a broadcast-console style.
 
 ## Reference Material
 

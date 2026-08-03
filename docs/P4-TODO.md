@@ -16,7 +16,7 @@ These functions are complete:
 - Display, touch, Wi-Fi, and Spotify communication.
 - Music Assistant, Sendspin, Sonos, and Spotify Connect control.
 - Carousel, Focus, and Cover Flow.
-- BASIC, GLYPH, PIXEL, PAPER, and BOLD themes.
+- BASIC, GLYPH, PIXEL, PAPER, BOLD, and HIFI themes.
 - Dark and light appearances.
 - PPA display acceleration.
 - Runtime album addition and cover storage.
@@ -33,16 +33,22 @@ Complete these tests before new large interface work:
 
 1. Build both Waveshare targets with the latest theme batch.
 2. Test BOLD in both appearances.
-3. Test all six Developer pages.
-4. Compare the theme bench with the hardware display.
-5. Run the Home Assistant interactive soak for 60 minutes.
-6. Run the playback and idle soak for eight hours.
-7. Play audio through the built-in speaker.
-8. Test queue add, search, and clear operations.
-9. Stress light controls during audio playback.
-10. Test OTA installation from a known firmware image.
-11. Confirm the next boot reports and clears a test crash.
-12. Repair an older runtime album that has no cover.
+3. Test HIFI in both appearances, with each of its four heading fonts.
+4. Record the `theme ... ready:` memory line for each of the six modes.
+5. Test all six Developer pages.
+6. Confirm that saved Developer overrides survive this update.
+7. Compare the theme bench with the hardware display.
+8. Run the Home Assistant interactive soak for 60 minutes.
+9. Run the playback and idle soak for eight hours.
+10. Play audio through the built-in speaker.
+11. Test queue add, search, and clear operations.
+12. Stress light controls during audio playback.
+13. Test output transfer to a Music Assistant speaker.
+14. Test output transfer to a Spotify Connect device.
+15. Start an output transfer while the built-in speaker plays.
+16. Test OTA installation from a known firmware image.
+17. Confirm the next boot reports and clears a test crash.
+18. Repair an older runtime album that has no cover.
 
 Record each result in [TESTING.md](TESTING.md).
 

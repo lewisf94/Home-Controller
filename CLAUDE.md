@@ -105,6 +105,24 @@ The build provides:
 Sendspin starts after the initial Home Assistant state load. This sequence
 reduces pressure on the SDIO receive pool.
 
+### Output Switching
+
+The SOUND tab has an OUTPUT SWITCHING control. This control has two settings.
+
+TRANSFER is the default setting. This setting pauses the old output, then
+starts the same track on the new output. The build then seeks to the previous
+track position, one second after playback starts.
+
+SEPARATE leaves the old output in its current state. The two outputs then play
+independently.
+
+A transfer to a Spotify Connect device sometimes needs a Spotify catalogue
+search. This search happens when Music Assistant reports a media ID that
+Spotify does not accept. This search is a blocking HTTPS request. Thus the
+search obeys the reliability budget, and the search never runs while Sendspin
+plays. A blocked search retries for a few seconds, then reports a failure to
+the user.
+
 ## Waveshare Interface Constraints
 
 The display uses direct rendering, rotation, and dirty-region tracking. An

@@ -34,7 +34,7 @@ The build uses `esp_lvgl_adapter`. Use `bsp_display_lock()` and
 - Spotify token refresh and player-state requests.
 - Album browser and now-playing view.
 - Carousel, Focus, and Cover Flow.
-- BASIC, GLYPH, PIXEL, PAPER, and BOLD themes.
+- BASIC, GLYPH, PIXEL, PAPER, BOLD, and HIFI themes.
 - Dark and light theme variants.
 - User-interface sounds.
 - Settings and credential overrides.
@@ -49,6 +49,20 @@ The build uses `esp_lvgl_adapter`. Use `bsp_display_lock()` and
 ## Unverified Theme Batch
 
 The BOLD theme uses compiled Jost Bold fonts.
+
+The HIFI theme is a neo broadcast-console design. This theme uses static
+hairline grids, registration marks, framed controls, and full-colour album
+art. This theme also has a selectable heading font. The four choices are
+Terminal Grotesque, GTL001, Space Mono, and Bebas Neue.
+`waveshare/components/p4_shared/THIRD_PARTY_FONTS.md` records the licence of
+each font.
+
+HIFI uses the BASIC layout values until a user saves a HIFI-specific
+developer override.
+
+HIFI builds more interface objects than the other modes. Check the
+`theme ... ready:` log line against
+[P4-RELIABILITY.md](../../docs/P4-RELIABILITY.md) during the visual test.
 
 The DEVELOPER tab has 65 live controls in six pages.
 
@@ -196,6 +210,7 @@ queue URI before it sends Play.
 | 14 | PAPER theme | Verified |
 | 15 | Theme structure and tuning controls | Verified |
 | 16 | BOLD theme and Developer controls | Not build-verified |
+| 17 | HIFI theme and heading fonts | Not build-verified |
 
 ## Optional RP2040 Knob
 
