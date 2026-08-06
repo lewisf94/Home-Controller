@@ -431,3 +431,4 @@ instruction.
 - [Port notes](docs/PORT-NOTES.md)
 - [Home Assistant setup](docs/HA-SETUP.md)
 - [Hardware design notes](docs/DESIGN_NOTES.md)
+- [RP2040 haptic-knob parts list](docs/KNOB-PARTS.md)

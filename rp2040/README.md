@@ -32,6 +32,7 @@ folder is project-specific firmware.
 | Battery gauge | MAX17048 |
 
 Refer to [DESIGN_NOTES.md](../docs/DESIGN_NOTES.md) for hardware decisions.
+Refer to [KNOB-PARTS.md](../docs/KNOB-PARTS.md) for the full parts list.
 
 ## Architecture
 

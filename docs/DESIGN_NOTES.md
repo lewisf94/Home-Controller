@@ -3,7 +3,9 @@
 This file records decisions for the custom controller daughterboard. Update it
 when a hardware decision changes.
 
-Use [CLAUDE.md](../CLAUDE.md) for firmware pins and protocol information.
+Use [CLAUDE.md](../CLAUDE.md) for firmware pins and protocol information. Use
+[KNOB-PARTS.md](KNOB-PARTS.md) for the full parts list, with quantities and
+status, drawn from the decisions in this file.
 
 ## Architecture
 
