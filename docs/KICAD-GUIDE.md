@@ -104,9 +104,10 @@ footprints, for many different physical part sizes.
 
 One display setting matters from the start: KiCad measures in millimetres by
 default, in both editors. Every measurement in this guide assumes
-millimetres, unless stated otherwise. Change this default, if you prefer
-inches, under **Preferences → General**, but keep the whole project on one
-unit system throughout, to avoid a misread measurement.
+millimetres, unless stated otherwise. Change this setting under
+**View → Units**, if you prefer inches. Both editors also carry unit
+buttons in the left-hand toolbar, for the same switch. Keep the whole
+project on one unit system throughout, to avoid a misread measurement.
 
 ---
 
@@ -331,8 +332,9 @@ mistake.
   "Update PCB from Schematic" button.
 - A faint dot grid covers the sheet. KiCad snaps every symbol, wire, and
   label to this grid, so two items that look aligned actually are aligned.
-  Change the grid spacing under **View → Grid**, if the default spacing
-  feels too coarse or too fine for a specific part of your drawing.
+  Change the grid spacing from the grid drop-down list, in the top
+  toolbar. Do this whenever the default spacing feels too coarse, or too
+  fine, for a specific part of your drawing.
 
 ### 9.2 Moving around the sheet
 
@@ -353,6 +355,8 @@ mistake.
 | Place a power symbol (GND, +3.3V) | A ground-symbol icon | `P` |
 | Place a "no connect" flag | An X-in-a-box icon | `Q` |
 | Move a selected item | — | `M` |
+| Drag a selected item, keeping its wires attached | — | `G` |
+| Open the properties of a selected item | — | `E` |
 | Rotate a selected item | — | `R` |
 | Mirror a selected item | — | `X` or `Y` |
 | Delete a selected item | — | `Delete` |
@@ -401,19 +405,21 @@ assign a footprint to a symbol later in this guide.
 
 ## 11. Reusing a SmartKnob symbol, step by step
 
-The SmartKnob reference schematic already contains working symbols for
-several parts on your list: the 3.3 V regulator, the USB-C receptacle, and
-the SK6812 LED. The HX711, the RP2040, and the MT6701QT in your project
-already come from the built-in libraries of KiCad. You do not need this
-method for those three parts.
+Use this section for exactly two parts: the SK6812 LED, and the VEML7700
+ambient sensor. Only these two come from a custom SmartKnob symbol library.
+
+Every other part in this design comes from a library that KiCad already
+installs on every computer. Place each of those with Section 12 instead,
+which is a shorter and simpler method. The table at the end of this section
+names which method each part needs, so check that table before you start.
 
 1. Open a second, separate Schematic Editor window. In the Schematic Editor,
    open **File → Open**, and open
    `docs/smartknob-repo/electronics/view_base/view_base.kicad_sch`. This
    opens a second window, next to the window for your own project.
 2. In the SmartKnob window, find the part you want. Use `Ctrl+F` to search
-   by name, for example `TS1117BCW33_RPG` for the 3.3 V regulator, or
-   `USB_C_Receptacle` for the connector.
+   by name: `SK6812SIDE-A` for the LED, or `VEML7700` for the ambient
+   sensor.
 3. Left-click once on the outline of the symbol, to select it. A selected
    symbol turns a highlight colour.
 4. Press `Ctrl+C` to copy the symbol.
@@ -434,31 +440,36 @@ and select **Properties**, to see all three fields at once:
 - **Reference**: KiCad may assign a reference like `U9`, copied from the
   SmartKnob sheet. Check the **Reference** field does not clash with a
   reference you already used. KiCad also flags a clash automatically, the
-  next time you run the electrical rules check in Section 15.
-- **Value**: this field usually names the part, for example
-  `TS1117BCW33_RPG`. Leave this field as it is, unless you have a specific
-  reason to relabel the part.
+  next time you run the electrical rules check in Section 16.
+- **Value**: this field usually names the part, for example `SK6812SIDE-A`.
+  Leave this field as it is, unless you have a specific reason to relabel
+  the part.
 - **Footprint**: this field may still point at a SmartKnob library nickname
   that does not exist in your project yet. Fix this in Section 14, once
   your footprint libraries are set up as in Section 10.
 
-Repeat this copy-paste process for each part in the table below.
+Place one SK6812 symbol with this method. Then copy that placed symbol 15
+more times, with `Ctrl+C` and `Ctrl+V`, inside your own sheet. This gives
+the full set of 16 LEDs: 12 for the ring, and 4 for the buttons.
 
-| Part you need | Search this name in the SmartKnob window |
-|---|---|
-| 3.3 V regulator | `TS1117BCW33_RPG` |
-| USB-C receptacle | `USB_C_Receptacle_USB2.0` |
-| SK6812 LED (place one, then copy it 15 more times for your 16 LEDs) | `SK6812SIDE-A` |
-| VEML7700 ambient sensor | `VEML7700` |
-| Small ceramic capacitor, for every decoupling cap in this guide | `C_Small` |
-| Small inductor, for the TMC6300 VM filter | `L_Small` |
-| Small resistor, for every pull-up and pull-down in this guide | `R_Small` |
-| Mounting hole | `MountingHole_Pad` |
+This table names the correct method for every part in this design:
 
-Do not copy `CH340C`, `T-Micro32_Plus`, `MT6701-CT`, or `SN74LV1T34DBV`. Each
-of these belongs to a part choice SmartKnob made that this project does not
-use. Read [DESIGN_NOTES.md](DESIGN_NOTES.md) for the parts this project uses
-instead.
+| Part you need | Where the symbol comes from | Method |
+|---|---|---|
+| SK6812 LED, 16 in total | Custom SmartKnob library | This section |
+| VEML7700 ambient sensor | Custom SmartKnob library | This section |
+| TMC6300-LA motor driver | Your own repository, already placed as `U1` | Already done, see Section 6 |
+| RP2040, HX711, MT6701QT | Built into KiCad, already placed | Already done |
+| 3.3 V regulator, `TS1117BCW33_RPG` | Built into KiCad, `Regulator_Linear` | Section 12 |
+| USB-C receptacle, `USB_C_Receptacle_USB2.0` | Built into KiCad, `Connector` | Section 12 |
+| Capacitor, resistor, inductor: `C_Small`, `R_Small`, `L_Small` | Built into KiCad, `Device` | Section 12 |
+| Mounting hole, `MountingHole_Pad` | Built into KiCad, `Mechanical` | Section 12 |
+| Crystal, MAX17048, MX switch, level shifter | Built into KiCad, or from the manufacturer | Section 12 |
+
+The SmartKnob file also contains `CH340C`, `T-Micro32_Plus`, `MT6701-CT`,
+and `SN74LV1T34DBV`. Do not copy any of these four. Each belongs to a part
+choice SmartKnob made that this project does not use. Read
+[DESIGN_NOTES.md](DESIGN_NOTES.md) for the parts this project uses instead.
 
 ---
 
@@ -552,7 +563,29 @@ assigned stops you from moving on to the PCB stage.
 
 ---
 
-## 15. Running the Electrical Rules Check
+## 15. Annotating the schematic
+
+Every symbol needs a unique reference designator, for example `U1`, `R4`, or
+`C12`. KiCad shows an unassigned reference as a question mark, for example
+`R?`. A copied symbol can also arrive carrying a reference that another
+symbol already uses. Annotation assigns every reference correctly, across
+the whole schematic, in one action.
+
+1. In the Schematic Editor, select **Tools → Annotate Schematic**.
+2. Leave the default options selected, for a first run. The default keeps
+   each existing reference that is already correct, and only fills in a
+   missing or duplicated one.
+3. Select **Annotate**.
+4. Close the dialog.
+
+Your four existing symbols, `U1` through `U4`, already carry a correct
+reference each, so this step leaves them alone. Run this step again after
+you add a group of new symbols, and always before the electrical rules
+check in Section 16.
+
+---
+
+## 16. Running the Electrical Rules Check
 
 The Electrical Rules Check, ERC for short, scans your whole schematic for a
 mistake a computer can catch automatically: an unconnected pin, two outputs
@@ -574,6 +607,39 @@ MT6701QT:
 3. A small X appears on that pin. ERC now treats this pin as intentionally
    unused.
 
+### The power-flag error, and how to clear it
+
+One ERC error catches almost every first-time KiCad user, and it looks more
+alarming than it is. The text reads close to this:
+
+```
+Input Power pin not driven by any Output Power pin
+```
+
+This error does not mean your wiring is wrong. ERC traces each power net
+back to a source that declares itself a power output. A battery pad, a
+regulator output, or a bare connector pin often declares nothing at all.
+ERC then decides the net has no source, even though the real board powers
+that net correctly.
+
+The fix is a `PWR_FLAG` symbol. This symbol connects to nothing physically,
+and appears on no finished board. This symbol only tells ERC "a real supply
+feeds this net."
+
+1. Press `A`, or select the place-symbol icon.
+2. Search for `PWR_FLAG`, and place one.
+3. Wire it to the net ERC complained about, usually right at the point where
+   power enters your board: the battery pad, the regulator output pin, or
+   the USB-C power pin.
+4. Run ERC again. The error for that net clears.
+
+Add one `PWR_FLAG` per independent supply net. This design needs one on the
+raw battery net, one on the 3.3 V rail, and one on the 5 V LED rail. The
+SmartKnob reference schematic uses ten of these symbols, for the same
+reason, so its sheet is a useful example to compare against.
+
+### Excluding a result you have reviewed
+
 A result you have reviewed, and judged acceptable exactly as it stands, can
 be excluded, instead of fixed: right-click that result in the ERC list, and
 select **Exclude this violation**. KiCad records this exclusion inside the
@@ -585,22 +651,39 @@ the result in the first place.
 Run ERC after every editing session, not only once at the end. A fresh error
 is far easier to fix the same day you introduced it.
 
+### Checking your schematic against the parts list
+
+[KNOB-PARTS.md](KNOB-PARTS.md) records every part this board needs, with a
+quantity for each. Export a parts list from your schematic, and compare the
+two, to catch a part you forgot to place:
+
+1. In the Schematic Editor, select **Tools → Generate Bill of Materials**.
+2. Select an output format, then generate the file.
+3. Compare each line against [KNOB-PARTS.md](KNOB-PARTS.md). Check the
+   quantity of each repeated part especially: this design needs 16 SK6812
+   LEDs, 4 BF350 strain gauges, 4 MX switches, and 2 level shifters.
+
+Do this check once the schematic feels complete, and again before you order
+a board.
+
 ---
 
-## 16. Splitting the schematic into multiple sheets (recommended, optional)
+## 17. Splitting the schematic into multiple sheets (recommended, optional)
 
 Your project has enough parts that one flat sheet becomes hard to read.
 KiCad supports hierarchical sheets, which work like folders for your circuit.
 
-1. Press `S`, or select the hierarchical-sheet icon.
+1. Select the hierarchical-sheet icon, in the left-hand toolbar. The
+   **Place** menu holds this same action, if the icon is hard to find.
 2. Drag a rectangle on your top sheet. A dialog asks for a **Sheet name**
    and a **File name**. Use a name from
    [KNOB-PARTS.md](KNOB-PARTS.md), for example `Motor Drive`.
 3. Double-click the new rectangle, to enter that sheet. This opens a blank
    sheet, where you place the symbols for that section only.
 4. To carry a net between sheets, place a **hierarchical label** inside the
-   sub-sheet. Press `Ctrl+H`, or select the hierarchical-label icon. Type the
-   exact net name, for example `GND` or `KNOB_UART_TX`.
+   sub-sheet. Select the hierarchical-label icon, in the left-hand
+   toolbar, or press `H`. Type the exact net name, for example `GND` or
+   `KNOB_UART_TX`.
 5. Return to the top sheet. The rectangle now shows a matching pin for each
    hierarchical label you added. Wire that pin like any other pin.
 
@@ -613,7 +696,7 @@ only makes a large design easier to read and debug.
 
 ---
 
-## 17. Moving from the schematic to the PCB
+## 18. Moving from the schematic to the PCB
 
 Once ERC reports zero errors, and every symbol has a footprint, move to the
 PCB Editor.
@@ -634,7 +717,7 @@ once.
 
 ---
 
-## 18. Drawing the board outline
+## 19. Drawing the board outline
 
 1. In the PCB Editor, select the **Edge.Cuts** layer, from the layer list on
    the right-hand side of the screen.
@@ -649,7 +732,7 @@ actually need.
 
 ---
 
-## 19. Placing footprints on the board
+## 20. Placing footprints on the board
 
 1. Left-click and drag each footprint from the pile, to a rough position on
    your board outline.
@@ -671,30 +754,41 @@ therefore appear as a real-looking chip, once placed.
 
 ---
 
-## 20. Setting default track and via sizes for the board
+## 21. Setting default track and via sizes for the board
 
-Do this step once, before you start routing in Section 21. This step sets
-the meaning of "the default width of the board," a phrase Section 21 uses.
+Do this step once, before you start routing in Section 22. This step sets
+the meaning of "the default width of the board," a phrase Section 22 uses.
 
 1. In the PCB Editor, open **File → Board Setup**.
-2. Select **Design Rules → Constraints**, in the list on the left of this
-   dialog. Set a minimum track width and a minimum clearance here. A common
-   safe starting point, for a hobby-scale board, is a 0.15 mm minimum track
-   width, and a 0.15 mm minimum clearance. Confirm both figures against the
-   stated capability of your chosen fabricator; a fabricator with looser
-   tolerances may need a larger minimum.
-3. Select **Design Rules → Pre-defined Sizes**, in the same dialog. Add one
+2. Select **Board Stackup → Physical Stackup**, in the list on the left of
+   this dialog. Set the copper-layer count here. A two-layer board is
+   cheaper, and is enough for a simple design. A four-layer board gives an
+   uninterrupted internal ground plane. This plane helps the high-speed
+   RP2040 signals, and helps the low-level strain-gauge signal, on this
+   design.
+   Decide this before you route, since a later change to the layer count
+   discards routing work.
+3. Select **Design Rules → Constraints**, in the same dialog. Set a minimum
+   track width and a minimum clearance here. A common safe starting point,
+   for a hobby-scale board, is a 0.15 mm minimum track width, and a 0.15 mm
+   minimum clearance. Confirm both figures against the stated capability of
+   your chosen fabricator; a fabricator with looser tolerances may need a
+   larger minimum.
+4. Select **Design Rules → Pre-defined Sizes**, in the same dialog. Add one
    or more named track-width and via-size presets in this list. Add a
    0.25 mm default track as one preset. Add a wider preset too, for the
-   motor and battery traces from Section 21.
-4. Select **OK** to close the dialog.
+   motor and battery traces from Section 22.
+5. Select **OK** to close the dialog.
 
 The track-width box in the top toolbar, while routing, offers these same
 presets in a drop-down list, once this step is complete.
 
+Record your layer-count decision in [DESIGN_NOTES.md](DESIGN_NOTES.md),
+alongside the other hardware decisions this project already tracks.
+
 ---
 
-## 21. Routing copper traces
+## 22. Routing copper traces
 
 1. Press `X`, or select the route-tracks icon.
 2. Left-click on a pad, then move your mouse toward the pad the ratsnest
@@ -705,12 +799,12 @@ presets in a drop-down list, once this step is complete.
    connects both ends.
 4. Before you route the six motor-phase traces to the TMC6300, and the two
    LiPo power traces, widen the track. Select the wider preset from
-   Section 20, in the track-width box in the top toolbar, before you start
+   Section 21, in the track-width box in the top toolbar, before you start
    that trace. A wider track carries more current safely. Check the current
    rating in the TMC6300 datasheet, and a PCB trace-width calculator, before
    you confirm an exact width figure. The correct width depends on the
    copper thickness your fabricator uses.
-5. Route every remaining signal at the default track width from Section 20,
+5. Route every remaining signal at the default track width from Section 21,
    unless the datasheet for a specific part states otherwise.
 
 For the ground connection, most boards use a filled copper area instead of
@@ -730,12 +824,12 @@ individual traces:
 
 ---
 
-## 22. Running the Design Rules Check
+## 23. Running the Design Rules Check
 
 The Design Rules Check, DRC for short, is the PCB Editor equivalent of ERC.
 DRC catches a physical mistake: two traces placed too close together, a
 trace with no connection, or a footprint overlapping the board edge. DRC
-checks your board against the exact constraints you set in Section 20, so a
+checks your board against the exact constraints you set in Section 21, so a
 DRC result changes if you revisit that dialog later.
 
 1. Select **Inspect → Design Rules Checker**.
@@ -747,7 +841,7 @@ Do not send a board to a fabricator while DRC reports an unresolved error.
 
 ---
 
-## 23. Generating the files a fabricator needs
+## 24. Generating the files a fabricator needs
 
 Once DRC reports zero errors, generate the manufacturing files:
 
@@ -769,13 +863,13 @@ information the repository does not already have.
 
 ---
 
-## 24. A troubleshooting list, for common first-time issues
+## 25. A troubleshooting list, for common first-time issues
 
 - **A pink or red outline, or a "footprint not found" error**: the
   footprint field points at a library nickname your project does not have.
   Revisit Section 10, then Section 14.
 - **ERC reports "Pin not driven" on a pin you meant to leave alone**: add a
-  no-connect flag, from Section 15.
+  no-connect flag, from Section 16.
 - **A ratsnest line remains after you routed a trace**: the trace likely
   stopped short of the pad, instead of landing exactly on it. Zoom in, and
   redraw the last segment directly onto the centre of the pad.
@@ -814,7 +908,7 @@ information the repository does not already have.
 
 ---
 
-## 25. How this guide maps to the work already recorded
+## 26. How this guide maps to the work already recorded
 
 [DESIGN_NOTES.md](DESIGN_NOTES.md) and [KNOB-PARTS.md](KNOB-PARTS.md) already
 record every part this board needs, and every decision still open. Use the
@@ -823,11 +917,13 @@ sections of this guide in this order, for a first working schematic:
 1. Sections 0 through 8, once, for your project setup, and for getting
    every earlier fix onto your own computer.
 2. Section 10, for the SmartKnob footprint libraries you plan to use.
-3. Section 11, for every part the SmartKnob file can supply.
-4. Section 12, for the RP2040 support parts and the MAX17048.
+3. Section 11, for the SK6812 LED and the VEML7700 only.
+4. Section 12, for every other part: the RP2040 support parts, the
+   regulator, the USB-C receptacle, the MAX17048, and each passive part.
 5. Section 13 and Section 14, for every symbol already on your sheet, and
    every symbol you add.
-6. Section 15, until it reports zero errors.
-7. Section 16, if the sheet becomes hard to read.
-8. Sections 17 through 22, for the physical board.
-9. Section 23, only once every earlier section is complete.
+6. Section 15, after each group of new symbols.
+7. Section 16, until it reports zero errors.
+8. Section 17, if the sheet becomes hard to read.
+9. Sections 18 through 23, for the physical board.
+10. Section 24, only once every earlier section is complete.
