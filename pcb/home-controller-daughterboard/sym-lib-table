@@ -1,0 +1,3 @@
+(sym_lib_table
+  (lib (name "TMC6300-LA")(type "KiCad")(uri "${KIPRJMOD}/../../docs/Symbols & Footprints/TMC6300-LA/TMC6300-LA.kicad_sym")(options "")(descr "Custom TMC6300-LA symbol, exported from SnapEDA, versioned with the project"))
+)

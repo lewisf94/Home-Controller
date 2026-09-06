@@ -1,0 +1,3 @@
+(fp_lib_table
+  (lib (name "TMC6300-LA")(type "KiCad")(uri "${KIPRJMOD}/../../docs/Symbols & Footprints/TMC6300-LA")(options "")(descr "Custom TMC6300-LA footprint (QFN40P300X300X90-21N), exported from SnapEDA, versioned with the project"))
+)

@@ -82,6 +82,15 @@ waveshare/esp-idf-ha/include/secrets.h
 # EIM (ESP-IDF Installation Manager) machine-local config
 eim_config.toml
 
+# KiCad transient files. The project files themselves (.kicad_pro,
+# .kicad_sch, .kicad_pcb, sym-lib-table, fp-lib-table) are committed.
+*-backups/
+_autosave-*
+*.kicad_sch-bak
+*.kicad_pcb-bak
+fp-info-cache
+*.lck
+
 # Waveshare demo repo clone used for Step-0 board validation (not part of the project)
 waveshare-test/
 
