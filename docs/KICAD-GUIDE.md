@@ -11,15 +11,52 @@ assumes. Read [KNOB-PARTS.md](KNOB-PARTS.md) for the full parts list.
 
 ---
 
+## 0. Where each part of this guide happens
+
+Three separate places matter to this guide, and every step below names
+which place it happens in:
+
+- **Your own computer.** This is where KiCad runs. This is also where your
+  normal working copy of this repository already lives, at
+  `C:\Users\User\Documents\home-controller`. Every KiCad step in this guide
+  runs here. Every `git` command in this guide also runs here, in a
+  terminal on your own computer.
+- **GitHub.** This is the shared copy of this repository, on the internet.
+  A `git push`, from your own computer, sends your work here. A `git pull`,
+  on your own computer, brings a change back down from here.
+- **A cloud session, like the one that wrote this guide**: a cloud session
+  works inside a separate, temporary copy of this repository, with no KiCad
+  installed. A cloud session can read and write the plain text of a KiCad
+  file. A cloud session can also run `git` commands against GitHub
+  directly. A cloud session never opens the KiCad application itself, and
+  never touches your own computer.
+
+Two files, `sym-lib-table` and `fp-lib-table`, from this guide, already
+reached GitHub this way, from a cloud session, in the same manner Section 4
+describes. Those two files are not yet on your own computer, until you pull
+them down there, with the steps in Section 4.
+
+From this point on, every step in this guide happens on your own computer,
+unless the step says otherwise.
+
+---
+
 ## 1. Install KiCad
 
-1. Go to `kicad.org`, and download the installer for your operating system.
-2. Install version 10. An older version may open this project with a
+1. On your own computer, go to `kicad.org`, and download the installer for
+   Windows.
+2. Run the installer, and accept its default options, unless you have a
+   specific reason to change one. The default install needs a few hundred
+   megabytes of free disk space.
+3. Install version 10. An older version may open this project with a
    warning, or may not open it at all.
-3. Launch KiCad once, after installation. KiCad opens its **KiCad Project
+4. Launch KiCad once, after installation. KiCad opens its **KiCad Project
    Manager** window first. This window lists your recent projects, and lets
-   you create or open a project. Leave this window open; the next section
-   uses it.
+   you create or open a project.
+5. Confirm the installed version. Select **Help → About KiCad**, in the
+   Project Manager window. Confirm the version number begins with `10`.
+
+Leave the Project Manager window open; Section 5 uses it.
 
 ---
 
@@ -39,15 +76,20 @@ of your project is `home-controller-daughterboard`:
   example which layers are visible. This file has no effect on the actual
   design.
 - `sym-lib-table` and `fp-lib-table`: two small files that tell this specific
-  project where to find a custom part. Section 5 explains these two files in
+  project where to find a custom part. Section 6 explains these two files in
   full.
 
-Two separate editor windows work on these files:
+Three separate editor windows work on these files:
 
 - **Schematic Editor**. Opens the `.kicad_sch` file. You draw your circuit
   diagram here first.
 - **PCB Editor**. Opens the `.kicad_pcb` file. You lay out the physical board
   here, after the schematic is complete.
+- **3D Viewer**: a read-only window, opened from inside the PCB Editor, with
+  **View → 3D Viewer**. This window renders your board as a realistic 3D
+  model. This render shows a real shape only for a footprint that carries
+  its own 3D model. Your TMC6300-LA part is one such example, once that
+  footprint sits on the board.
 
 Two more terms matter throughout this guide:
 
@@ -60,9 +102,15 @@ Every symbol links to exactly one footprint. KiCad keeps the two separate on
 purpose. One symbol, for example a generic resistor, can use many different
 footprints, for many different physical part sizes.
 
+One display setting matters from the start: KiCad measures in millimetres by
+default, in both editors. Every measurement in this guide assumes
+millimetres, unless stated otherwise. Change this default, if you prefer
+inches, under **Preferences → General**, but keep the whole project on one
+unit system throughout, to avoid a misread measurement.
+
 ---
 
-## 3. Where this project lives, and why
+## 3. Where this project lives, on your computer and on GitHub
 
 This project already exists in this repository, at this exact path:
 
@@ -70,65 +118,107 @@ This project already exists in this repository, at this exact path:
 pcb/home-controller-daughterboard/
 ```
 
+On your own computer, this same path sits inside your existing working copy
+of this repository, so the full path is:
+
+```
+C:\Users\User\Documents\home-controller\pcb\home-controller-daughterboard\
+```
+
 This is the correct location for it, and the reason matters for how you work
 from here on. A fresh copy of this repository needs every file that opens
 and builds this board correctly. Each such file lives inside the repository
 itself, checked in with `git`, not only saved on your own computer. This
 single rule answers both of your questions at once: where to save your
-work, and how another reader, including a future session with me, can check
-it. I read the plain text of every file already committed to this
-repository. A file that exists only on your own computer, and was never
-committed, stays invisible to me. This same file stays invisible to any
-other computer that clones this repository fresh.
+work, and how another reader, including a future cloud session, can check
+it. A future session reads the plain text of every file already committed
+to this repository. A file that exists only on your own computer, and was
+never committed, stays invisible to that session. This same file stays
+invisible to any other computer that clones this repository fresh.
 
 The `pcb/home-controller-daughterboard/` folder currently holds:
 
 - The four project files from Section 2.
-- `sym-lib-table` and `fp-lib-table`, added in this session. Section 5
-  explains why these two files were missing, and what they now fix.
+- `sym-lib-table` and `fp-lib-table`, added by the cloud session in Section 6.
 
 One more folder matters to this same project, even though it sits in a
 different part of the repository:
 
 ```
-docs/Symbols & Footprints/TMC6300-LA/
+C:\Users\User\Documents\home-controller\docs\Symbols & Footprints\TMC6300-LA\
 ```
 
 This folder holds a custom part: the exact TMC6300-LA symbol, footprint,
 and 3D model that the `U1` component in your schematic already uses. This
 part came from a component search site named SnapEDA. This folder was
 already committed to the repository, but the new `sym-lib-table` and
-`fp-lib-table` files, from
-Section 5, are what actually connect your project to it.
+`fp-lib-table` files, from Section 6, are what actually connect your
+project to it.
 
 ---
 
-## 4. Opening the project for the first time
+## 4. Getting today's fix onto your computer
 
-1. Open the KiCad Project Manager.
+A cloud session already committed the two new files from Section 3 to
+GitHub. Bring them down to your own computer with these steps, run on your
+own computer, before you open the project in KiCad:
+
+1. Open a terminal on your own computer. PowerShell is the terminal the
+   other guides in this project already use.
+2. Move to your existing working copy of this repository:
+   ```powershell
+   Set-Location "C:\Users\User\Documents\home-controller"
+   ```
+3. Confirm you have no uncommitted local change, before you pull. Run:
+   ```powershell
+   git status
+   ```
+   A clean result reads `nothing to commit, working tree clean`. If this
+   command instead lists a changed file you did not expect, stop, and work
+   out what that change is, before you continue. Pulling over an
+   uncommitted change can be confusing to unpick later.
+4. Bring the new commits down from GitHub:
+   ```powershell
+   git pull
+   ```
+5. Confirm the new files arrived:
+   ```powershell
+   Test-Path "pcb\home-controller-daughterboard\sym-lib-table"
+   Test-Path "pcb\home-controller-daughterboard\fp-lib-table"
+   ```
+   Both commands should print `True`.
+
+Repeat this same pull step at the start of any future KiCad session. A
+cloud session, or work from another computer, may have added a commit since
+you last checked.
+
+---
+
+## 5. Opening the project for the first time
+
+1. Open the KiCad Project Manager, on your own computer.
 2. Select **File → Open Project**.
-3. Navigate to `pcb/home-controller-daughterboard/`, inside your local copy
-   of this repository.
+3. Navigate to
+   `C:\Users\User\Documents\home-controller\pcb\home-controller-daughterboard\`.
 4. Select `home-controller-daughterboard.kicad_pro`, then select **Open**.
 5. The Project Manager now shows this project, with the Schematic Editor and
-   the PCB Editor available as buttons.
+   the PCB Editor available as buttons, in the main part of the window.
 6. Select **Schematic Editor**, to open your existing circuit diagram.
 
 ---
 
-## 5. The library gap this session closed
+## 6. The library gap this session closed
 
-Before this session, the `U1` symbol in your project, the TMC6300-LA,
-worked on your own computer. This symbol likely would not have opened
-correctly on a different computer, including a fresh clone of this
-repository. The reason: KiCad finds a custom symbol through a library
-table, and your project had no project-specific table of its own. Your copy
-of KiCad most likely found this part a different way instead. This other
-way was a library added to the global settings of your own computer,
-outside this repository. This part therefore stayed invisible to anyone
-else.
+Before this fix, the `U1` symbol in your project, the TMC6300-LA, worked on
+your own computer. This symbol likely would not have opened correctly on a
+different computer, including a fresh clone of this repository. The reason:
+KiCad finds a custom symbol through a library table, and your project had
+no project-specific table of its own. Your copy of KiCad most likely found
+this part a different way instead. This other way was a library added to
+the global settings of your own computer, outside this repository. This
+part therefore stayed invisible to anyone else.
 
-This session added the two missing files, directly inside
+This fix added two missing files, directly inside
 `pcb/home-controller-daughterboard/`:
 
 - `sym-lib-table` names one library, `TMC6300-LA`, and points it at
@@ -152,7 +242,7 @@ one.
 
 ---
 
-## 6. Confirming the fix
+## 7. Confirming the fix
 
 Do this once, the first time you open the project after this change:
 
@@ -173,41 +263,63 @@ committed to the repository, is the entry that travels with the project.
 
 ---
 
-## 7. Saving and committing your work
+## 8. Saving and committing your work
 
 KiCad and `git` are two separate tools, and each needs its own save step.
+Both run on your own computer, in the same working copy of this repository
+that Section 4 already set up.
 
 1. In whichever KiCad window you edited, press `Ctrl+S`, to save that file to
    disk. Do this often, not only at the end of a session.
-2. Once you have made a meaningful change, for example finishing the wiring
-   of one part, open a terminal in your local copy of this repository.
-   Then run:
-   ```bash
+2. Wait until you have made a meaningful change, for example finishing the
+   wiring of one part. Then open PowerShell, and move to your working copy,
+   the same way as Section 4:
+   ```powershell
+   Set-Location "C:\Users\User\Documents\home-controller"
+   ```
+3. List what changed:
+   ```powershell
    git status
    ```
    This command lists every changed file. Confirm the files you expect to
    see, for example `home-controller-daughterboard.kicad_sch`, appear in this
-   list.
-3. Stage and commit your change:
-   ```bash
-   git add pcb/home-controller-daughterboard/
+   list. Run `git diff` for a text-based project file, such as
+   `sym-lib-table`, to see the exact line-by-line change; a `.kicad_sch` or
+   `.kicad_pcb` file is also plain text underneath, though its content is
+   dense enough that `git status` alone is usually the more useful check.
+4. Stage and commit your change:
+   ```powershell
+   git add pcb\home-controller-daughterboard\
    git commit -m "Describe what you changed here"
    ```
-4. Push the commit, so it reaches the shared copy of this repository:
-   ```bash
+   Write the commit message in the same style the rest of this project
+   already uses: a short, specific sentence, for example
+   `Wire the TMC6300 VCP and 1.8VOUT decoupling caps`.
+5. Push the commit, so it reaches GitHub:
+   ```powershell
    git push
    ```
+   The normal rule for this project, for your own solo work, is to push
+   directly to `main`. `CLAUDE.md`, in the repository root, records this
+   rule in full, alongside every other project-wide git rule.
 
 A change that exists only in an unsaved KiCad window is not yet part of
 this project, in the sense this guide has used throughout. The same is true
 of a change that exists only in an uncommitted local file. Neither change
 sits yet where a fresh clone, or a future review, can see it.
 
+One more benefit of committing often: `git` becomes a safety net against a
+mistake. Suppose you delete something in KiCad by accident, and already
+saved that mistake to disk. Run `git diff`, to see exactly what changed
+since your last commit. Run `git checkout -- <file>`, to restore that file
+to its last committed state, undoing every change since then, including the
+mistake.
+
 ---
 
-## 8. The Schematic Editor screen, and the actions you will use constantly
+## 9. The Schematic Editor screen, and the actions you will use constantly
 
-### 8.1 Screen layout
+### 9.1 Screen layout
 
 - The large white or black area in the middle is your drawing sheet.
 - The left-hand toolbar holds drawing tools: place a symbol, draw a wire,
@@ -217,8 +329,21 @@ sits yet where a fresh clone, or a future review, can see it.
 - The top toolbar holds file actions, plus the two buttons you will use most
   after every editing session: the electrical-rules-check button, and the
   "Update PCB from Schematic" button.
+- A faint dot grid covers the sheet. KiCad snaps every symbol, wire, and
+  label to this grid, so two items that look aligned actually are aligned.
+  Change the grid spacing under **View → Grid**, if the default spacing
+  feels too coarse or too fine for a specific part of your drawing.
 
-### 8.2 The actions you will repeat constantly
+### 9.2 Moving around the sheet
+
+- Scroll your mouse wheel to zoom in and out, centred on your cursor.
+- Hold the middle mouse button, or the scroll wheel itself, and drag, to pan
+  the view.
+- Press `Ctrl+0`, or the Home key, to zoom out until the whole sheet fits on
+  screen. Use this often, to re-orient yourself after zooming in on one
+  detail.
+
+### 9.3 The actions you will repeat constantly
 
 | Action | Toolbar icon | Keyboard shortcut |
 |---|---|---|
@@ -231,6 +356,8 @@ sits yet where a fresh clone, or a future review, can see it.
 | Rotate a selected item | — | `R` |
 | Mirror a selected item | — | `X` or `Y` |
 | Delete a selected item | — | `Delete` |
+| Find a symbol or a label by name | — | `Ctrl+F` |
+| Cancel the current tool | — | `Escape` |
 | Undo | — | `Ctrl+Z` |
 | Save | — | `Ctrl+S` |
 | Zoom to fit everything on screen | — | `Ctrl+0` or the Home key |
@@ -239,7 +366,7 @@ Save your work often, with `Ctrl+S`. KiCad does not auto-save every change.
 
 ---
 
-## 9. Setting up further footprint libraries, for parts you have not placed yet
+## 10. Setting up further footprint libraries, for parts you have not placed yet
 
 Do this step once for each `.pretty` folder you want to reuse. Skip this
 step for a symbol you already placed, since that already works.
@@ -253,7 +380,9 @@ add these folders directly, with no conversion needed.
 2. Select **Manage Footprint Libraries**.
 3. A table appears, with a **Project Specific Libraries** tab and a
    **Global Libraries** tab. Select the **Project Specific Libraries** tab,
-   so the new libraries apply only to this project.
+   so the new libraries apply only to this project. Section 6 already used
+   this same tab, for your TMC6300-LA part; adding another row here works
+   the same way.
 4. Select the small folder icon, or the "+" button, below the table, to add a
    new row.
 5. In the new row, set the **Library Path** field to the full path of one
@@ -270,7 +399,7 @@ assign a footprint to a symbol later in this guide.
 
 ---
 
-## 10. Reusing a SmartKnob symbol, step by step
+## 11. Reusing a SmartKnob symbol, step by step
 
 The SmartKnob reference schematic already contains working symbols for
 several parts on your list: the 3.3 V regulator, the USB-C receptacle, and
@@ -295,21 +424,23 @@ method for those three parts.
 KiCad copies the full definition of the symbol along with it. This symbol
 now works in your project, with no missing-library error. This is true even
 though the original `.lib` file no longer exists, the file the SmartKnob
-library table still names. This is the same kind of gap that Section 5
+library table still names. This is the same kind of gap that Section 6
 fixed for your own TMC6300-LA part, so the pattern should already look
 familiar.
 
-After pasting, check two items on the new symbol:
+After pasting, check three items on the new symbol. Right-click the symbol,
+and select **Properties**, to see all three fields at once:
 
 - **Reference**: KiCad may assign a reference like `U9`, copied from the
-  SmartKnob sheet. Right-click the symbol, select **Properties**, and check
-  the **Reference** field does not clash with a reference you already used.
-  KiCad also flags a clash automatically, the next time you run the
-  electrical rules check in Section 14.
-- **Footprint**: the **Footprint** field in the same Properties window may
-  still point at a SmartKnob library nickname that does not exist in your
-  project yet. Fix this in Section 13, once your footprint libraries are set
-  up as in Section 9.
+  SmartKnob sheet. Check the **Reference** field does not clash with a
+  reference you already used. KiCad also flags a clash automatically, the
+  next time you run the electrical rules check in Section 15.
+- **Value**: this field usually names the part, for example
+  `TS1117BCW33_RPG`. Leave this field as it is, unless you have a specific
+  reason to relabel the part.
+- **Footprint**: this field may still point at a SmartKnob library nickname
+  that does not exist in your project yet. Fix this in Section 14, once
+  your footprint libraries are set up as in Section 10.
 
 Repeat this copy-paste process for each part in the table below.
 
@@ -331,14 +462,16 @@ instead.
 
 ---
 
-## 11. Placing a brand-new symbol, for a part not in the SmartKnob file
+## 12. Placing a brand-new symbol, for a part not in the SmartKnob file
 
 Use this method for the MAX17048. Also use this method for a generic part,
 for example a crystal, a resistor, or a capacitor, that the table in
-Section 10 does not cover.
+Section 11 does not cover.
 
 1. In the Schematic Editor, press `A`, or select the place-symbol icon.
-2. A symbol chooser window opens, with a search box at the top.
+2. A symbol chooser window opens, with a search box at the top. A preview
+   pane, on the right, shows the symbol drawing. This same pane shows a
+   small footprint preview, for many parts.
 3. Type a search term, for example `Crystal`, or `MAX17048`.
 4. The built-in libraries of KiCad already hold many generic parts,
    including a plain two-pin `Crystal` symbol, and generic `R`, `C`, and `L`
@@ -347,7 +480,7 @@ Section 10 does not cover.
    [DESIGN_NOTES.md](DESIGN_NOTES.md). Download that symbol library first,
    from the manufacturer. Add the library under **Preferences → Manage
    Symbol Libraries**, on the Symbol Libraries table this time, instead of
-   the Footprint Libraries table. Use the same steps as Section 9. Section 5
+   the Footprint Libraries table. Use the same steps as Section 10. Section 6
    already describes this same process in full, for the TMC6300-LA part in
    your project.
 5. Select the correct symbol from the search results, then select **OK**.
@@ -356,17 +489,26 @@ Section 10 does not cover.
 
 ---
 
-## 12. Wiring two pins together
+## 13. Wiring two pins together
 
-A wire in KiCad only creates a connection where it visibly touches two pins,
-or crosses another wire with a junction dot.
+A wire in KiCad only creates a connection at a point where it visibly
+touches two pins. A wire also creates a connection where it crosses another
+wire, at a junction dot: a small filled circle KiCad draws automatically,
+where three or more wire ends meet.
 
 1. Press `W`, or select the draw-wire icon.
 2. Left-click on the open end of the first pin. A small circle marks an
-   unconnected pin.
+   unconnected pin. Hover over a pin first, with no click, to see a
+   tooltip. This tooltip names the pin number, and names the electrical
+   type of that pin, for example an input pin, or a power-input pin.
 3. Move your mouse to the second pin. KiCad draws the wire as you move.
 4. Left-click on the open end of the second pin, to finish the wire.
 5. Press `Escape` to stop drawing wires.
+
+Left-click once on any finished wire, at any point, to select that whole
+electrical net. Every pin, wire, and label KiCad considers part of the same
+connection highlights together. Use this to check a connection you are
+unsure about, before you rely on it.
 
 For a connection that repeats many times on one sheet, for example every
 ground pin, use a label instead of a long wire:
@@ -387,18 +529,20 @@ label, so a later reader can match your schematic against those documents.
 
 ---
 
-## 13. Assigning a footprint to a symbol
+## 14. Assigning a footprint to a symbol
 
-Do this step for every symbol, once your footprint libraries from Section 9
+Do this step for every symbol, once your footprint libraries from Section 10
 are set up.
 
 1. Right-click the symbol, and select **Properties**.
 2. Find the **Footprint** field.
 3. Select the small "..." button next to that field, to open the footprint
-   chooser.
+   chooser. This chooser shows a live preview of each footprint you
+   highlight, on the right-hand side of the window. Confirm the pad shape
+   and the pin count, in this preview, before you commit to a footprint.
 4. Search for a matching footprint. For a part from the reuse table in
-   Section 10, the correct footprint usually shares a name with the symbol.
-   Look inside the library nickname you gave it in Section 9, for example
+   Section 11, the correct footprint usually shares a name with the symbol.
+   Look inside the library nickname you gave it in Section 10, for example
    `strain:BF350-3AA`.
 5. Select the correct footprint, then select **OK**, then **OK** again to
    close the Properties window.
@@ -408,7 +552,7 @@ assigned stops you from moving on to the PCB stage.
 
 ---
 
-## 14. Running the Electrical Rules Check
+## 15. Running the Electrical Rules Check
 
 The Electrical Rules Check, ERC for short, scans your whole schematic for a
 mistake a computer can catch automatically: an unconnected pin, two outputs
@@ -430,12 +574,20 @@ MT6701QT:
 3. A small X appears on that pin. ERC now treats this pin as intentionally
    unused.
 
+A result you have reviewed, and judged acceptable exactly as it stands, can
+be excluded, instead of fixed: right-click that result in the ERC list, and
+select **Exclude this violation**. KiCad records this exclusion inside the
+project file. ERC then does not raise the same result again, on your own
+computer, or on any other computer that opens this same committed project.
+Use this sparingly, and only after you understand exactly why ERC raised
+the result in the first place.
+
 Run ERC after every editing session, not only once at the end. A fresh error
 is far easier to fix the same day you introduced it.
 
 ---
 
-## 15. Splitting the schematic into multiple sheets (recommended, optional)
+## 16. Splitting the schematic into multiple sheets (recommended, optional)
 
 Your project has enough parts that one flat sheet becomes hard to read.
 KiCad supports hierarchical sheets, which work like folders for your circuit.
@@ -461,7 +613,7 @@ only makes a large design easier to read and debug.
 
 ---
 
-## 16. Moving from the schematic to the PCB
+## 17. Moving from the schematic to the PCB
 
 Once ERC reports zero errors, and every symbol has a footprint, move to the
 PCB Editor.
@@ -482,7 +634,7 @@ once.
 
 ---
 
-## 17. Drawing the board outline
+## 18. Drawing the board outline
 
 1. In the PCB Editor, select the **Edge.Cuts** layer, from the layer list on
    the right-hand side of the screen.
@@ -497,7 +649,7 @@ actually need.
 
 ---
 
-## 18. Placing footprints on the board
+## 19. Placing footprints on the board
 
 1. Left-click and drag each footprint from the pile, to a rough position on
    your board outline.
@@ -512,9 +664,37 @@ actually need.
 5. Place the RP2040, its crystal, and its flash chip close together, since
    these three parts connect with short, sensitive high-speed signals.
 
+Open **View → 3D Viewer**, at any point after this step, to see a realistic
+render of your board so far. The same SnapEDA export that gave the
+TMC6300-LA symbol its footprint also gave it a 3D model. This part should
+therefore appear as a real-looking chip, once placed.
+
 ---
 
-## 19. Routing copper traces
+## 20. Setting default track and via sizes for the board
+
+Do this step once, before you start routing in Section 21. This step sets
+the meaning of "the default width of the board," a phrase Section 21 uses.
+
+1. In the PCB Editor, open **File → Board Setup**.
+2. Select **Design Rules → Constraints**, in the list on the left of this
+   dialog. Set a minimum track width and a minimum clearance here. A common
+   safe starting point, for a hobby-scale board, is a 0.15 mm minimum track
+   width, and a 0.15 mm minimum clearance. Confirm both figures against the
+   stated capability of your chosen fabricator; a fabricator with looser
+   tolerances may need a larger minimum.
+3. Select **Design Rules → Pre-defined Sizes**, in the same dialog. Add one
+   or more named track-width and via-size presets in this list. Add a
+   0.25 mm default track as one preset. Add a wider preset too, for the
+   motor and battery traces from Section 21.
+4. Select **OK** to close the dialog.
+
+The track-width box in the top toolbar, while routing, offers these same
+presets in a drop-down list, once this step is complete.
+
+---
+
+## 21. Routing copper traces
 
 1. Press `X`, or select the route-tracks icon.
 2. Left-click on a pad, then move your mouse toward the pad the ratsnest
@@ -524,13 +704,13 @@ actually need.
    ratsnest line for that connection disappears once the trace fully
    connects both ends.
 4. Before you route the six motor-phase traces to the TMC6300, and the two
-   LiPo power traces, widen the track. Select **Route → Interactively Route
-   Single Track**, or type a specific width into the track-width box in the
-   top toolbar, before you start that trace. A wider track carries more
-   current safely. Check the current rating in the TMC6300 datasheet, and a
-   PCB trace-width calculator, before you confirm an exact width figure. The
-   correct width depends on the copper thickness your fabricator uses.
-5. Route every remaining signal at the default track width of the board,
+   LiPo power traces, widen the track. Select the wider preset from
+   Section 20, in the track-width box in the top toolbar, before you start
+   that trace. A wider track carries more current safely. Check the current
+   rating in the TMC6300 datasheet, and a PCB trace-width calculator, before
+   you confirm an exact width figure. The correct width depends on the
+   copper thickness your fabricator uses.
+5. Route every remaining signal at the default track width from Section 20,
    unless the datasheet for a specific part states otherwise.
 
 For the ground connection, most boards use a filled copper area instead of
@@ -544,15 +724,19 @@ individual traces:
 5. Select **OK**. KiCad fills the whole area with copper, except where a
    trace or a pad of a different net needs clearance.
 6. Right-click the new zone, and select **Fill All Zones**, whenever you want
-   to see or refresh the filled copper.
+   to see or refresh the filled copper. KiCad does not refill a zone
+   automatically after every edit, so repeat this step whenever the copper
+   shown on screen looks out of date.
 
 ---
 
-## 20. Running the Design Rules Check
+## 22. Running the Design Rules Check
 
 The Design Rules Check, DRC for short, is the PCB Editor equivalent of ERC.
 DRC catches a physical mistake: two traces placed too close together, a
-trace with no connection, or a footprint overlapping the board edge.
+trace with no connection, or a footprint overlapping the board edge. DRC
+checks your board against the exact constraints you set in Section 20, so a
+DRC result changes if you revisit that dialog later.
 
 1. Select **Inspect → Design Rules Checker**.
 2. Select **Run DRC**.
@@ -563,7 +747,7 @@ Do not send a board to a fabricator while DRC reports an unresolved error.
 
 ---
 
-## 21. Generating the files a fabricator needs
+## 23. Generating the files a fabricator needs
 
 Once DRC reports zero errors, generate the manufacturing files:
 
@@ -585,22 +769,39 @@ information the repository does not already have.
 
 ---
 
-## 22. A troubleshooting list, for common first-time issues
+## 24. A troubleshooting list, for common first-time issues
 
 - **A pink or red outline, or a "footprint not found" error**: the
   footprint field points at a library nickname your project does not have.
-  Revisit Section 9, then Section 13.
+  Revisit Section 10, then Section 14.
 - **ERC reports "Pin not driven" on a pin you meant to leave alone**: add a
-  no-connect flag, from Section 14.
+  no-connect flag, from Section 15.
 - **A ratsnest line remains after you routed a trace**: the trace likely
   stopped short of the pad, instead of landing exactly on it. Zoom in, and
   redraw the last segment directly onto the centre of the pad.
+- **A pasted symbol appears at an unexpectedly large or small size**: this
+  usually means the two schematics disagree on grid or zoom, not that
+  anything is actually broken. Press `Ctrl+0` to fit the sheet to the
+  screen, then judge the size again; a symbol snapped correctly to the grid
+  is the correct size, however it first appeared on screen.
+- **The 3D Viewer shows a part in the wrong position, or the wrong
+  rotation**: this points to a footprint placed, or rotated, incorrectly on
+  the board, not a fault in the 3D model itself. Compare the orientation of
+  the footprint, on the 2D board view, against its datasheet pinout
+  diagram.
 - **You cannot find a menu item exactly as this guide names it**: KiCad
   reorganizes menus slightly between versions. Use the search box inside the
   **Preferences → Hotkeys** table. You can also hover over each toolbar
   icon, to find the closest match to the action this guide describes.
 - **You made a mistake and want to start a step over**: press `Ctrl+Z`
   repeatedly. The undo history of KiCad covers most actions in both editors.
+- **You made a mistake, already saved it, and even closed KiCad**: this is
+  exactly the closing note in Section 8. Run `git diff`, in your working
+  copy, to see exactly what changed since your last commit. Run
+  `git checkout -- <file>`, naming the affected file, to undo every change
+  to that file since your last commit, including the mistake. This only
+  helps for a change you already committed at some earlier point; commit
+  often, per Section 8, so this safety net stays useful.
 - **You are not sure if you saved**: check the title bar of the project
   manager window, and the title bar of each open editor window. Either bar
   shows an asterisk next to the file name, when unsaved changes exist. Press
@@ -608,24 +809,25 @@ information the repository does not already have.
 - **A part shows correctly for you, but a fresh clone reports it missing**:
   the part most likely comes from a library added under **Global
   Libraries**, on your own computer, instead of **Project Specific
-  Libraries**, inside the repository. Revisit Section 5 for the reasoning,
-  and Section 9 for the general steps.
+  Libraries**, inside the repository. Revisit Section 6 for the reasoning,
+  and Section 10 for the general steps.
 
 ---
 
-## 23. How this guide maps to the work already recorded
+## 25. How this guide maps to the work already recorded
 
 [DESIGN_NOTES.md](DESIGN_NOTES.md) and [KNOB-PARTS.md](KNOB-PARTS.md) already
 record every part this board needs, and every decision still open. Use the
 sections of this guide in this order, for a first working schematic:
 
-1. Sections 1 through 7, once, for your project setup.
-2. Section 9, for the SmartKnob footprint libraries you plan to use.
-3. Section 10, for every part the SmartKnob file can supply.
-4. Section 11, for the RP2040 support parts and the MAX17048.
-5. Section 12 and Section 13, for every symbol already on your sheet, and
+1. Sections 0 through 8, once, for your project setup, and for getting
+   every earlier fix onto your own computer.
+2. Section 10, for the SmartKnob footprint libraries you plan to use.
+3. Section 11, for every part the SmartKnob file can supply.
+4. Section 12, for the RP2040 support parts and the MAX17048.
+5. Section 13 and Section 14, for every symbol already on your sheet, and
    every symbol you add.
-6. Section 14, until it reports zero errors.
-7. Section 15, if the sheet becomes hard to read.
-8. Sections 16 through 20, for the physical board.
-9. Section 21, only once every earlier section is complete.
+6. Section 15, until it reports zero errors.
+7. Section 16, if the sheet becomes hard to read.
+8. Sections 17 through 22, for the physical board.
+9. Section 23, only once every earlier section is complete.
