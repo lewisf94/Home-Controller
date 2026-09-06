@@ -5,7 +5,9 @@ when a hardware decision changes.
 
 Use [CLAUDE.md](../CLAUDE.md) for firmware pins and protocol information. Use
 [KNOB-PARTS.md](KNOB-PARTS.md) for the full parts list, with quantities and
-status, drawn from the decisions in this file.
+status, drawn from the decisions in this file. Use
+[KICAD-GUIDE.md](KICAD-GUIDE.md) for a click-by-click KiCad walkthrough,
+written for a first-time KiCad user.
 
 ## Architecture
 

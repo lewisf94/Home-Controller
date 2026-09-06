@@ -7,7 +7,9 @@ implementation and from the 2026-06-18 verification pass. Read this document
 before you repeat this research.
 
 See [KNOB-PARTS.md](KNOB-PARTS.md) for the full parts list, with quantities
-and order status for every part named in this document.
+and order status for every part named in this document. See
+[KICAD-GUIDE.md](KICAD-GUIDE.md) for a step-by-step guide to building the
+schematic and board in KiCad, written for a first-time KiCad user.
 
 ---
 

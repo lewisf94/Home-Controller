@@ -313,6 +313,12 @@ input, and LED control.
 The ESP32-P4 sends haptic configurations. The RP2040 sends position and button
 events.
 
+Lewis is new to KiCad. Give a detailed, numbered, click-by-click instruction
+for a KiCad step. Do not give only a short summary. Point to
+[docs/KICAD-GUIDE.md](docs/KICAD-GUIDE.md) for the full walkthrough. Extend
+that guide with a new numbered step. Do not answer a KiCad question only in
+chat.
+
 ### RP2040 Pins
 
 | Function | Pins | Constraint |
@@ -432,3 +438,4 @@ instruction.
 - [Home Assistant setup](docs/HA-SETUP.md)
 - [Hardware design notes](docs/DESIGN_NOTES.md)
 - [RP2040 haptic-knob parts list](docs/KNOB-PARTS.md)
+- [KiCad guide for the daughterboard](docs/KICAD-GUIDE.md)

@@ -3,7 +3,9 @@
 This document lists every part for the RP2040 haptic-knob daughterboard, in
 one place. Read [DESIGN_NOTES.md](DESIGN_NOTES.md) for the reasoning behind
 each choice. Read [KNOB-NOTES.md](KNOB-NOTES.md) for the firmware facts that
-depend on each part, for example an I2C address or a pin assignment.
+depend on each part, for example an I2C address or a pin assignment. Read
+[KICAD-GUIDE.md](KICAD-GUIDE.md) for a step-by-step guide to placing each of
+these parts in KiCad, written for a first-time KiCad user.
 
 This project targets two build stages:
 

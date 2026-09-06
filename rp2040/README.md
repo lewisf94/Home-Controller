@@ -33,6 +33,8 @@ folder is project-specific firmware.
 
 Refer to [DESIGN_NOTES.md](../docs/DESIGN_NOTES.md) for hardware decisions.
 Refer to [KNOB-PARTS.md](../docs/KNOB-PARTS.md) for the full parts list.
+Refer to [KICAD-GUIDE.md](../docs/KICAD-GUIDE.md) for a step-by-step KiCad
+guide, written for a first-time KiCad user.
 
 ## Architecture
 
