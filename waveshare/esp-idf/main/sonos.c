@@ -142,10 +142,14 @@ static bool encode_uri_colons(char *dst, size_t dstsz, const char *src)
  * album enqueue logs the speaker's error body instead of a bare HTTP 500. */
 static char *soap_query(const char *host, const char *path, const char *svc,
                         const char *action, const char *inner, size_t *out_len);
-/* Speaker UUID (e.g. "RINCON_347E5C123456789A01400"), fetched once from
- * /xml/device_description.xml so we can build the x-rincon-queue transport URI. */
-static bool sonos_fetch_uuid(const char *host);
-static char s_sonos_uuid[64];
+/* Speaker UUID (e.g. "RINCON_347E5C123456789A01400"), fetched from
+ * /xml/device_description.xml so we can build the x-rincon-queue transport URI.
+ * Each speaker has its own UUID, so the cache holds one entry per host. */
+static const char *sonos_fetch_uuid(const char *host);
+#define SONOS_UUID_CACHE 4
+typedef struct { char host[64]; char uuid[64]; } sonos_uuid_entry_t;
+static sonos_uuid_entry_t s_sonos_uuid[SONOS_UUID_CACHE];
+static int s_sonos_uuid_next = 0;
 
 bool sonos_play_spotify_album(const char *host, const char *album_uri)
 {
@@ -212,13 +216,14 @@ bool sonos_play_spotify_album(const char *host, const char *album_uri)
     if (!r) { ESP_LOGW(TAG, "AddURIToQueue(%s) failed", album_uri); return false; }
     free(r);
 
-    if (sonos_fetch_uuid(host)) {
+    const char *uuid = sonos_fetch_uuid(host);
+    if (uuid) {
         char set_inner[200];
         n = snprintf(set_inner, sizeof set_inner,
                      "<InstanceID>0</InstanceID>"
                      "<CurrentURI>x-rincon-queue:%s#0</CurrentURI>"
                      "<CurrentURIMetaData></CurrentURIMetaData>",
-                     s_sonos_uuid);
+                     uuid);
         if (n > 0 && n < (int)sizeof set_inner) {
             /* soap_query logs the fault body if this returns 500. */
             char *sr = soap_query(host, AVT_PATH, AVT_SVC, "SetAVTransportURI", set_inner, NULL);
@@ -231,7 +236,11 @@ bool sonos_play_spotify_album(const char *host, const char *album_uri)
 
 /* ── Diagnostics ─────────────────────────────────────────────────────── */
 
-typedef struct { char *data; size_t len; size_t cap; } rbuf_t;
+/* Responses are kept up to 8 KB, which holds the DIDL and status fields we
+ * read. A longer body is cut at that point with one warning, so a missing
+ * field in a long response is visible in the log. */
+#define SONOS_RBUF_MAX 8192
+typedef struct { char *data; size_t len; size_t cap; bool truncated; } rbuf_t;
 
 static esp_err_t rbuf_evt(esp_http_client_event_t *e)
 {
@@ -241,7 +250,13 @@ static esp_err_t rbuf_evt(esp_http_client_event_t *e)
     if (need > b->cap) {
         size_t nc = b->cap ? b->cap : 512;
         while (nc < need) nc *= 2;
-        if (nc > 8192) return ESP_OK;            /* enough for the DIDL we need */
+        if (nc > SONOS_RBUF_MAX) {
+            if (!b->truncated) {
+                b->truncated = true;
+                ESP_LOGW(TAG, "response longer than %d B; rest ignored", SONOS_RBUF_MAX);
+            }
+            return ESP_OK;
+        }
         char *g = realloc(b->data, nc);
         if (!g) return ESP_FAIL;
         b->data = g; b->cap = nc;
@@ -252,11 +267,15 @@ static esp_err_t rbuf_evt(esp_http_client_event_t *e)
     return ESP_OK;
 }
 
-/* Fetch the speaker's UDN from /xml/device_description.xml and store it in
- * s_sonos_uuid (e.g. "RINCON_347E5C123456789A01400"). Cached after first call. */
-static bool sonos_fetch_uuid(const char *host)
+/* Return the UDN of the speaker at `host` (e.g. "RINCON_347E5C123456789A01400")
+ * from /xml/device_description.xml, or NULL. Cached for each host. */
+static const char *sonos_fetch_uuid(const char *host)
 {
-    if (s_sonos_uuid[0]) return true;
+    for (int i = 0; i < SONOS_UUID_CACHE; i++) {
+        if (s_sonos_uuid[i].uuid[0] && strcmp(s_sonos_uuid[i].host, host) == 0)
+            return s_sonos_uuid[i].uuid;
+    }
+    sonos_uuid_entry_t *slot = &s_sonos_uuid[s_sonos_uuid_next];
 
     char url[96];
     snprintf(url, sizeof url, "http://%s:1400/xml/device_description.xml", host);
@@ -270,7 +289,7 @@ static bool sonos_fetch_uuid(const char *host)
         .timeout_ms    = 4000,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) return false;
+    if (!c) return NULL;
 
     esp_err_t err  = esp_http_client_perform(c);
     int       st   = esp_http_client_get_status_code(c);
@@ -284,10 +303,12 @@ static bool sonos_fetch_uuid(const char *host)
             const char *e = strstr(p, "</UDN>");
             if (e) {
                 size_t n = (size_t)(e - p);
-                if (n < sizeof s_sonos_uuid) {
-                    memcpy(s_sonos_uuid, p, n);
-                    s_sonos_uuid[n] = '\0';
-                    ESP_LOGI(TAG, "speaker uuid: %s", s_sonos_uuid);
+                if (n < sizeof slot->uuid && strlen(host) < sizeof slot->host) {
+                    memcpy(slot->uuid, p, n);
+                    slot->uuid[n] = '\0';
+                    snprintf(slot->host, sizeof slot->host, "%s", host);
+                    s_sonos_uuid_next = (s_sonos_uuid_next + 1) % SONOS_UUID_CACHE;
+                    ESP_LOGI(TAG, "speaker uuid: %s", slot->uuid);
                     ok = true;
                 }
             }
@@ -296,7 +317,7 @@ static bool sonos_fetch_uuid(const char *host)
     if (!ok)
         ESP_LOGW(TAG, "fetch_uuid: err=%d status=%d", (int)err, st);
     free(rb.data);
-    return ok;
+    return ok ? slot->uuid : NULL;
 }
 
 /* Persistent keep-alive client for SOAP queries. The now-playing poll fires
