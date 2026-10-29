@@ -34,8 +34,9 @@ class NativeCTests(unittest.TestCase):
         if hasattr(cls, "tempdir"):
             cls.tempdir.cleanup()
 
-    def _compile(self, name: str, *sources: Path) -> Path:
+    def _compile(self, name: str, *sources: Path, includes: tuple[Path, ...] = ()) -> Path:
         executable = self.build_dir / name
+        include_args = [arg for path in includes for arg in ("-I", str(path))]
         command = [
             self.compiler,
             "-std=c11",
@@ -45,6 +46,7 @@ class NativeCTests(unittest.TestCase):
             "-Wno-unused-function",
             "-I",
             str(STUBS),
+            *include_args,
             *map(str, sources),
             "-o",
             str(executable),
@@ -98,6 +100,20 @@ class NativeCTests(unittest.TestCase):
         for scenario in ("helpers", "load-sort", "add", "art"):
             with self.subTest(scenario=scenario):
                 self._run(executable, scenario)
+
+    def test_knob_protocol_led_fields_survive_decode(self) -> None:
+        nanopb = REPO_ROOT / "rp2040" / "lib" / "nanopb"
+        proto = REPO_ROOT / "rp2040" / "src" / "proto_gen"
+        executable = self._compile(
+            "knob_protocol",
+            NATIVE / "test_knob_protocol.c",
+            nanopb / "pb_common.c",
+            nanopb / "pb_encode.c",
+            nanopb / "pb_decode.c",
+            proto / "home_controller.pb.c",
+            includes=(nanopb, proto),
+        )
+        self._run(executable)
 
     def test_runtime_credentials(self) -> None:
         executable = self._compile("creds", NATIVE / "test_creds.c")

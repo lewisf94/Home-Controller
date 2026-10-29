@@ -68,6 +68,17 @@ The UF2 file is `.pio/build/rp2040/firmware.uf2`.
 The project vendors nanopb in `lib/nanopb/`. Generated protocol files are in
 `src/proto_gen/`.
 
+`proto/` is the source for the protocol. To change it, edit
+`proto/home_controller.proto` or `proto/home_controller.options`, then run:
+
+```powershell
+cd proto
+nanopb_generator -f home_controller.options home_controller.proto
+copy home_controller.pb.* ..\rp2040\src\proto_gen\
+```
+
+Use nanopb 0.4.9.1. The host tests check that the copies stay identical.
+
 ## Motor and UART Pins
 
 The six motor-control pins use GPIO0 through GPIO5. Keep each PWM pair on its

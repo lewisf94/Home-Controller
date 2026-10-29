@@ -118,17 +118,6 @@ static bool _btn_encode_cb(pb_ostream_t *stream, const pb_field_t *field, void *
     return pb_encode_string(stream, s_btn_rgbw, 16);
 }
 
-// ---- nanopb decode callback for the log string in FromKnob ----
-static bool _log_decode_cb(pb_istream_t *stream, const pb_field_t *field, void **arg)
-{
-    uint8_t buf[256];
-    size_t  len = stream->bytes_left < 255 ? stream->bytes_left : 255;
-    if (!pb_read(stream, buf, len)) return false;
-    buf[len] = '\0';
-    ESP_LOGI(TAG, "[RP2040] %s", (char *)buf);
-    return true;
-}
-
 // ---- Build and transmit a single UART packet ----
 // No ToKnob_size static_assert is possible here (unlike the RP2040's KnobState
 // guard): the LED bytes fields are pb_callback_t, so nanopb cannot emit a
@@ -209,7 +198,6 @@ static void _rx_task(void *arg)
             if (_crc32(decoded, dec_len - 4) != crc_recv) continue;
 
             FromKnob fk = FromKnob_init_zero;
-            fk.payload.log.funcs.decode = _log_decode_cb;
 
             pb_istream_t is = pb_istream_from_buffer(decoded, dec_len - 4);
             if (!pb_decode(&is, FromKnob_fields, &fk)) continue;
@@ -235,7 +223,6 @@ static void _rx_task(void *arg)
                     s_state_cb(&fk.payload.state);
                 }
             }
-            // FromKnob_log_tag is handled by _log_decode_cb above
         } else {
             if (frame_len < COBS_BUF_SIZE - 1) {
                 frame_buf[frame_len++] = rx_byte;

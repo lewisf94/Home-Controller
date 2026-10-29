@@ -65,6 +65,7 @@
 
 // COBS max frame size: ToKnob worst-case (~200 B) + overhead
 #define COBS_BUF_SIZE 256
+static_assert(ToKnob_size + 4 + 2 < COBS_BUF_SIZE, "ToKnob frame too large for the COBS buffers");
 
 // ---- Static objects ----
 static HX711              s_hx711;
@@ -90,11 +91,6 @@ static int32_t  s_last_sent_pos = INT32_MIN;
 static uint8_t  s_rx_buf[COBS_BUF_SIZE];
 static uint16_t s_rx_len = 0;
 
-// ---- LED callback buffers (filled when KnobConfig is decoded) ----
-static uint8_t s_ring_rgbw[48];
-static uint8_t s_btn_rgbw[16];
-static size_t  s_ring_len = 0;
-static size_t  s_btn_len  = 0;
 
 // ---- CRC-32 (IEEE 802.3 polynomial, matching ESP32's esp_rom_crc32_le) ----
 static uint32_t _crc32(const uint8_t *data, size_t len)
@@ -156,39 +152,25 @@ static size_t _cobs_decode(const uint8_t *src, size_t src_len, uint8_t *dst)
     return out;
 }
 
-// ---- nanopb callbacks for bytes fields in KnobConfig ----
-static bool _ring_rgbw_decode_cb(pb_istream_t *stream, const pb_field_t *field, void **arg)
-{
-    s_ring_len = stream->bytes_left < 48 ? stream->bytes_left : 48;
-    return pb_read(stream, s_ring_rgbw, s_ring_len);
-}
-
-static bool _btn_rgbw_decode_cb(pb_istream_t *stream, const pb_field_t *field, void **arg)
-{
-    s_btn_len = stream->bytes_left < 16 ? stream->bytes_left : 16;
-    return pb_read(stream, s_btn_rgbw, s_btn_len);
-}
-
 // ---- LED update from decoded config ----
-static void _apply_leds(void)
+// The bytes fields have a static size (proto/home_controller.options). A
+// callback inside the ToKnob oneof does not work: nanopb clears the oneof
+// member before it decodes it.
+static void _apply_leds(const KnobConfig *cfg)
 {
     // Ring LEDs (SK6812 RGBW, 4 bytes per LED)
-    for (size_t i = 0; i < LED_RING_COUNT && (i * 4 + 3) < s_ring_len; i++) {
-        uint8_t r = s_ring_rgbw[i*4 + 0];
-        uint8_t g = s_ring_rgbw[i*4 + 1];
-        uint8_t b = s_ring_rgbw[i*4 + 2];
-        uint8_t w = s_ring_rgbw[i*4 + 3];
-        s_ring.setPixelColor(i, s_ring.Color(r, g, b, w));
+    const uint8_t *ring = cfg->led_ring_rgbw.bytes;
+    for (size_t i = 0; i < LED_RING_COUNT && (i * 4 + 3) < cfg->led_ring_rgbw.size; i++) {
+        s_ring.setPixelColor(i, s_ring.Color(ring[i*4 + 0], ring[i*4 + 1],
+                                             ring[i*4 + 2], ring[i*4 + 3]));
     }
     s_ring.show();
 
     // Button LEDs (SK6812 RGBW, 4 bytes per LED)
-    for (size_t i = 0; i < LED_BUTTON_COUNT && (i * 4 + 3) < s_btn_len; i++) {
-        uint8_t r = s_btn_rgbw[i*4 + 0];
-        uint8_t g = s_btn_rgbw[i*4 + 1];
-        uint8_t b = s_btn_rgbw[i*4 + 2];
-        uint8_t w = s_btn_rgbw[i*4 + 3];
-        s_btns.setPixelColor(i, s_btns.Color(r, g, b, w));
+    const uint8_t *btn = cfg->button_led_rgbw.bytes;
+    for (size_t i = 0; i < LED_BUTTON_COUNT && (i * 4 + 3) < cfg->button_led_rgbw.size; i++) {
+        s_btns.setPixelColor(i, s_btns.Color(btn[i*4 + 0], btn[i*4 + 1],
+                                             btn[i*4 + 2], btn[i*4 + 3]));
     }
     s_btns.show();
 }
@@ -198,7 +180,7 @@ static void _handle_to_knob(const ToKnob *msg)
 {
     if (msg->which_payload == ToKnob_config_tag) {
         motor_set_config(&msg->payload.config);
-        _apply_leds();
+        _apply_leds(&msg->payload.config);
     }
 
     // Send Ack for every received packet (echoes nonce)
@@ -241,8 +223,6 @@ static void _process_frame(const uint8_t *frame, size_t len)
     if (crc_recv != crc_calc) return;
 
     ToKnob msg = ToKnob_init_zero;
-    msg.payload.config.led_ring_rgbw.funcs.decode  = _ring_rgbw_decode_cb;
-    msg.payload.config.button_led_rgbw.funcs.decode = _btn_rgbw_decode_cb;
 
     pb_istream_t istream = pb_istream_from_buffer(decoded, dec_len - 4);
     if (!pb_decode(&istream, ToKnob_fields, &msg)) return;
