@@ -8,8 +8,9 @@
  *
  * Threading: the esp_websocket_client runs its own task and delivers inbound
  * frames to an event handler that parses state and pushes it to ui.c. Outbound
- * commands and album-art download run from the caller's task (main.c's ha task);
- * esp_websocket_client_send_text is safe to call from any task.
+ * commands and album-art download run from the caller's task (main.c's ha task).
+ * Commands go through ws_send_cmd(), which keeps the HA message ids in send
+ * order across both tasks.
  */
 
 #pragma once
@@ -22,6 +23,13 @@
  * normally string literals from secrets.h). */
 void ha_client_init(const char *host, int port,
                     const char *token, const char *entity);
+
+/* Optional TLS for the HA connection (wss:// and https://). Call before
+ * ha_client_start(). With TLS, HA_HOST must match the name in the HA
+ * certificate. ca_pem is a PEM CA certificate for a private CA, or NULL to
+ * use the built-in certificate bundle. The pointer must stay valid for the
+ * program's lifetime. */
+void ha_client_set_tls(bool use_tls, const char *ca_pem);
 
 /* Optional Spotify Web API credentials used by the HA build's Add Albums
  * search. Pointers must stay valid for the program's lifetime. The refresh

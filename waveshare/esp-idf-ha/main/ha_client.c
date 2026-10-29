@@ -11,6 +11,7 @@
 
 #include "ha_client.h"
 
+#include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -18,6 +19,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -31,12 +33,16 @@
 #include "ui.h"        /* ui_set_track_info */
 
 bool p4_json_copy_string(const char *p, char *out, size_t out_len);
+void p4_json_escape(char *out, size_t out_len, const char *src);
+bool p4_url_encode(char *out, size_t out_len, const char *src);
 
 static const char *TAG = "ha";
 
 /* ── Config ──────────────────────────────────────────────────────────────── */
 static const char *s_host   = NULL;
 static int         s_port   = 8123;
+static bool        s_use_tls = false;      /* wss:// and https:// to HA */
+static const char *s_ca_pem  = NULL;       /* NULL = certificate bundle */
 static const char *s_token  = NULL;
 static char        s_entity_buf[96] = {0};
 static const char *s_entity = s_entity_buf;   /* points at the buffer; runtime-switchable */
@@ -52,6 +58,11 @@ static esp_websocket_client_handle_t s_ws = NULL;
 static volatile bool s_authenticated = false;
 static volatile bool s_initial_state_received = false;
 static int s_msg_id = 1;                 /* incrementing WS command id */
+/* HA rejects a command whose id is not larger than the previous id. The
+ * WebSocket task and the ha task both send commands, so ws_send_cmd() takes
+ * the id and sends the frame while it holds this mutex. */
+static SemaphoreHandle_t s_ws_tx_mux = NULL;
+static TaskHandle_t      s_ws_task   = NULL;  /* runs ws_event_handler() */
 static int s_states_req_id = 0;          /* id of our now-playing get_states request */
 static int s_inventory_req_id = 0;       /* shared devices/lights inventory snapshot */
 static int s_queue_req_id = 0;           /* Music Assistant get_queue response */
@@ -167,6 +178,8 @@ static int64_t s_pending_art_event_us = 0;
 /* Inbound frame reassembly (WS frames can arrive in chunks). */
 static char  *s_rx     = NULL;
 static size_t s_rx_cap = 0;
+static size_t s_rx_msg_len = 0;      /* bytes of earlier frames of this message */
+static bool   s_rx_in_message = false;
 static bool   s_rx_dropping_oversize = false;
 static bool   s_rx_drop_was_album = false;
 static bool   s_rx_drop_was_devices = false;
@@ -367,6 +380,8 @@ static bool json_array_get_two_doubles(const char *arr, double *a, double *b)
 
 /* ── Outbound (WebSocket sends) ──────────────────────────────────────────── */
 static bool ws_send(const char *json);
+static bool ws_send_cmd(int *id_out, const char *body_fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 static bool request_inventory_refresh(const char *reason, bool force_cooldown);
 
 static bool ascii_contains_ci(const char *s, const char *needle)
@@ -416,26 +431,6 @@ static bool json_get_int(const char *json, const char *key, int *out)
     return true;
 }
 
-static void json_escape(char *out, size_t out_len, const char *src)
-{
-    if (!out || out_len == 0) return;
-    size_t i = 0;
-    if (src) {
-        while (*src && i + 1 < out_len) {
-            char c = *src++;
-            if ((c == '"' || c == '\\') && i + 2 < out_len) {
-                out[i++] = '\\';
-                out[i++] = c;
-            } else if ((unsigned char)c < 0x20) {
-                out[i++] = ' ';
-            } else {
-                out[i++] = c;
-            }
-        }
-    }
-    out[i] = '\0';
-}
-
 static bool is_spotify_id_char(char c)
 {
     return (c >= 'A' && c <= 'Z') ||
@@ -478,30 +473,16 @@ static bool send_album_browse_for_entity(const char *entity, const char *media_i
                                          const char *media_type, const char *title,
                                          const char *artist, int depth)
 {
-    char ent[128], id[192], typ[64], buf[560];
-    json_escape(ent, sizeof(ent), entity ? entity : "");
-    json_escape(id, sizeof(id), media_id ? media_id : "");
-    json_escape(typ, sizeof(typ), media_type ? media_type : "");
+    char ent[128], id[192], typ[64];
+    p4_json_escape(ent, sizeof(ent), entity ? entity : "");
+    p4_json_escape(id, sizeof(id), media_id ? media_id : "");
+    p4_json_escape(typ, sizeof(typ), media_type ? media_type : "");
 
-    s_album_browse_req_id = s_msg_id++;
     s_album_browse_depth = depth;
     s_album_pending_since_us = esp_timer_get_time();
     snprintf(s_album_browse_item_id, sizeof(s_album_browse_item_id), "%s", media_id ? media_id : "");
     snprintf(s_album_browse_item_title, sizeof(s_album_browse_item_title), "%s", title ? title : "");
     snprintf(s_album_browse_item_artist, sizeof(s_album_browse_item_artist), "%s", artist ? artist : "");
-    if (id[0]) {
-        snprintf(buf, sizeof(buf),
-                 "{\"id\":%d,\"type\":\"media_player/browse_media\","
-                 "\"entity_id\":\"%s\",\"media_content_id\":\"%s\","
-                 "\"media_content_type\":\"%s\"}",
-                 s_album_browse_req_id, ent, id, typ[0] ? typ : "album");
-    } else {
-        snprintf(buf, sizeof(buf),
-                 "{\"id\":%d,\"type\":\"media_player/browse_media\","
-                 "\"entity_id\":\"%s\"}",
-                 s_album_browse_req_id, ent);
-    }
-
     ESP_LOGI(TAG, "browse albums source=%s depth=%d%s",
              entity ? entity : "", depth, id[0] ? " (+media_id)" : "");
     if (id[0]) {
@@ -511,7 +492,19 @@ static bool send_album_browse_for_entity(const char *entity, const char *media_i
                  s_album_browse_item_id,
                  typ[0] ? typ : "(none)");
     }
-    if (!ws_send(buf)) {
+    bool sent;
+    if (id[0]) {
+        sent = ws_send_cmd(&s_album_browse_req_id,
+                           "\"type\":\"media_player/browse_media\","
+                           "\"entity_id\":\"%s\",\"media_content_id\":\"%s\","
+                           "\"media_content_type\":\"%s\"}",
+                           ent, id, typ[0] ? typ : "album");
+    } else {
+        sent = ws_send_cmd(&s_album_browse_req_id,
+                           "\"type\":\"media_player/browse_media\","
+                           "\"entity_id\":\"%s\"}", ent);
+    }
+    if (!sent) {
         s_album_browse_req_id = 0;
         s_album_pending_since_us = 0;
         ui_set_album_candidates(NULL, 0, "Home Assistant is not connected");
@@ -783,6 +776,58 @@ static bool ws_send(const char *json)
     return (ret >= 0);
 }
 
+/* Send one command frame as {"id":<next id>,<body>. `body_fmt` is the rest of
+ * the JSON object after the id. *id_out gets the id before the send, so the
+ * response handler can match it.
+ *
+ * The WebSocket client holds its own lock while it runs ws_event_handler().
+ * A task other than the WebSocket task therefore waits only a short time for
+ * that lock. If the wait fails, the task releases s_ws_tx_mux so the handler
+ * can send, then tries again with a new id. An id that was not sent is never
+ * sent later, so HA always receives increasing ids. */
+#define WS_CMD_MAX          640
+#define WS_TX_TRY_MS        200
+#define WS_TX_BUDGET_US     (2000LL * 1000)
+
+static bool ws_send_cmd(int *id_out, const char *body_fmt, ...)
+{
+    if (id_out) *id_out = 0;
+    bool on_ws_task = (xTaskGetCurrentTaskHandle() == s_ws_task);
+    TickType_t send_wait = pdMS_TO_TICKS(on_ws_task ? 2000 : WS_TX_TRY_MS);
+    int64_t deadline = esp_timer_get_time() + WS_TX_BUDGET_US;
+    char buf[WS_CMD_MAX];
+
+    for (;;) {
+        if (!s_ws || !esp_websocket_client_is_connected(s_ws)) {
+            ESP_LOGW(TAG, "ws_send_cmd: not connected, dropping: %.40s...", body_fmt);
+            return false;
+        }
+        if (s_ws_tx_mux &&
+            xSemaphoreTakeRecursive(s_ws_tx_mux, pdMS_TO_TICKS(2000)) != pdTRUE) {
+            ESP_LOGW(TAG, "ws_send_cmd: send lock timeout");
+            return false;
+        }
+        int id = s_msg_id++;
+        int n = snprintf(buf, sizeof buf, "{\"id\":%d,", id);
+        va_list ap;
+        va_start(ap, body_fmt);
+        int m = vsnprintf(buf + n, sizeof buf - (size_t)n, body_fmt, ap);
+        va_end(ap);
+        if (m < 0 || (size_t)(n + m) >= sizeof buf) {
+            if (s_ws_tx_mux) xSemaphoreGiveRecursive(s_ws_tx_mux);
+            ESP_LOGW(TAG, "ws_send_cmd: frame too long, dropping: %.40s...", body_fmt);
+            return false;
+        }
+        if (id_out) *id_out = id;
+        int ret = esp_websocket_client_send_text(s_ws, buf, n + m, send_wait);
+        if (s_ws_tx_mux) xSemaphoreGiveRecursive(s_ws_tx_mux);
+        if (ret >= 0) return true;
+        if (id_out) *id_out = 0;
+        if (on_ws_task || esp_timer_get_time() >= deadline) return false;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 static void diag_request_sent(int id)
 {
     ha_diag_request_t *slot = &s_diag_requests[(unsigned)id % HA_DIAG_REQUEST_SLOTS];
@@ -928,36 +973,6 @@ static bool spotify_client_token(char *err_out, size_t err_len)
     return ok;
 }
 
-static bool url_is_unreserved(unsigned char c)
-{
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-           (c >= '0' && c <= '9') || c == '-' || c == '_' ||
-           c == '.' || c == '~';
-}
-
-static bool url_encode(char *out, size_t out_len, const char *src)
-{
-    static const char hex[] = "0123456789ABCDEF";
-    if (!out || out_len == 0) return false;
-    size_t i = 0;
-    for (const unsigned char *p = (const unsigned char *)(src ? src : ""); *p; p++) {
-        if (url_is_unreserved(*p)) {
-            if (i + 1 >= out_len) return false;
-            out[i++] = (char)*p;
-        } else if (*p == ' ') {
-            if (i + 3 >= out_len) return false;
-            out[i++] = '%'; out[i++] = '2'; out[i++] = '0';
-        } else {
-            if (i + 3 >= out_len) return false;
-            out[i++] = '%';
-            out[i++] = hex[*p >> 4];
-            out[i++] = hex[*p & 0x0F];
-        }
-    }
-    out[i] = '\0';
-    return true;
-}
-
 static bool search_query_trim_copy(char *out, size_t out_len, const char *src)
 {
     if (!out || out_len == 0) return false;
@@ -1006,7 +1021,7 @@ static bool spotify_search_albums(const char *query, ha_album_candidate_t *out,
     }
 
     char q[260];
-    if (!url_encode(q, sizeof(q), trimmed)) {
+    if (!p4_url_encode(q, sizeof(q), trimmed)) {
         if (err_out) snprintf(err_out, err_len, "Search text is too long");
         return false;
     }
@@ -1102,7 +1117,7 @@ static bool spotify_search_tracks(const char *query, ha_album_candidate_t *out,
         if (err_out) snprintf(err_out, err_len, "Enter a song or artist");
         return false;
     }
-    if (!url_encode(q, sizeof(q), trimmed)) {
+    if (!p4_url_encode(q, sizeof(q), trimmed)) {
         if (err_out) snprintf(err_out, err_len, "Search text is too long");
         return false;
     }
@@ -1265,24 +1280,18 @@ static void send_auth(void)
  * pool, so the previous startup burst could assert in sdio_rx_get_buffer. */
 static bool request_current_state(void)
 {
-    char buf[64];
-    s_states_req_id = s_msg_id++;
-    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_states_req_id);
-    if (ws_send(buf)) return true;
+    if (ws_send_cmd(&s_states_req_id, "\"type\":\"get_states\"}")) return true;
     s_states_req_id = 0;
     return false;
 }
 
 static bool subscribe_active_entity(void)
 {
-    char buf[256];
     /* Push only future state changes after the snapshot has settled. */
-    s_sub_id = s_msg_id++;
-    snprintf(buf, sizeof(buf),
-             "{\"id\":%d,\"type\":\"subscribe_trigger\","
-             "\"trigger\":{\"platform\":\"state\",\"entity_id\":\"%s\"}}",
-             s_sub_id, s_entity ? s_entity : "");
-    if (ws_send(buf)) return true;
+    if (ws_send_cmd(&s_sub_id,
+                    "\"type\":\"subscribe_trigger\","
+                    "\"trigger\":{\"platform\":\"state\",\"entity_id\":\"%s\"}}",
+                    s_entity ? s_entity : "")) return true;
     s_sub_id = 0;
     return false;
 }
@@ -1293,24 +1302,24 @@ static bool call_service_entity(const char *domain, const char *service,
                                 const char *entity_id,
                                 const char *service_data /* e.g. "\"x\":1" or NULL */)
 {
-    char buf[384];
-    int id = s_msg_id++;
+    int id = 0;
+    bool sent;
     if (service_data && service_data[0]) {
-        snprintf(buf, sizeof(buf),
-                 "{\"id\":%d,\"type\":\"call_service\",\"domain\":\"%s\","
-                 "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"},"
-                 "\"service_data\":{%s}}",
-                 id, domain, service, entity_id ? entity_id : "", service_data);
+        sent = ws_send_cmd(&id,
+                           "\"type\":\"call_service\",\"domain\":\"%s\","
+                           "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"},"
+                           "\"service_data\":{%s}}",
+                           domain, service, entity_id ? entity_id : "", service_data);
     } else {
-        snprintf(buf, sizeof(buf),
-                 "{\"id\":%d,\"type\":\"call_service\",\"domain\":\"%s\","
-                 "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"}}",
-                 id, domain, service, entity_id ? entity_id : "");
+        sent = ws_send_cmd(&id,
+                           "\"type\":\"call_service\",\"domain\":\"%s\","
+                           "\"service\":\"%s\",\"target\":{\"entity_id\":\"%s\"}}",
+                           domain, service, entity_id ? entity_id : "");
     }
-    ESP_LOGI(TAG, "call_service id=%d %s.%s -> %s%s",
+    ESP_LOGI(TAG, "call_service id=%d %s.%s -> %s%s%s",
              id, domain, service, entity_id ? entity_id : "",
-             (service_data && service_data[0]) ? " (+data)" : "");
-    bool sent = ws_send(buf);
+             (service_data && service_data[0]) ? " (+data)" : "",
+             sent ? "" : " (not sent)");
     if (sent) diag_request_sent(id);
     return sent;
 }
@@ -1558,13 +1567,10 @@ static bool queue_available(void)
 void ha_request_queue(void)
 {
     if (!queue_available()) return;
-    char buf[320];
-    s_queue_req_id = s_msg_id++;
-    snprintf(buf, sizeof(buf),
-             "{\"id\":%d,\"type\":\"call_service\",\"domain\":\"music_assistant\","
-             "\"service\":\"get_queue\",\"target\":{\"entity_id\":\"%s\"},"
-             "\"return_response\":true}", s_queue_req_id, s_entity ? s_entity : "");
-    if (!ws_send(buf)) {
+    if (!ws_send_cmd(&s_queue_req_id,
+                     "\"type\":\"call_service\",\"domain\":\"music_assistant\","
+                     "\"service\":\"get_queue\",\"target\":{\"entity_id\":\"%s\"},"
+                     "\"return_response\":true}", s_entity ? s_entity : "")) {
         s_queue_req_id = 0;
         ui_set_queue(NULL, 0, "Home Assistant is not connected");
     }
@@ -2416,6 +2422,9 @@ static void handle_message(const char *msg)
  * clean server-side close). Runs on the WS task. */
 static void ws_session_reset(void)
 {
+    s_rx_msg_len = 0;
+    s_rx_in_message = false;
+    s_rx_dropping_oversize = false;
     s_authenticated = false;
     s_initial_state_received = false;
     s_states_req_id = 0;
@@ -2442,6 +2451,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
 {
     (void)arg; (void)base;
     esp_websocket_event_data_t *d = (esp_websocket_event_data_t *)event_data;
+    s_ws_task = xTaskGetCurrentTaskHandle();
 
     switch (event_id) {
         case WEBSOCKET_EVENT_CONNECTED:
@@ -2473,27 +2483,62 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
             s_ping_await_us = 0;
             /* op_code 1 = text, 0 = continuation. Ignore ping/pong/binary/close. */
             if (d->op_code != 1 && d->op_code != 0) break;
-            if (d->payload_len <= 0) break;
-            if (d->payload_len > RX_MAX_CAP) {
-                if (d->payload_offset == 0) {
+            /* A message can arrive as one text frame and then continuation
+             * frames. Each frame can also arrive in chunks (payload_offset).
+             * s_rx_msg_len holds the bytes of the earlier, complete frames of
+             * the current message. Parse only after the frame with FIN. */
+            bool frame_start = (d->payload_offset == 0);
+            bool frame_end = (d->payload_offset + d->data_len >= d->payload_len);
+            if (frame_start && d->op_code == 1) {
+                s_rx_msg_len = 0;
+                s_rx_in_message = true;
+                s_rx_dropping_oversize = false;
+                s_rx_drop_was_album = false;
+                s_rx_drop_was_devices = false;
+            } else if (!s_rx_in_message) {
+                break;   /* continuation with no start frame */
+            }
+
+            size_t need = s_rx_msg_len + (size_t)(d->payload_len > 0 ? d->payload_len : 0);
+            if (!s_rx_dropping_oversize && need > RX_MAX_CAP) {
+                s_rx_dropping_oversize = true;
+                s_rx_drop_was_album = (s_album_browse_req_id != 0);
+                s_rx_drop_was_devices = (s_inventory_req_id != 0);
+                ESP_LOGW(TAG, "ws message too large (%u B > %d B), dropping",
+                         (unsigned)need, RX_MAX_CAP);
+            }
+            if (!s_rx_dropping_oversize && need + 1 > s_rx_cap) {
+                /* Keep small auth/control frames in normal RAM, matching the
+                 * previously hardware-working path. With the HA build's
+                 * SPIRAM malloc policy, large get_states responses still move
+                 * to PSRAM automatically once they exceed 4 KB. */
+                char *grown = realloc(s_rx, need + 1);
+                if (grown) {
+                    s_rx = grown;
+                    s_rx_cap = need + 1;
+                } else {
+                    ESP_LOGW(TAG, "ws rx realloc failed for %u B", (unsigned)(need + 1));
                     s_rx_dropping_oversize = true;
                     s_rx_drop_was_album = (s_album_browse_req_id != 0);
                     s_rx_drop_was_devices = (s_inventory_req_id != 0);
-                    ESP_LOGW(TAG, "ws frame too large (%d B > %d B), dropping",
-                             d->payload_len, RX_MAX_CAP);
                 }
-                if (d->payload_offset + d->data_len >= d->payload_len) {
+            }
+
+            if (s_rx_dropping_oversize) {
+                if (frame_end && d->fin) {
                     bool was_album = s_rx_drop_was_album;
                     bool was_devices = s_rx_drop_was_devices;
                     s_rx_dropping_oversize = false;
                     s_rx_drop_was_album = false;
                     s_rx_drop_was_devices = false;
+                    s_rx_in_message = false;
+                    s_rx_msg_len = 0;
                     if (was_album && s_album_browse_req_id) {
-                        ESP_LOGW(TAG, "album browse response too large, trying next source");
+                        ESP_LOGW(TAG, "album browse response dropped, trying next source");
                         start_next_album_browse_entity();
                     }
                     if (was_devices && s_inventory_req_id) {
-                        ESP_LOGW(TAG, "inventory response too large");
+                        ESP_LOGW(TAG, "inventory response dropped");
                         s_inventory_req_id = 0;
                         s_inventory_pending_since_us = 0;
                         ui_set_devices_error("Home Assistant inventory is too large");
@@ -2501,37 +2546,17 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
                 }
                 break;
             }
-            if (d->payload_offset == 0) {
-                s_rx_dropping_oversize = false;
-                s_rx_drop_was_album = false;
-                s_rx_drop_was_devices = false;
-            } else if (s_rx_dropping_oversize) {
-                break;
-            }
 
-            if ((size_t)d->payload_len + 1 > s_rx_cap) {
-                /* Keep small auth/control frames in normal RAM, matching the
-                 * previously hardware-working path. With the HA build's
-                 * SPIRAM malloc policy, large get_states responses still move
-                 * to PSRAM automatically once they exceed 4 KB. */
-                char *grown = realloc(s_rx, d->payload_len + 1);
-                if (!grown) {
-                    ESP_LOGW(TAG, "ws rx realloc failed for %d B", d->payload_len + 1);
-                    if (s_album_browse_req_id) start_next_album_browse_entity();
-                    if (s_inventory_req_id) {
-                        s_inventory_req_id = 0;
-                        s_inventory_pending_since_us = 0;
-                        ui_set_devices_error("Not enough memory to refresh HA inventory");
-                    }
-                    break;
+            if (d->data_len > 0)
+                memcpy(s_rx + s_rx_msg_len + d->payload_offset, d->data_ptr, d->data_len);
+            if (frame_end) {
+                s_rx_msg_len = need;
+                if (d->fin) {
+                    s_rx[s_rx_msg_len] = '\0';
+                    s_rx_msg_len = 0;
+                    s_rx_in_message = false;
+                    if (s_rx[0]) handle_message(s_rx);
                 }
-                s_rx = grown;
-                s_rx_cap = d->payload_len + 1;
-            }
-            memcpy(s_rx + d->payload_offset, d->data_ptr, d->data_len);
-            if (d->payload_offset + d->data_len >= d->payload_len) {
-                s_rx[d->payload_len] = '\0';
-                handle_message(s_rx);
             }
             break;
         }
@@ -2543,6 +2568,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base,
 /* ── Public API ──────────────────────────────────────────────────────────── */
 void ha_client_init(const char *host, int port, const char *token, const char *entity)
 {
+    if (!s_ws_tx_mux) s_ws_tx_mux = xSemaphoreCreateRecursiveMutex();
     s_authenticated = false;
     s_initial_state_received = false;
     s_subscribe_pending = false;
@@ -2552,6 +2578,12 @@ void ha_client_init(const char *host, int port, const char *token, const char *e
     /* Copy into a writable buffer so the active entity can be switched at runtime
      * (s_entity already points at s_entity_buf). */
     snprintf(s_entity_buf, sizeof(s_entity_buf), "%s", entity ? entity : "");
+}
+
+void ha_client_set_tls(bool use_tls, const char *ca_pem)
+{
+    s_use_tls = use_tls;
+    s_ca_pem  = (ca_pem && ca_pem[0]) ? ca_pem : NULL;
 }
 
 void ha_spotify_init(const char *client_id, const char *client_secret,
@@ -2569,7 +2601,8 @@ void ha_client_start(void)
     s_authenticated = false;
     s_initial_state_received = false;
     char uri[160];
-    snprintf(uri, sizeof(uri), "ws://%s:%d/api/websocket", s_host, s_port);
+    snprintf(uri, sizeof(uri), "%s://%s:%d/api/websocket",
+             s_use_tls ? "wss" : "ws", s_host, s_port);
 
     esp_websocket_client_config_t cfg = {
         .uri                 = uri,
@@ -2578,6 +2611,12 @@ void ha_client_start(void)
         .buffer_size          = 4096,
         .task_stack           = 8192,
     };
+    if (s_use_tls) {
+        /* The long-lived token gives full HA access. With TLS it does not
+         * cross the LAN as plain text. */
+        if (s_ca_pem) cfg.cert_pem = s_ca_pem;
+        else          cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
     s_ws = esp_websocket_client_init(&cfg);
     if (!s_ws) {
         ESP_LOGE(TAG, "ws init failed");
@@ -2647,9 +2686,7 @@ void ha_client_tick(void)
                 s_ws_restart_pending = true;
             }
         } else if (now - s_last_rx_us >= HA_PING_IDLE_US) {
-            char ping[48];
-            snprintf(ping, sizeof ping, "{\"id\":%d,\"type\":\"ping\"}", s_msg_id++);
-            if (ws_send(ping)) s_ping_await_us = now;
+            if (ws_send_cmd(NULL, "\"type\":\"ping\"}")) s_ping_await_us = now;
         }
     } else {
         s_ping_await_us = 0;
@@ -2723,11 +2760,8 @@ static bool request_inventory_refresh(const char *reason, bool force_cooldown)
             APP_CORE_INTERNAL_NETWORK_MIN_FREE,
             APP_CORE_INTERNAL_NETWORK_MIN_LARGEST)) return false;
 
-    char buf[64];
-    s_inventory_req_id = s_msg_id++;
     s_inventory_pending_since_us = now;
-    snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":\"get_states\"}", s_inventory_req_id);
-    if (!ws_send(buf)) {
+    if (!ws_send_cmd(&s_inventory_req_id, "\"type\":\"get_states\"}")) {
         s_inventory_req_id = 0;
         s_inventory_pending_since_us = 0;
         return false;
@@ -2914,11 +2948,8 @@ void ha_set_active_entity(const char *sel)
      * send can still be retried by a later switch instead of leaking the
      * subscription for the rest of the session). */
     if (s_sub_id) {
-        char buf[96];
-        snprintf(buf, sizeof(buf),
-                 "{\"id\":%d,\"type\":\"unsubscribe_events\",\"subscription\":%d}",
-                 s_msg_id++, s_sub_id);
-        if (ws_send(buf)) {
+        if (ws_send_cmd(NULL, "\"type\":\"unsubscribe_events\",\"subscription\":%d}",
+                        s_sub_id)) {
             s_sub_id = 0;
         } else {
             ESP_LOGW(TAG, "unsubscribe send failed, subscription %d left active", s_sub_id);
@@ -2970,10 +3001,15 @@ void ha_art_full_url(const char *rel, char *out, size_t out_len)
     if (strncmp(rel, "http://", 7) == 0 || strncmp(rel, "https://", 8) == 0)
         snprintf(out, out_len, "%s", rel);
     else
-        snprintf(out, out_len, "http://%s:%d%s", s_host, s_port, rel);
+        snprintf(out, out_len, "%s://%s:%d%s", s_use_tls ? "https" : "http",
+                 s_host, s_port, rel);
 }
 
-/* ── Album-art HTTP download to file (no TLS; local network) ─────────────── */
+/* ── Album-art HTTP download to file ─────────────────────────────────────── */
+/* A cover is normally under 300 KB. The limit stops a bad response from
+ * filling the LittleFS partition. */
+#define HA_ART_MAX_BYTES (1024 * 1024)
+
 typedef struct {
     FILE *file;
     size_t bytes_written;
@@ -2984,6 +3020,12 @@ static esp_err_t art_file_event(esp_http_client_event_t *evt)
 {
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data) {
         art_file_ctx_t *ctx = (art_file_ctx_t *)evt->user_data;
+        if (ctx->write_failed) return ESP_FAIL;
+        if (ctx->bytes_written + (size_t)evt->data_len > HA_ART_MAX_BYTES) {
+            ESP_LOGW(TAG, "art download larger than %d B, stopped", HA_ART_MAX_BYTES);
+            ctx->write_failed = true;
+            return ESP_FAIL;
+        }
         size_t written = fwrite(evt->data, 1, evt->data_len, ctx->file);
         ctx->bytes_written += written;
         if (written != (size_t)evt->data_len) ctx->write_failed = true;
@@ -3010,20 +3052,29 @@ bool ha_download_to_file(const char *url, const char *path, size_t *out_len,
         .file = f,
     };
 
+    /* HA's /api/media_player_proxy/ endpoints require authentication even on
+     * the local network. Without the Bearer token they return 401. Only send it
+     * to HA-host URLs -- never to an external CDN (would leak the HA token).
+     * The client keeps a set header on a redirect, so a request that carries
+     * the token does not follow redirects. */
+    bool ha_host = art_url_is_ha_host(url);
+    bool with_auth = send_ha_auth && ha_host && s_token && s_token[0];
     esp_http_client_config_t cfg = {
-        .url               = url,
-        .event_handler     = art_file_event,
-        .user_data         = &file_ctx,
-        .crt_bundle_attach = esp_crt_bundle_attach,  /* enable https (Spotify covers) */
-        .timeout_ms        = 8000,
+        .url                   = url,
+        .event_handler         = art_file_event,
+        .user_data             = &file_ctx,
+        .crt_bundle_attach     = esp_crt_bundle_attach,  /* enable https (Spotify covers) */
+        .timeout_ms            = 8000,
+        .disable_auto_redirect = with_auth,
     };
+    if (ha_host && s_ca_pem) {
+        cfg.crt_bundle_attach = NULL;
+        cfg.cert_pem = s_ca_pem;
+    }
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { fclose(f); return false; }
 
-    /* HA's /api/media_player_proxy/ endpoints require authentication even on
-     * the local network. Without the Bearer token they return 401. Only send it
-     * to HA-host URLs -- never to an external CDN (would leak the HA token). */
-    if (send_ha_auth && art_url_is_ha_host(url) && s_token && s_token[0]) {
+    if (with_auth) {
         char bearer[320];
         snprintf(bearer, sizeof(bearer), "Bearer %s", s_token);
         esp_http_client_set_header(c, "Authorization", bearer);
