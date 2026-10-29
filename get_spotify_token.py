@@ -1,3 +1,5 @@
+import getpass
+
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
 SCOPE = (
     "user-modify-playback-state user-read-playback-state "
@@ -14,7 +16,7 @@ def main() -> int:
 
     print("--- CYD Spotify Token Generator ---")
     client_id = input("Enter your Spotify Client ID: ").strip()
-    client_secret = input("Enter your Spotify Client Secret: ").strip()
+    client_secret = getpass.getpass("Enter your Spotify Client Secret (hidden): ").strip()
 
     sp_oauth = SpotifyOAuth(
         client_id=client_id,

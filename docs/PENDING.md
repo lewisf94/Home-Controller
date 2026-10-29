@@ -59,6 +59,21 @@ The HA build reserves 64 KB of internal memory for mandatory DMA allocations.
 
 Do not reduce this reserve before the soak passes.
 
+### Audit Fixes Of 2026-10-29
+
+These changes are not build-verified or hardware-verified:
+
+- [ ] Delete `sdkconfig`, build, and flash the bootloader once over USB. This
+  step applies the new OTA rollback option.
+- [ ] Install an update through OTA. Confirm the `marked valid` log line after
+  Home Assistant connects.
+- [ ] Confirm that OTA refuses to start while the built-in speaker plays.
+- [ ] Send many commands quickly during an album search. Confirm that Home
+  Assistant reports no `id_reuse` error.
+- [ ] Optional: test `HA_USE_TLS` and record the `theme ... ready:` memory line.
+- [ ] Commit `dependencies.lock` for each ESP-IDF build after the first good
+  build.
+
 ## Waveshare Direct Build
 
 The direct baseline is hardware-verified.
@@ -70,6 +85,8 @@ These focused checks remain useful:
 - [ ] Test an unreachable pinned Sonos speaker.
 - [ ] Confirm Spotify command-client reuse during repeated button presses.
 - [ ] Run Cover Flow while the FPS display is active.
+- [ ] With `SONOS_DEVICES`, start an album on the second speaker through the
+  queue fallback.
 
 ## RP2040 Haptic Knob
 
@@ -104,6 +121,7 @@ Complete these hardware checks:
 - [ ] Determine the motor pole-pair count.
 - [ ] Build and flash the full knob firmware.
 - [ ] Test the ESP32-P4 UART link.
+- [ ] Confirm that the ring and button LEDs show the colours that the P4 sends.
 - [ ] Calibrate the strain threshold.
 - [ ] Test all haptic profiles.
 
