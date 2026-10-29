@@ -89,3 +89,9 @@ CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=20
+
+# OTA rollback: a new image boots as "pending verify". The app confirms it with
+# app_core_ota_mark_valid() after the network or backend connects. If the
+# device resets first, the bootloader returns to the previous image. This is a
+# bootloader option: flash the bootloader once over USB after this change.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

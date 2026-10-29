@@ -76,6 +76,12 @@ static const char *TAG = "main";
 #ifndef OTA_URL
 #define OTA_URL ""            /* optional secrets.h default firmware URL */
 #endif
+#ifndef HA_USE_TLS
+#define HA_USE_TLS 0          /* 1 = wss:// and https:// to Home Assistant */
+#endif
+#ifndef HA_CA_CERT_PEM
+#define HA_CA_CERT_PEM NULL   /* optional PEM CA for a private HA certificate */
+#endif
 bool creds_get(const char *key, char *out, size_t out_len, const char *fallback);
 bool ui_output_switch_transfer_enabled(void);
 
@@ -545,6 +551,12 @@ static void ha_task(void *arg)
                 ha_search_queue_tracks(cmd.queue_query);
                 break;
             case HCMD_OTA: {
+                /* Sendspin and the OTA TLS stream both need the SDIO
+                 * receive pool. Do not run them together. */
+                if (audio_stream_is_active()) {
+                    ui_set_ota_status("Stop playback on this speaker, then start the update.");
+                    break;
+                }
                 char url[300];
                 creds_get(CREDS_KEY_OTA_URL, url, sizeof url, OTA_URL);
                 app_core_ota_start(url);
@@ -563,6 +575,7 @@ static void ha_task(void *arg)
          * Wait until that frame has been parsed, then leave one quiet second. */
         if (!sendspin_started) {
             if (ha_client_is_ready()) {
+                app_core_ota_mark_valid();
                 if (!ha_ready_since) ha_ready_since = xTaskGetTickCount();
                 if (xTaskGetTickCount() - ha_ready_since >= pdMS_TO_TICKS(1000)) {
                     sendspin_started = sendspin_player_start();
@@ -647,6 +660,7 @@ void app_main(void)
     app_core_reliability_checkpoint("ui ready");
 
     ha_client_init(HA_HOST, HA_PORT, HA_TOKEN, HA_ENTITY);
+    ha_client_set_tls(HA_USE_TLS, HA_CA_CERT_PEM);
     ha_spotify_init(s_cred_sp_id, s_cred_sp_secret, s_cred_sp_refresh);
 
     s_cmd_queue = xQueueCreateWithCaps(CMD_QUEUE_DEPTH, sizeof(hcmd_t),

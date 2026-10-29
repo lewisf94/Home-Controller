@@ -15,6 +15,9 @@
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_ota_ops.h"
+
+#include "app_core_reliability.h"
 
 #include "ui.h"   /* ui_set_ota_status() -- p4_shared is an app_core dependency */
 
@@ -24,6 +27,23 @@ static volatile bool s_running = false;
 static char          s_url[300];
 
 bool app_core_ota_in_progress(void) { return s_running; }
+
+void app_core_ota_mark_valid(void)
+{
+    static bool s_done = false;
+    if (s_done) return;
+    s_done = true;
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    if (!running || esp_ota_get_state_partition(running, &state) != ESP_OK) return;
+    if (state != ESP_OTA_IMG_PENDING_VERIFY) return;
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "new firmware marked valid; rollback cancelled");
+    } else {
+        ESP_LOGE(TAG, "mark valid failed: %s", esp_err_to_name(err));
+    }
+}
 
 static void ota_status(const char *msg)
 {
@@ -95,6 +115,14 @@ bool app_core_ota_start(const char *url)
     if (s_running) return false;
     if (!url || !url[0]) {
         ui_set_ota_status("No firmware URL set (Settings > SETUP)");
+        return false;
+    }
+    /* The update keeps one TLS session open for the full image. Start it only
+     * when the internal DMA-capable reserve can hold it. */
+    if (!app_core_reliability_network_budget_ok("OTA",
+                                                APP_CORE_INTERNAL_DESIRED_FREE,
+                                                APP_CORE_INTERNAL_DESIRED_LARGEST)) {
+        ui_set_ota_status("Update not started: low memory. Try again later.");
         return false;
     }
     strlcpy(s_url, url, sizeof s_url);
