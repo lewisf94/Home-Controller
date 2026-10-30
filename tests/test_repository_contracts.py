@@ -115,6 +115,31 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertIn("static size_t _cobs_encode", source)
             self.assertIn("static size_t _cobs_decode", source)
 
+    def test_generated_protocol_and_nanopb_copies_match(self) -> None:
+        # proto/ is the source. Regenerate with:
+        #   nanopb_generator -f home_controller.options home_controller.proto
+        # and copy both files to rp2040/src/proto_gen/.
+        proto = REPO_ROOT / "proto"
+        rp_gen = REPO_ROOT / "rp2040" / "src" / "proto_gen"
+        for name in ("home_controller.pb.c", "home_controller.pb.h"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    (proto / name).read_bytes(), (rp_gen / name).read_bytes()
+                )
+        self.assertEqual(
+            (proto / "home_controller.pb.c").read_bytes(),
+            (REPO_ROOT / "waveshare" / "components" / "p4_shared" / "home_controller.pb.c").read_bytes(),
+        )
+        p4_nanopb = REPO_ROOT / "waveshare" / "esp-idf" / "components" / "nanopb"
+        rp_nanopb = REPO_ROOT / "rp2040" / "lib" / "nanopb"
+        names = sorted(p.name for p in rp_nanopb.iterdir() if p.is_file())
+        self.assertTrue(names)
+        for name in names:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    (rp_nanopb / name).read_bytes(), (p4_nanopb / name).read_bytes()
+                )
+
     def test_p4_output_transfer_and_layout_guards(self) -> None:
         shared_ui = (
             REPO_ROOT / "waveshare" / "components" / "p4_shared" / "ui.c"

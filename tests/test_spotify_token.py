@@ -50,6 +50,9 @@ class SpotifyTokenTests(unittest.TestCase):
         with (
             mock.patch.dict(sys.modules, self.modules),
             mock.patch.object(builtins, "input", side_effect=lambda _: next(answers)),
+            mock.patch.object(
+                get_spotify_token.getpass, "getpass", side_effect=lambda _: next(answers)
+            ),
             contextlib.redirect_stdout(io.StringIO()) as output,
         ):
             result = get_spotify_token.main()
@@ -73,6 +76,9 @@ class SpotifyTokenTests(unittest.TestCase):
         with (
             mock.patch.dict(sys.modules, self.modules),
             mock.patch.object(builtins, "input", side_effect=lambda _: next(answers)),
+            mock.patch.object(
+                get_spotify_token.getpass, "getpass", side_effect=lambda _: next(answers)
+            ),
             contextlib.redirect_stdout(io.StringIO()) as output,
         ):
             result = get_spotify_token.main()

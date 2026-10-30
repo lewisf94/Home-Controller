@@ -351,8 +351,14 @@ void ui_request_ota(void) { _post_cmd(SCMD_OTA, 0, NULL); }
 /* WiFi connect (with resilient background reconnect) and the connect chime
  * (first successful connection only, whether that's this call or a later
  * background reconnect) now live in app_core_wifi -- see wifi.c. */
+/* Set on the first Wi-Fi connection. spotify_task() then confirms a new OTA
+ * image (app_core_ota_mark_valid), because the network path for a new update
+ * now works. */
+static volatile bool s_wifi_connected_once = false;
+
 static void on_wifi_first_connect(void)
 {
+    s_wifi_connected_once = true;
     audio_play(AUDIO_SFX_CONNECT);
     /* Fetch covers for any runtime-added albums now the network is up (the
      * queue exists by the time DHCP completes; _post_cmd no-ops if not). */
@@ -624,6 +630,7 @@ static void spotify_task(void *arg)
 
     while (1) {
         app_core_reliability_tick();
+        if (s_wifi_connected_once) app_core_ota_mark_valid();
         if (settle) {
             settle = false;
             for (int i = 0; i < 5; i++) {

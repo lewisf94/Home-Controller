@@ -18,6 +18,7 @@ Git history contains the complete original review reports.
 | 2026-05-31 | Performance | Found command latency, Sonos connection cost, and render-path work. |
 | 2026-06-01 | Implementation | Fixed command reuse and unnecessary CYD input locking. |
 | 2026-06-01 | Verification | Confirmed prior fixes and added Sonos client reuse. |
+| 2026-10-29 | Full audit | Fixed knob LED decode, CI coverage, HA message ids, OTA rollback, and 10 smaller defects. |
 
 ## Resolved Security Findings
 
@@ -74,7 +75,7 @@ Review these areas before you repeat a completed review:
 
 1. RP2040 motor safety after the first hardware run.
 2. Long-duration P4 DMA behavior.
-3. OTA rollback and interrupted-update recovery.
+3. OTA image signing. Rollback is enabled; signed images are not.
 4. Runtime album catalogue corruption recovery.
 5. Home Assistant light-state subscriptions.
 6. CYD build reproducibility after dependency updates.

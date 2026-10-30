@@ -1,0 +1,7 @@
+# nanopb options for home_controller.proto.
+# Static sizes keep the bytes and string fields out of pb_callback_t. nanopb
+# clears a oneof member before it decodes it, so a callback that is set on a
+# field inside the ToKnob or FromKnob oneof is lost and the field is skipped.
+KnobConfig.led_ring_rgbw   max_size:48
+KnobConfig.button_led_rgbw max_size:16
+FromKnob.log               max_size:128

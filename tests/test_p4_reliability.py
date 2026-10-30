@@ -25,6 +25,7 @@ COMMON_DEFAULTS = [
     "# CONFIG_LV_USE_TINY_TTF is not set",
     "CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y",
     "CONFIG_ESP_TASK_WDT_PANIC=y",
+    "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y",
 ]
 
 HA_DEFAULTS = [
@@ -59,6 +60,8 @@ def _make_source_tree(root: Path, target: str) -> None:
         root / "waveshare" / target / "main" / "main.c",
         "app_core_reliability_init();\n"
         "app_core_ota_start(url);\n"
+        "app_core_ota_mark_valid();\n"
+        "case HCMD_OTA: if (audio_stream_is_active()) break;\n"
         "xTaskCreatePinnedToCoreWithCaps(worker);\n"
         "xQueueCreateWithCaps(depth);\n",
     )
@@ -66,6 +69,10 @@ def _make_source_tree(root: Path, target: str) -> None:
         root / "waveshare" / "components" / "p4_shared" / "audio.c",
         "xTaskCreatePinnedToCoreWithCaps(audio_task, x);\n"
         "xQueueCreateWithCaps(6, sizeof(audio_sfx_t), x);\n",
+    )
+    _write(
+        root / "waveshare" / "components" / "app_core" / "ota.c",
+        'app_core_reliability_network_budget_ok("OTA", a, b);\n',
     )
     _write(
         root / "waveshare" / "components" / "app_core" / "reliability.c",

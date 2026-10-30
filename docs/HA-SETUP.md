@@ -180,6 +180,25 @@ Use the numeric IP address for `HA_HOST`.
 
 Do not use `homeassistant.local` in the firmware configuration.
 
+### Optional TLS Connection
+
+By default, the firmware connects with `ws://` and `http://`. The long-lived
+access token then crosses the LAN as plain text. This token gives full Home
+Assistant access.
+
+To encrypt the connection, set these optional values:
+
+| Name | Value |
+|---|---|
+| `HA_USE_TLS` | `1` |
+| `HA_CA_CERT_PEM` | PEM text of a private CA certificate, if Home Assistant does not use a public certificate |
+
+With TLS, `HA_HOST` must be the name in the Home Assistant certificate. Do not
+use an IP address unless the certificate contains that address.
+
+TLS uses more internal DMA-capable memory. Run the P4 reliability check and a
+soak test before you use TLS daily.
+
 ## Build And Flash
 
 Open an ESP-IDF terminal.

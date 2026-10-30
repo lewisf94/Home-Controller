@@ -142,3 +142,54 @@ bool p4_json_copy_string(const char *p, char *out, size_t out_len)
     out[used] = '\0';
     return *p == '"' && !truncated;
 }
+
+/* Copy `src` into `out` as the inside of a JSON string. Escape '"' and '\\',
+ * and turn control characters into spaces. Stop at the end of `out`; never
+ * leave half of an escape, because a bare quote or backslash would break the
+ * JSON command. */
+void p4_json_escape(char *out, size_t out_len, const char *src)
+{
+    if (!out || out_len == 0) return;
+    size_t i = 0;
+    if (src) {
+        while (*src && i + 1 < out_len) {
+            char c = *src++;
+            if (c == '"' || c == '\\') {
+                if (i + 2 >= out_len) break;
+                out[i++] = '\\';
+                out[i++] = c;
+            } else if ((unsigned char)c < 0x20) {
+                out[i++] = ' ';
+            } else {
+                out[i++] = c;
+            }
+        }
+    }
+    out[i] = '\0';
+}
+
+/* Percent-encode `src` into `out` for a URL query. RFC 3986 unreserved
+ * characters stay as they are. Returns false if `out` is too small. */
+bool p4_url_encode(char *out, size_t out_len, const char *src)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    if (!out || out_len == 0) return false;
+    size_t i = 0;
+    for (const unsigned char *p = (const unsigned char *)(src ? src : ""); *p; p++) {
+        unsigned char c = *p;
+        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') ||
+                          c == '-' || c == '_' || c == '.' || c == '~';
+        if (unreserved) {
+            if (i + 1 >= out_len) return false;
+            out[i++] = (char)c;
+        } else {
+            if (i + 3 >= out_len) return false;
+            out[i++] = '%';
+            out[i++] = hex[c >> 4];
+            out[i++] = hex[c & 0x0F];
+        }
+    }
+    out[i] = '\0';
+    return true;
+}

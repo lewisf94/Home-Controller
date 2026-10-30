@@ -49,6 +49,7 @@
 #include "mbedtls/base64.h"
 
 bool p4_json_copy_string(const char *p, char *out, size_t out_len);
+bool p4_url_encode(char *out, size_t out_len, const char *src);
 
 static const char *TAG = "spotify";
 
@@ -680,6 +681,10 @@ unsigned char *spotify_download_bytes(const char *url, size_t *out_len)
  * truncated file, and the first two bytes seen so the caller can reject a body
  * that isn't a JPEG (CDN error page, truncated stream) before feeding it to
  * the decoder. */
+/* A Spotify cover is normally under 300 KB. The limit stops a bad response
+ * from filling the LittleFS partition. */
+#define ART_DOWNLOAD_MAX_BYTES (1024 * 1024)
+
 typedef struct {
     FILE   *fp;
     size_t  written;
@@ -702,6 +707,11 @@ static esp_err_t http_file_event_handler(esp_http_client_event_t *evt)
     }
 
     size_t want = (size_t)evt->data_len;
+    if (sink->written + want > ART_DOWNLOAD_MAX_BYTES) {
+        sink->write_failed = true;
+        ESP_LOGW(TAG, "art download larger than %d B, stopped", ART_DOWNLOAD_MAX_BYTES);
+        return ESP_FAIL;
+    }
     size_t got  = fwrite(evt->data, 1, want, sink->fp);
     sink->written += got;
     if (got != want) {
@@ -1106,31 +1116,6 @@ bool spotify_get_saved_albums(spotify_album_candidate_t *out, int max, int *coun
     return (err == ESP_OK && status == 200);
 }
 
-/* Percent-encode `src` into `out` (RFC 3986 unreserved kept). false on overflow. */
-static bool spotify_url_encode(char *out, size_t out_len, const char *src)
-{
-    static const char hex[] = "0123456789ABCDEF";
-    size_t o = 0;
-    for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
-        unsigned char c = *p;
-        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                          (c >= '0' && c <= '9') ||
-                          c == '-' || c == '_' || c == '.' || c == '~';
-        if (unreserved) {
-            if (o + 1 >= out_len) return false;
-            out[o++] = (char)c;
-        } else {
-            if (o + 3 >= out_len) return false;
-            out[o++] = '%';
-            out[o++] = hex[c >> 4];
-            out[o++] = hex[c & 0xF];
-        }
-    }
-    if (o >= out_len) return false;
-    out[o] = '\0';
-    return true;
-}
-
 bool spotify_search_albums(const char *query, spotify_album_candidate_t *out,
                            int max, int *count, char *err_out, size_t err_len)
 {
@@ -1150,7 +1135,7 @@ bool spotify_search_albums(const char *query, spotify_album_candidate_t *out,
     }
 
     char q[256];
-    if (!spotify_url_encode(q, sizeof(q), query)) {
+    if (!p4_url_encode(q, sizeof(q), query)) {
         if (err_out) snprintf(err_out, err_len, "Search text is too long");
         return false;
     }

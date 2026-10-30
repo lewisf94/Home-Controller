@@ -10,6 +10,8 @@
 #endif
 
 /* Struct definitions */
+typedef PB_BYTES_ARRAY_T(48) KnobConfig_led_ring_rgbw_t;
+typedef PB_BYTES_ARRAY_T(16) KnobConfig_button_led_rgbw_t;
 /* P4 -> RP2040: configure haptic behaviour + LEDs */
 typedef struct _KnobConfig {
     int32_t position; /* current logical position */
@@ -21,8 +23,8 @@ typedef struct _KnobConfig {
     float detent_strength_unit; /* [0.0, 1.0] */
     float endstop_strength_unit;
     float snap_point; /* hysteresis threshold (e.g. 1.1) */
-    pb_callback_t led_ring_rgbw; /* 4 bytes x 12 LEDs = 48 bytes (RGBW) */
-    pb_callback_t button_led_rgbw; /* 4 bytes x 4 LEDs = 16 bytes */
+    KnobConfig_led_ring_rgbw_t led_ring_rgbw; /* 4 bytes x 12 LEDs = 48 bytes (RGBW) */
+    KnobConfig_button_led_rgbw_t button_led_rgbw; /* 4 bytes x 4 LEDs = 16 bytes */
 } KnobConfig;
 
 /* RP2040 -> P4: knob state events */
@@ -52,7 +54,7 @@ typedef struct _FromKnob {
     union {
         uint32_t ack; /* echoes nonce */
         KnobState state;
-        pb_callback_t log;
+        char log[128];
     } payload;
 } FromKnob;
 
@@ -62,11 +64,11 @@ extern "C" {
 #endif
 
 /* Initializer values for message structs */
-#define KnobConfig_init_default                  {0, 0, 0, 0, 0, 0, 0, 0, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define KnobConfig_init_default                  {0, 0, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, {0, {0}}}
 #define KnobState_init_default                   {0, 0, 0, 0, 0, 0}
 #define ToKnob_init_default                      {0, 0, 0, {KnobConfig_init_default}}
 #define FromKnob_init_default                    {0, 0, {0}}
-#define KnobConfig_init_zero                     {0, 0, 0, 0, 0, 0, 0, 0, 0, {{NULL}, NULL}, {{NULL}, NULL}}
+#define KnobConfig_init_zero                     {0, 0, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, {0, {0}}}
 #define KnobState_init_zero                      {0, 0, 0, 0, 0, 0}
 #define ToKnob_init_zero                         {0, 0, 0, {KnobConfig_init_zero}}
 #define FromKnob_init_zero                       {0, 0, {0}}
@@ -109,9 +111,9 @@ X(a, STATIC,   SINGULAR, FLOAT,    position_width_radians,   6) \
 X(a, STATIC,   SINGULAR, FLOAT,    detent_strength_unit,   7) \
 X(a, STATIC,   SINGULAR, FLOAT,    endstop_strength_unit,   8) \
 X(a, STATIC,   SINGULAR, FLOAT,    snap_point,        9) \
-X(a, CALLBACK, SINGULAR, BYTES,    led_ring_rgbw,    10) \
-X(a, CALLBACK, SINGULAR, BYTES,    button_led_rgbw,  11)
-#define KnobConfig_CALLBACK pb_default_field_callback
+X(a, STATIC,   SINGULAR, BYTES,    led_ring_rgbw,    10) \
+X(a, STATIC,   SINGULAR, BYTES,    button_led_rgbw,  11)
+#define KnobConfig_CALLBACK NULL
 #define KnobConfig_DEFAULT NULL
 
 #define KnobState_FIELDLIST(X, a) \
@@ -137,8 +139,8 @@ X(a, STATIC,   ONEOF,    BOOL,     (payload,request_state,payload.request_state)
 X(a, STATIC,   SINGULAR, UINT32,   protocol_version,   1) \
 X(a, STATIC,   ONEOF,    UINT32,   (payload,ack,payload.ack),   2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,state,payload.state),   3) \
-X(a, CALLBACK, ONEOF,    STRING,   (payload,log,payload.log),   4)
-#define FromKnob_CALLBACK pb_default_field_callback
+X(a, STATIC,   ONEOF,    STRING,   (payload,log,payload.log),   4)
+#define FromKnob_CALLBACK NULL
 #define FromKnob_DEFAULT NULL
 #define FromKnob_payload_state_MSGTYPE KnobState
 
@@ -154,11 +156,11 @@ extern const pb_msgdesc_t FromKnob_msg;
 #define FromKnob_fields &FromKnob_msg
 
 /* Maximum encoded size of messages (where known) */
-/* KnobConfig_size depends on runtime parameters */
-/* ToKnob_size depends on runtime parameters */
-/* FromKnob_size depends on runtime parameters */
-#define HOME_CONTROLLER_PB_H_MAX_SIZE            KnobState_size
+#define FromKnob_size                            136
+#define HOME_CONTROLLER_PB_H_MAX_SIZE            ToKnob_size
+#define KnobConfig_size                          132
 #define KnobState_size                           50
+#define ToKnob_size                              147
 
 #ifdef __cplusplus
 } /* extern "C" */

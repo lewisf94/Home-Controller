@@ -1,75 +1,95 @@
 name: ESP-IDF build (Waveshare P4)
 
-# Compile-check the Waveshare ESP32-P4 build on every push / PR. GitHub's
-# runners can reach the Espressif component registry (components.espressif.com),
-# so the IDF Component Manager resolves lvgl / esp_wifi_remote / esp_hosted /
-# jpegdec / littlefs normally -- unlike the restricted cloud dev environment,
-# whose egress proxy blocks *.espressif.com (x-deny-reason: host_not_allowed).
+# Compile-check both Waveshare ESP32-P4 builds on every push / PR that touches
+# them or the shared P4 components. GitHub's runners can reach the Espressif
+# component registry (components.espressif.com), so the IDF Component Manager
+# resolves lvgl / esp_wifi_remote / esp_hosted / jpegdec / littlefs normally --
+# unlike the restricted cloud dev environment, whose egress proxy blocks
+# *.espressif.com (x-deny-reason: host_not_allowed).
 #
 # Two build inputs are gitignored (copyright art + private credentials), so CI
 # generates throwaway placeholders. This verifies the code COMPILES and LINKS;
 # it does not produce a flashable image with real assets.
-#   - include/secrets.h     : copied from the committed secrets.h.example
-#   - main/album_thumbs.bin : zero-filled blob sized to the album count so
-#                             album_thumb_count() matches albums_count()
+#   - include/secrets.h                        : minimal placeholder values
+#   - components/p4_shared/album_thumbs.bin    : zero-filled blob sized to the
+#                                                album count in p4_shared/albums.c
+#
+# Actions are pinned to commit SHAs. The comment after each SHA is its tag.
 
 on:
   push:
     paths:
-      - 'waveshare/esp-idf/**'
+      - 'waveshare/**'
       - '.github/workflows/esp-idf-build.yml'
   pull_request:
     paths:
-      - 'waveshare/esp-idf/**'
+      - 'waveshare/**'
       - '.github/workflows/esp-idf-build.yml'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [esp-idf, esp-idf-ha]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         # No submodules: the vendored BSP lives as plain files under
         # components/, and docs/ contains a third-party repo dump with a
         # broken nested submodule ref that breaks recursive checkout.
 
       - name: Generate placeholder build inputs (gitignored assets)
-        working-directory: waveshare/esp-idf
+        working-directory: waveshare
         run: |
           set -euo pipefail
           # Private credentials: write a minimal secrets.h with placeholder
           # values (compile + link fine). We do NOT copy secrets.h.example --
           # its commented-out SONOS_DEVICES block uses '//' lines ending in '\',
           # which form an illegal multi-line comment under -Werror=comment.
-          cat > include/secrets.h <<'EOF'
+          mkdir -p ${{ matrix.project }}/include
+          cat > ${{ matrix.project }}/include/secrets.h <<'EOF'
           #pragma once
           #define WIFI_SSID             "ci"
           #define WIFI_PASSWORD         "ci"
           #define SPOTIFY_CLIENT_ID     "ci"
           #define SPOTIFY_CLIENT_SECRET "ci"
           #define SPOTIFY_REFRESH_TOKEN "ci"
+          #define HA_HOST               "127.0.0.1"
+          #define HA_PORT               8123
+          #define HA_TOKEN              "ci"
+          #define HA_ENTITY             "media_player.ci"
           EOF
           # Embedded thumbnail blob: zero-fill N * 220*220*2 bytes so the
-          # positional index in album_thumbs.c lines up with albums_count().
-          N=$(grep -cE '"spotify:album:' main/albums.c)
-          python3 -c "import sys; open('main/album_thumbs.bin','wb').write(b'\0' * $N * 220 * 220 * 2)"
+          # p4_shared CMake guard and album_thumbs.c line up with albums.c.
+          N=$(grep -cE '"spotify:album:' components/p4_shared/albums.c)
+          python3 -c "open('components/p4_shared/album_thumbs.bin','wb').write(b'\0' * $N * 220 * 220 * 2)"
           echo "Generated album_thumbs.bin for $N albums ($((N*220*220*2)) bytes)"
 
-      # Reuse fetched managed components across runs (keyed on the manifest +
+      # Reuse fetched managed components across runs (keyed on the manifests +
       # lock so it busts when dependencies change).
       - name: Cache managed components
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
-            waveshare/esp-idf/managed_components
-          key: idf-p4-${{ hashFiles('waveshare/esp-idf/main/idf_component.yml', 'waveshare/esp-idf/dependencies.lock') }}
+            waveshare/${{ matrix.project }}/managed_components
+          key: idf-p4-${{ matrix.project }}-${{ hashFiles(format('waveshare/{0}/main/idf_component.yml', matrix.project), format('waveshare/{0}/dependencies.lock', matrix.project), 'waveshare/components/*/idf_component.yml', 'waveshare/esp-idf/components/*/idf_component.yml') }}
           restore-keys: |
-            idf-p4-
+            idf-p4-${{ matrix.project }}-
 
       - name: ESP-IDF build
-        uses: espressif/esp-idf-ci-action@v1
+        uses: espressif/esp-idf-ci-action@e6f5c74232b1ccd4c97ed641f1e48553853f1fd5  # v1.2.0
         with:
           esp_idf_version: v5.5.4
           target: esp32p4
-          path: waveshare/esp-idf
+          path: waveshare/${{ matrix.project }}
+
+      - name: Upload dependencies.lock
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: dependencies-lock-${{ matrix.project }}
+          path: waveshare/${{ matrix.project }}/dependencies.lock
+          if-no-files-found: ignore

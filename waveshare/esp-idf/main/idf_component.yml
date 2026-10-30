@@ -4,7 +4,7 @@
 ## stack at once overflows internal SRAM -- see main/CMakeLists.txt). The
 ## vendored BSP pulls lvgl 9.4.0 + st7701 + gt911 + esp_lvgl_adapter itself.
 dependencies:
-  idf: ">=5.4"
+  idf: ">=5.5,<5.6"
   # Keep Waveshare on LVGL 9.5.x to match the hardware-verified CYD build and
   # avoid the older 9.4.0 pin from the vendored BSP. Runtime tiny_ttf is still
   # disabled in ui.c because the bundled stb_truetype rasterizer crashes on P4.

@@ -44,6 +44,9 @@ def check_source(root: Path, target: str, errors: list[str]) -> None:
             f"{target}: crash coredump-to-flash must stay enabled (report-on-boot)", errors)
     require("CONFIG_ESP_TASK_WDT_PANIC=y" in defaults,
             f"{target}: task watchdog must reset (panic) on a hang, not just warn", errors)
+    require("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y" in defaults,
+            f"{target}: OTA rollback must stay enabled so a bad image returns to the old one",
+            errors)
 
     parts = read(root / "waveshare" / target / "partitions.csv")
     require("coredump" in parts,
@@ -58,6 +61,9 @@ def check_source(root: Path, target: str, errors: list[str]) -> None:
             f"{target}: reliability guard is not initialized", errors)
     require("app_core_ota_start(" in main,
             f"{target}: OTA update path is not wired", errors)
+    require("app_core_ota_mark_valid();" in main,
+            f"{target}: a new OTA image is never marked valid, so rollback would always fire",
+            errors)
     require("xTaskCreatePinnedToCoreWithCaps" in main,
             f"{target}: application worker stack is not explicitly in PSRAM", errors)
     require("xQueueCreateWithCaps" in main,
@@ -68,6 +74,10 @@ def check_source(root: Path, target: str, errors: list[str]) -> None:
             "p4_shared/audio: audio task stack must stay in PSRAM", errors)
     require("xQueueCreateWithCaps(6, sizeof(audio_sfx_t)" in audio,
             "p4_shared/audio: SFX queue must stay in PSRAM", errors)
+
+    ota = read(root / "waveshare" / "components" / "app_core" / "ota.c")
+    require("app_core_reliability_network_budget_ok(\"OTA\"" in ota,
+            "app_core: OTA must check the internal memory reserve before it starts", errors)
 
     reliability = read(root / "waveshare" / "components" / "app_core" / "reliability.c")
     require("esp_reset_reason" in reliability and "esp_core_dump_image_check" in reliability,
@@ -85,6 +95,8 @@ def check_source(root: Path, target: str, errors: list[str]) -> None:
         require("request_inventory_refresh" in ha and
                 "APP_CORE_INTERNAL_NETWORK_MIN_FREE" in ha,
                 "esp-idf-ha: inventory snapshots are not memory-gated", errors)
+        require("audio_stream_is_active()" in main and "HCMD_OTA" in main,
+                "esp-idf-ha: OTA must not start while Sendspin plays", errors)
         require("#define RX_MAX_CAP (768 * 1024)" in ha,
                 "esp-idf-ha: websocket cap changed; re-budget PSRAM and transport bursts first",
                 errors)
