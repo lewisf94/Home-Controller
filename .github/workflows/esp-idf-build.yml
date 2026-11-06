@@ -68,16 +68,10 @@ jobs:
           python3 -c "open('components/p4_shared/album_thumbs.bin','wb').write(b'\0' * $N * 220 * 220 * 2)"
           echo "Generated album_thumbs.bin for $N albums ($((N*220*220*2)) bytes)"
 
-      # Reuse fetched managed components across runs (keyed on the manifests +
-      # lock so it busts when dependencies change).
-      - name: Cache managed components
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
-        with:
-          path: |
-            waveshare/${{ matrix.project }}/managed_components
-          key: idf-p4-${{ matrix.project }}-${{ hashFiles(format('waveshare/{0}/main/idf_component.yml', matrix.project), format('waveshare/{0}/dependencies.lock', matrix.project), 'waveshare/components/*/idf_component.yml', 'waveshare/esp-idf/components/*/idf_component.yml') }}
-          restore-keys: |
-            idf-p4-${{ matrix.project }}-
+      # No managed-component cache. The first run that restored the cache
+      # (2026-11-06) stopped at CMake configure with "Missing required kconfig
+      # option after retry". A fresh fetch from the component registry builds.
+      # The key also used dependencies.lock, which the repository does not keep.
 
       - name: ESP-IDF build
         uses: espressif/esp-idf-ci-action@e6f5c74232b1ccd4c97ed641f1e48553853f1fd5  # v1.2.0
