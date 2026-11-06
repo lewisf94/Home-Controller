@@ -20,7 +20,11 @@ message KnobState {
     int32  current_position  = 1;
     float  sub_position_unit = 2;
     uint32 press_nonce       = 3;  // strain-gauge button: increments on each press
-    uint32 button_mask       = 4;  // bits 0-3: MX buttons (1 = pressed, active-low inverted)
+    // bits 0-3: MX buttons (1 = pressed, active-low inverted)
+    // bit 4: knob press is down now (valid only when bit 5 is set)
+    // bit 5: the sender reports bit 4 (older RP2040 firmware sets neither bit;
+    //        the P4 then falls back to press_nonce, without press duration)
+    uint32 button_mask       = 4;
     int32  battery_percent   = 5;  // from MAX17048 (0-100)
     int32  ambient_lux       = 6;  // from VEML7700 (for auto-brightness on P4)
 }

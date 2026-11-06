@@ -22,6 +22,7 @@ These release checks remain open:
 - [ ] Clear the Music Assistant queue.
 - [ ] Stress light controls during music playback.
 - [ ] Stress light controls during inventory refresh.
+- [ ] Do the knob Lights hardware checks in `LIGHTS-INTERACTION.md`.
 - [ ] Repair a runtime album that has no cover.
 - [ ] Install a firmware update through OTA.
 - [ ] Confirm that credentials remain after OTA.

@@ -115,6 +115,21 @@ class NativeCTests(unittest.TestCase):
         )
         self._run(executable)
 
+    def test_p4_lights_knob_state_machine(self) -> None:
+        shared = REPO_ROOT / "waveshare" / "components" / "p4_shared"
+        executable = self._compile(
+            "lights_knob",
+            NATIVE / "test_lights_knob.c",
+            shared / "lights_knob.c",
+            includes=(shared,),
+        )
+        for scenario in (
+            "short", "long", "modes", "brightness", "hue",
+            "selection", "unsupported", "network", "unintended",
+        ):
+            with self.subTest(scenario=scenario):
+                self._run(executable, scenario)
+
     def test_runtime_credentials(self) -> None:
         executable = self._compile("creds", NATIVE / "test_creds.c")
         self._run(executable)

@@ -37,7 +37,17 @@
 // HX711 (BF350 full Wheatstone bridge)
 #define HX711_DOUT_PIN 10
 #define HX711_CLK_PIN  11
-#define HX711_PRESS_THRESHOLD 5000  // raw ADC units; calibrate on hardware
+#define HX711_PRESS_THRESHOLD   5000  // raw ADC units; calibrate on hardware
+// Release below a lower level (hysteresis), so a reading that wavers near the
+// press threshold does not report a false release in the middle of a press.
+// A false release would end a long press early or add a short press.
+#define HX711_RELEASE_THRESHOLD 3000  // raw ADC units; calibrate on hardware
+
+// button_mask bits above the four MX buttons. The P4 times knob presses from
+// bit 4 (short press on release, long press at 500 ms in the Lights menu).
+// Bit 5 tells the P4 that bit 4 is valid; older firmware sets neither bit.
+#define MASK_PRESS_DOWN   (1u << 4)
+#define MASK_PRESS_LEVEL  (1u << 5)
 
 // MX hot-swap buttons (active-low with pull-up)
 #define BTN_SW1_PIN 12
@@ -246,12 +256,17 @@ static void _send_state(void)
     // Strain-gauge press detection
     if (s_hx711.is_ready()) {
         long raw = s_hx711.read();
-        bool pressed = (raw > HX711_PRESS_THRESHOLD);
+        bool pressed = s_was_pressed ? (raw > HX711_RELEASE_THRESHOLD)
+                                     : (raw > HX711_PRESS_THRESHOLD);
         if (pressed && !s_was_pressed) {
             s_press_nonce++;
         }
         s_was_pressed = pressed;
     }
+
+    // Knob-press level for press-duration timing on the P4.
+    mask |= MASK_PRESS_LEVEL;
+    if (s_was_pressed) mask |= MASK_PRESS_DOWN;
 
     KnobState state = KnobState_init_zero;
     state.current_position  = motor_get_position();

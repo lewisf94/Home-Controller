@@ -346,6 +346,9 @@ void ui_request_light_hue(const char *entity_id, int hue_deg, int sat_pct)
     (void)hue_deg;
     (void)sat_pct;
 }
+/* Knob Lights menu seam (p4_shared/lights_knob_ui.h): no lights backend. */
+bool ui_backend_lights_ready(void);
+bool ui_backend_lights_ready(void) { return false; }
 void ui_request_ota(void) { _post_cmd(SCMD_OTA, 0, NULL); }
 
 /* WiFi connect (with resilient background reconnect) and the connect chime

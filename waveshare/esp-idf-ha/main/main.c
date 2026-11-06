@@ -251,6 +251,11 @@ void ui_request_light_hue(const char *entity_id, int hue_deg, int sat_pct)
 }
 void ui_request_ota(void)
     { hcmd_t c = {.type=HCMD_OTA}; xQueueSend(s_cmd_queue,&c,0); }
+/* Knob Lights menu seam (p4_shared/lights_knob_ui.h): light commands go out
+ * only while the WebSocket session is authenticated and has the first state
+ * snapshot. Reads two flags, so it never blocks the knob input path. */
+bool ui_backend_lights_ready(void);
+bool ui_backend_lights_ready(void) { return ha_client_is_ready(); }
 
 /* ── Art decode ─────────────────────────────────────────────────────────────── */
 /* Double-buffered in PSRAM (app_core_art, shared with waveshare/esp-idf/main.c):

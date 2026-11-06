@@ -30,6 +30,7 @@ Ubuntu, where a compiler is present.
 | Direct Spotify + HA shared parsing | JSON escapes, raw UTF-8, Unicode and surrogate pairs, truncation/error paths; source contracts ensure both backends use it | live HTTP/WebSocket response fixtures, authentication, reconnects, service calls |
 | CYD physical input | quadrature direction/glitch rejection, debounce/event latching, browser/transport mapping, volume debounce/mute, short/long SW4 presses | MCP23017 I2C timing and real encoder/button electrical behaviour |
 | P4 UI-adjacent state | double-buffer publication/allocation rollback, runtime album sorting/persistence/art repair, credential override/fallback behaviour | LVGL rendering, gestures, Cover Flow geometry/performance, audio output |
+| P4 knob Lights menu | short/long press timing, selection/brightness/hue modes, brightness end stops, hue wrap, refresh by entity id, unsupported controls, connection loss, no unintended commands (`LIGHTS-INTERACTION.md`) | motor haptics, strain-gauge press, UART timing, LVGL rendering, Home Assistant service calls |
 | RP2040/P4 knob protocol | version, CRC and COBS implementation contracts on both endpoints | motor control, UART framing under load, strain gauge, sensors, LEDs |
 | Repository contracts | generated catalogue URI order across all four builds, shared component wiring, CI presence | complete ESP-IDF/PlatformIO builds |
 | WiFi and OTA | guarded indirectly by reliability/build checks | network integration on hardware |

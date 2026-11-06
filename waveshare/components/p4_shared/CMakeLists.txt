@@ -95,6 +95,7 @@ idf_component_register(
         "home_controller.pb.c"
         "knob.c"
         "knob_input.c"
+        "lights_knob.c"
     INCLUDE_DIRS "include"
     EMBED_FILES
         "album_thumbs.bin"          # browser thumbnail blob (gitignored; baked in private)

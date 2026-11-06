@@ -313,6 +313,11 @@ input, and LED control.
 The ESP32-P4 sends haptic configurations. The RP2040 sends position and button
 events.
 
+The knob control of lights is a confirmed design. Do not replace it. The
+specification is [docs/LIGHTS-INTERACTION.md](docs/LIGHTS-INTERACTION.md).
+The RP2040 sends the knob-press level in `button_mask` bits 4 and 5. The P4
+measures the press duration.
+
 Lewis is new to KiCad. Give a detailed, numbered, click-by-click instruction
 for a KiCad step. Do not give only a short summary. Point to
 [docs/KICAD-GUIDE.md](docs/KICAD-GUIDE.md) for the full walkthrough. Extend
@@ -439,3 +444,4 @@ instruction.
 - [Hardware design notes](docs/DESIGN_NOTES.md)
 - [RP2040 haptic-knob parts list](docs/KNOB-PARTS.md)
 - [KiCad guide for the daughterboard](docs/KICAD-GUIDE.md)
+- [Lights knob interaction](docs/LIGHTS-INTERACTION.md)

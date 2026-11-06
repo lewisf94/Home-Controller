@@ -50,6 +50,7 @@
  */
 
 #include "ui.h"
+#include "lights_knob_ui.h"   /* private knob Lights seam (p4_shared only) */
 
 #include "ui_tune.h"   /* user-tweakable layout/colour knobs -- edit THAT file */
 
@@ -1321,6 +1322,16 @@ static lv_obj_t   *s_screen_lights     = NULL;
 static lv_obj_t   *s_light_list        = NULL;
 static ui_light_t  s_light_entries[MAX_LIGHTS];
 static int         s_light_entry_count = 0;
+/* Knob Lights menu (docs/LIGHTS-INTERACTION.md). Row and toggle pointers are
+ * set when ui_set_lights_impl builds the rows, so the knob can highlight the
+ * selected row and repaint its toggle. s_light_generation changes with each
+ * new Home Assistant list; knob_input.c polls it to refresh its own copy. */
+static lv_obj_t   *s_light_rows[MAX_LIGHTS];
+static lv_obj_t   *s_light_toggle_btns[MAX_LIGHTS];
+static lv_obj_t   *s_light_knob_status = NULL;
+static uint32_t    s_light_generation  = 0;
+static lk_view_t   s_light_knob_view;          /* last view, reapplied after a rebuild */
+static int         s_light_knob_scrolled = -1; /* row last scrolled into view */
 static int         s_light_hue_deg[MAX_LIGHTS];
 static int         s_light_sat_pct[MAX_LIGHTS];
 static int         s_light_temp_kelvin[MAX_LIGHTS];
@@ -6074,6 +6085,18 @@ static void build_lights_screen(void)
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
     paper_title_chip(title);
 
+    /* Knob mode indicator (hidden until the knob Lights menu is active). The
+     * screen can be rebuilt on a theme change, so drop old row pointers. */
+    memset(s_light_rows, 0, sizeof(s_light_rows));
+    memset(s_light_toggle_btns, 0, sizeof(s_light_toggle_btns));
+    s_light_knob_scrolled = -1;
+    s_light_knob_status = lv_label_create(s_screen_lights);
+    lv_label_set_text(s_light_knob_status, "");
+    lv_obj_set_style_text_color(s_light_knob_status, lv_color_hex(accent_color()), 0);
+    lv_obj_set_style_text_font(s_light_knob_status, font_sm(), 0);
+    lv_obj_align(s_light_knob_status, LV_ALIGN_TOP_LEFT, 20, 24);
+    lv_obj_add_flag(s_light_knob_status, LV_OBJ_FLAG_HIDDEN);
+
     /* Scrollable list container; ui_set_lights() fills it with one row per
      * light. The stack loader resets it to the empty-state text before asking
      * HA for a fresh light list. */
@@ -6088,6 +6111,26 @@ static void build_lights_screen(void)
 #if P4_HAS_HA_LIGHTS
     build_stack_rail(s_screen_lights, MAIN_PAGE_LIGHTS);
 #endif
+}
+
+/* Repaint a light row's power toggle and name for on/off. Shared by the touch
+ * toggle and the knob. Child lookups follow the fixed build order in
+ * ui_set_lights_impl: row child 0 = name label, toggle child 0 = power symbol.
+ * Must be called under the LVGL lock. */
+static void light_paint_power(lv_obj_t *toggle, bool on)
+{
+    lv_obj_t *row    = toggle ? lv_obj_get_parent(toggle) : NULL;
+    lv_obj_t *tlbl   = toggle ? lv_obj_get_child(toggle, 0) : NULL;
+    lv_obj_t *nm     = row ? lv_obj_get_child(row, 0) : NULL;
+    if (toggle)
+        lv_obj_set_style_bg_color(toggle,
+            lv_color_hex(on ? accent_color() : s_th->bg), 0);
+    if (tlbl)
+        lv_obj_set_style_text_color(tlbl,
+            lv_color_hex(on ? s_th->bg : s_th->text2), 0);
+    if (nm)
+        lv_obj_set_style_text_color(nm,
+            lv_color_hex(on ? accent_color() : s_th->text), 0);
 }
 
 static void on_light_toggle(lv_event_t *e)
@@ -6109,20 +6152,7 @@ static void on_light_toggle(lv_event_t *e)
      * the fixed build order in ui_set_lights_ext: row child 0 = name label,
      * toggle child 0 = the power symbol. */
     s_light_entries[i].is_on = !s_light_entries[i].is_on;
-    bool on = s_light_entries[i].is_on;
-    lv_obj_t *toggle = lv_event_get_current_target(e);
-    lv_obj_t *row    = toggle ? lv_obj_get_parent(toggle) : NULL;
-    lv_obj_t *tlbl   = toggle ? lv_obj_get_child(toggle, 0) : NULL;
-    lv_obj_t *nm     = row ? lv_obj_get_child(row, 0) : NULL;
-    if (toggle)
-        lv_obj_set_style_bg_color(toggle,
-            lv_color_hex(on ? accent_color() : s_th->bg), 0);
-    if (tlbl)
-        lv_obj_set_style_text_color(tlbl,
-            lv_color_hex(on ? s_th->bg : s_th->text2), 0);
-    if (nm)
-        lv_obj_set_style_text_color(nm,
-            lv_color_hex(on ? accent_color() : s_th->text), 0);
+    light_paint_power(lv_event_get_current_target(e), s_light_entries[i].is_on);
     audio_play(AUDIO_SFX_SELECT);
 }
 
@@ -7724,6 +7754,154 @@ void ui_notify_covers_updated(void)
     bsp_display_unlock();
 }
 
+/* ---- Knob Lights menu (docs/LIGHTS-INTERACTION.md) ------------------------
+ * knob_input.c owns the state machine (lights_knob.c). These functions only
+ * show its state and copy its optimistic values into the matching row. They
+ * never send a command: knob_input.c sends commands through the same
+ * ui_request_light_* queue functions that the touch controls use. */
+
+/* Must be called under the LVGL lock. `scroll` moves the selected row into
+ * view when the selection changed. */
+static void light_knob_apply_view_locked(const lk_view_t *v, bool scroll)
+{
+    if (!s_screen_lights) return;
+    int sel = -1;
+    if (v->active && v->selected >= 0) {
+        /* Find the row by entity_id: the row order can change on a refresh. */
+        for (int i = 0; i < s_light_entry_count && i < MAX_LIGHTS; i++) {
+            if (strcmp(s_light_entries[i].entity_id, v->selected_id) == 0) { sel = i; break; }
+        }
+    }
+    for (int i = 0; i < MAX_LIGHTS; i++) {
+        lv_obj_t *row = s_light_rows[i];
+        if (!row) continue;
+        bool on = (i == sel);
+        lv_obj_set_style_outline_width(row, on ? 3 : 0, 0);
+        lv_obj_set_style_outline_color(row, lv_color_hex(accent_color()), 0);
+        lv_obj_set_style_outline_opa(row, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_outline_pad(row, 0, 0);
+    }
+    if (scroll && sel >= 0 && s_light_rows[sel] && sel != s_light_knob_scrolled) {
+        lv_obj_scroll_to_view(s_light_rows[sel], LV_ANIM_ON);
+        s_light_knob_scrolled = sel;
+    }
+
+    /* Copy the knob's optimistic values into the row (toggle, brightness, hue). */
+    if (sel >= 0 && v->has_light && s_light_entries[sel].brightness_pct != -2) {
+        if (s_light_entries[sel].is_on != v->is_on) {
+            s_light_entries[sel].is_on = v->is_on;
+            light_paint_power(s_light_toggle_btns[sel], v->is_on);
+        }
+        if (v->mode == LK_MODE_ADJUST && v->param == LK_PARAM_BRIGHTNESS &&
+            s_light_entries[sel].brightness_pct >= 0 &&
+            s_light_entries[sel].brightness_pct != v->brightness_pct) {
+            s_light_entries[sel].brightness_pct = v->brightness_pct;
+            s_light_bri_sent[sel] = v->brightness_pct;
+            lv_obj_t *box = s_light_bri_slider_box[sel];
+            lv_obj_t *sl = box ? lv_obj_get_child(box, 0) : NULL;
+            if (sl) lv_slider_set_value(sl, v->brightness_pct < 1 ? 1 : v->brightness_pct,
+                                        LV_ANIM_OFF);
+            s_light_bri_preset_sel[sel] = light_match_bri_preset(v->brightness_pct);
+            light_refresh_presets(sel);
+        }
+        if (v->mode == LK_MODE_ADJUST && v->param == LK_PARAM_HUE &&
+            s_light_supports_hue[sel] && s_light_hue_deg[sel] != v->hue_deg) {
+            s_light_hue_deg[sel] = v->hue_deg;
+            s_light_hue_sent[sel] = v->hue_deg;
+            lv_obj_t *hs = s_light_hue_slider[sel];
+            if (hs) {
+                lv_slider_set_value(hs, v->hue_deg, LV_ANIM_OFF);
+                lv_obj_set_style_bg_color(hs, light_hue_color(v->hue_deg), LV_PART_INDICATOR);
+            }
+            s_light_hue_swatch_sel[sel] =
+                light_match_hue_swatch(v->hue_deg, s_light_sat_pct[sel], -1);
+            light_refresh_presets(sel);
+        }
+    }
+
+    if (s_light_knob_status) {
+        if (!v->active) {
+            lv_obj_add_flag(s_light_knob_status, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            char txt[40];
+            if (!v->online)
+                snprintf(txt, sizeof(txt), "KNOB: OFFLINE");
+            else if (v->mode == LK_MODE_SELECT)
+                snprintf(txt, sizeof(txt), "KNOB: SELECT");
+            else if (v->param == LK_PARAM_BRIGHTNESS)
+                snprintf(txt, sizeof(txt), "KNOB: BRIGHTNESS %d%%", v->brightness_pct);
+            else
+                snprintf(txt, sizeof(txt), "KNOB: HUE %d", v->hue_deg);
+            lv_label_set_text(s_light_knob_status, txt);
+            lv_obj_set_style_text_color(s_light_knob_status,
+                lv_color_hex(v->online ? accent_color() : s_th->text2), 0);
+            lv_obj_remove_flag(s_light_knob_status, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+bool ui_knob_lights_open(void)
+{
+#if P4_HAS_HA_LIGHTS
+    if (bsp_display_lock(200) != ESP_OK) return false;
+    bool ok = (s_screen_lights != NULL);
+    if (ok && lv_screen_active() != s_screen_lights) open_main_page(MAIN_PAGE_LIGHTS);
+    bsp_display_unlock();
+    return ok;
+#else
+    return false;
+#endif
+}
+
+bool ui_knob_lights_visible(void)
+{
+#if P4_HAS_HA_LIGHTS
+    if (bsp_display_lock(50) != ESP_OK) return true;   /* busy: assume no change */
+    bool vis = (s_screen_lights && lv_screen_active() == s_screen_lights);
+    bsp_display_unlock();
+    return vis;
+#else
+    return false;
+#endif
+}
+
+int ui_knob_lights_snapshot(lk_light_t *out, int max, uint32_t *generation)
+{
+    if (!out || max <= 0) return 0;
+    if (bsp_display_lock(50) != ESP_OK) return -1;
+    int n = s_light_entry_count;
+    if (n > max) n = max;
+    if (n > MAX_LIGHTS) n = MAX_LIGHTS;
+    for (int i = 0; i < n; i++) {
+        const ui_light_t *e = &s_light_entries[i];
+        lk_light_t *o = &out[i];
+        memset(o, 0, sizeof(*o));
+        snprintf(o->entity_id, sizeof(o->entity_id), "%s", e->entity_id);
+        o->available      = (e->brightness_pct != -2);
+        o->is_on          = e->is_on;
+        o->dimmable       = (e->brightness_pct >= 0);
+        o->brightness_pct = (e->brightness_pct >= 0) ? e->brightness_pct : 0;
+        o->hue_supported  = s_light_supports_hue[i];
+        o->hue_deg        = s_light_hue_deg[i];
+        o->sat_pct        = s_light_sat_pct[i] > 0 ? s_light_sat_pct[i] : 100;
+    }
+    if (generation) *generation = s_light_generation;
+    bsp_display_unlock();
+    return n;
+}
+
+void ui_knob_lights_show(const lk_view_t *view)
+{
+    if (!view) return;
+    if (bsp_display_lock(100) != ESP_OK) return;
+    bool sel_changed = strcmp(view->selected_id, s_light_knob_view.selected_id) != 0 ||
+                       view->active != s_light_knob_view.active;
+    s_light_knob_view = *view;
+    if (sel_changed) s_light_knob_scrolled = -1;
+    light_knob_apply_view_locked(view, true);
+    bsp_display_unlock();
+}
+
 static void ui_set_lights_impl(const ui_light_t *list, const int *hues,
                                const int *sats, const int *temps, int count)
 {
@@ -7762,6 +7940,9 @@ static void ui_set_lights_impl(const ui_light_t *list, const int *hues,
         memset(s_light_color_mode_btns, 0, sizeof(s_light_color_mode_btns));
         memset(s_light_bri_preset_btn, 0, sizeof(s_light_bri_preset_btn));
         memset(s_light_hue_swatch_btn, 0, sizeof(s_light_hue_swatch_btn));
+        memset(s_light_rows, 0, sizeof(s_light_rows));
+        memset(s_light_toggle_btns, 0, sizeof(s_light_toggle_btns));
+        s_light_knob_scrolled = -1;
         if (count == 0) {
             lv_obj_t *lbl = lv_label_create(s_light_list);
             lv_label_set_text(lbl, "No lights configured");
@@ -7825,6 +8006,7 @@ static void ui_set_lights_impl(const ui_light_t *list, const int *hues,
             lv_obj_set_style_bg_color(row, lv_color_hex(s_th->surface), 0);
             lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
             lv_obj_set_style_pad_all(row, 0, 0);
+            s_light_rows[i] = row;
 
             lv_obj_t *nm = lv_label_create(row);
             lv_label_set_text(nm, list[i].name);
@@ -7845,6 +8027,7 @@ static void ui_set_lights_impl(const ui_light_t *list, const int *hues,
             }
 
             lv_obj_t *toggle = lv_button_create(row);
+            s_light_toggle_btns[i] = toggle;
             lv_obj_set_size(toggle, 88, 54);
             lv_obj_align(toggle, LV_ALIGN_TOP_RIGHT, -12, 8);
             style_key_btn(toggle);
@@ -8049,6 +8232,8 @@ static void ui_set_lights_impl(const ui_light_t *list, const int *hues,
         for (int i = 0; i < count && i < MAX_LIGHTS; i++) light_refresh_presets(i);
         s_light_entry_count = count;
     }
+    s_light_generation++;
+    light_knob_apply_view_locked(&s_light_knob_view, false);
     bsp_display_unlock();
 }
 

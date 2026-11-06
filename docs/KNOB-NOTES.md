@@ -559,14 +559,12 @@ These two items stay untuned until the board exists. The correct threshold
 values depend on the real strain-bridge gain and the real switch bounce
 profile:
 
-- HX711 press hysteresis. The file `interface_task.cpp` currently signals a
-  press on a single crossing of `raw > HX711_PRESS_THRESHOLD`. A strain
-  reading is noisy near this threshold, so add a Schmitt-trigger pattern: a
-  separate release threshold, for example at about 70% of the press
-  threshold, once the resting and pressed raw values are known from a real
-  test. Without this change, a reading that hovers near the threshold
-  produces repeated `press_nonce` increments, and each increment triggers an
-  unwanted play or pause toggle.
+- HX711 press hysteresis. The file `interface_task.cpp` now starts a press
+  above `HX711_PRESS_THRESHOLD` (5000) and ends it below
+  `HX711_RELEASE_THRESHOLD` (3000). Both values are placeholders. Set them
+  from the resting and pressed raw values of a real test. The Lights menu
+  needs a clean release, because a false release ends a long press early or
+  adds a short press (see `LIGHTS-INTERACTION.md`).
 - MX button debounce. The function `_send_state()` reads a raw
   `digitalRead()` value at each 5 ms transmission interval. A mechanical
   bounce at a button edge can toggle the `button_mask` value several times.

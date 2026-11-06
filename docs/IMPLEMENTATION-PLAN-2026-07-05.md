@@ -278,7 +278,7 @@ Add 3-sample moving average on velocity for noise immunity.
 
 ### RP2040 `interface_task.cpp` — strain hysteresis, debounce, LED patterns
 
-1. `KnobState.knob_pressed = s_was_pressed;` in `_send_state()`.
+1. Superseded: the press level goes in `button_mask` bits 4 and 5, not in a new field. See `LIGHTS-INTERACTION.md`.
 2. Strain hysteresis: press on `raw > THRESHOLD`, release only on `raw < (THRESHOLD * 7/10)`.
 3. MX debounce: per-button 3-sample agreement shift-register (~15 ms window).
 4. LED pattern engine (`_led_tick()` every 33 ms):
@@ -308,7 +308,7 @@ Central dispatcher `_input_event(int input, ev_t ev)`.
 | SW1/knob | NP | — | play/pause | TRACK-NAV entry | exit TRACK-NAV |
 | SW2/knob | Volume | — | play/pause | PRECISION toggle | — |
 | SW3/knob | Albums | — | play centred | (tracklist: N/A) | — |
-| SW4/knob | Lights | — | submode adv. | back to SELECT | — |
+| SW4/knob | Lights | — | see `LIGHTS-INTERACTION.md` | see `LIGHTS-INTERACTION.md` | — |
 | All buttons | other menu | goto that menu | — | same | — |
 
 **Haptic configs per menu:**
@@ -316,8 +316,7 @@ Central dispatcher `_input_event(int input, ev_t ev)`.
 - NP scrub: heavier breakout 1.5; `ui_show_scrub_arm(float)` shows force-build bar.
 - TRACK-NAV (SW1 long in NP): RATCHET 20°, strength 1.0, unbounded, 0 breakout; each click → next/prev; re-anchor on exit.
 - Volume: 3.6°/1%; PRECISION mode min 0/max 200 for 0.5% steps.
-- Lights: submodes L_SELECT → L_BRI → L_HUE → L_BRI, EV_LONG_START anywhere → L_SELECT.
-  Needs ui.h getters: `ui_lights_count()`, `ui_lights_get(int idx, ...)`.
+- Lights: superseded. The confirmed scheme is in `docs/LIGHTS-INTERACTION.md`.
 
 All inside `#if KNOB_ENABLED`.
 
