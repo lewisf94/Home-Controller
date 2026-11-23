@@ -85,6 +85,12 @@ jobs:
           esp_idf_version: v5.5.4
           target: esp32p4
           path: waveshare/${{ matrix.project }}
+          command: >-
+            idf.py build || {
+            pip show idf-component-manager | head -2;
+            grep -rln "HOST_USB" "$HOME/.cache/Espressif" 2>/dev/null | head;
+            grep -rh -o ".\{300\}HOST_USB_CDC_ACM.\{300\}" "$HOME/.cache/Espressif" 2>/dev/null | head -3;
+            exit 1; }
 
       - name: Diagnose manifest rules (temporary)
         if: failure()
