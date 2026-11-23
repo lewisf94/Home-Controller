@@ -86,6 +86,17 @@ jobs:
           target: esp32p4
           path: waveshare/${{ matrix.project }}
 
+      - name: Diagnose manifest rules (temporary)
+        if: failure()
+        working-directory: waveshare/${{ matrix.project }}
+        run: |
+          grep -rn -B3 -A3 "HOST_USB\|tinyusb\|usb_host_cdc_acm\|cherryusb\|iot_usbh_rndis" managed_components/*/idf_component.yml || true
+          grep -rln "ESP_HOSTED_HOST_USB" managed_components || true
+          ls managed_components
+          cat managed_components/espressif__esp_hosted/idf_component.yml || true
+          cat managed_components/espressif__esp_hosted/.component_hash || true
+          sudo find / -name "idf_component_manager" -maxdepth 8 -type d 2>/dev/null | head -3 || true
+
       - name: Upload dependencies.lock
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
