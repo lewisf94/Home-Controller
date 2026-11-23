@@ -1,0 +1,18 @@
+# The registry manifest of espressif/esp_hosted 1.4.7 has optional USB host
+# dependencies with "if" rules on these symbols. The component source does
+# not define them, so the ESP-IDF configure step stops with "Missing required
+# kconfig option after retry". These builds use the SDIO transport, so each
+# USB host option is off. Kconfig accepts a second definition of a symbol, so
+# this file stays valid if a later esp_hosted version defines them.
+
+config ESP_HOSTED_HOST_USB_CDC_ACM_MANIFEST
+    bool
+    default n
+
+config ESP_HOSTED_HOST_USB_CHERRYUSB_MANIFEST
+    bool
+    default n
+
+config ESP_HOSTED_HOST_USB_RNDIS_MANIFEST
+    bool
+    default n
